@@ -1,8 +1,8 @@
 # TESTPLAN — LLMtest v2.0
 
-**Status:** DRAFT pending sign-off. Task authoring and runner implementation are gated on approval of this document.
-**Spec version:** 2.0.0-draft1 · 2026-07-16
-**Decided via:** brainstorming session 2026-07-16 (8 seed questions + architecture review §1/§2, amendments 1–24 folded).
+**Status:** APPROVED 2026-07-16 (amendments 25–30 folded). Task authoring gated on P0 exit (§9); runner implementation proceeds per §9 phasing.
+**Spec version:** 2.0.0 · 2026-07-16
+**Decided via:** brainstorming session 2026-07-16 (8 seed questions + architecture review §1/§2, amendments 1–30 folded).
 
 ---
 
@@ -61,7 +61,7 @@ T4–T8 rows must log `tp_degree` + `nvidia-smi topo -m` output (NVLink vs PCIe 
 
 ### 3.2 Intake pipeline (every new model drop)
 
-New drop → `registry.yaml` entry (full HF repo path, quant file, SHA256, license, arch, total/active params, claimed ctx, chat template) → auto tier placement via `fits()` → triage gates **in order**:
+New drop → `registry.yaml` entry (full HF repo path, quant file, license, arch, total/active params, claimed ctx, chat template, **plus artifact provenance `{source_repo, download_date, sha256, v1_continuity: bool}`** so tables can mark which v2 rows are same-artifact-as-v1) → auto tier placement via `fits()` → triage gates **in order**:
 
 1. **LICENSE:** deployable commercially for clients? CC-BY-NC-class → **park immediately, $0 judge spend** (the Command-A rule).
 2. **Template + tool-call smoke** (T-battery 4/4-class).
@@ -77,18 +77,25 @@ Public benchmarks are never rebuilt. The registry carries public reference score
 
 Quality-vs-tier curves per business unit ("what does T3 buy over T1 for cyber / coding / runbooks") — the chart that prices local vs rented vs purchased hardware, including the PRO 6000 buy decision.
 
-### 3.5 v2.0 baseline roster (T1)
+### 3.5 v2.0 baseline roster (T1) — artifact selection rule
 
-| # | Model (registry id) | Artifact |
-|---|---|---|
-| 1 | qwen3.6-35b-a3b | `bartowski/Qwen_Qwen3.6-35B-A3B-GGUF` IQ4_XS (confirm vs unsloth UD-Q4 at P0) |
-| 2 | gemma-4-26b-a4b | `unsloth/gemma-4-26B-A4B-it-qat-GGUF` UD-Q4_K_XL |
-| 3 | ornith-1.0-35b | `deepreinforce-ai/Ornith-1.0-35B` via jashepp MXFP4_MOE_Q8_0-Imatrix (T1 standard artifact; bartowski IQ4_XS as fallback) |
-| 4 | gpt-oss-20b | `unsloth/gpt-oss-20b-GGUF` F16 (MXFP4 experts) — **shakedown model** |
-| 5 | qwen3.6-27b-dense | `unsloth/Qwen3.6-27B-GGUF` Q5_K_M |
-| 6 | qwen3-coder-30b | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` UD-Q4_K_XL (exact quant confirmed at P0 intake) |
+**Selection rule (applies to ALL SIX baseline artifacts, frozen at P0 — Coder-30B included; baseline artifacts freeze at P0, not intake):**
+1. **v1/session-5 measured data exists → pin the EXACT artifact:** SHA256 the on-disk files from those runs; registry names whatever repo mirrors them.
+2. **No local history → house ladder** (CLAUDE.md: unsloth UD-Q4_K_XL / Q4_K_M class).
+3. **Deviation only if `fits()` at the 128k floor forces it** — reason recorded on the registry entry.
 
-Exact artifact SHA256s frozen in `registry.yaml` at P0; any substitution is a registry diff, not a table footnote.
+Pin = **SHA256 + download date** (HF repos requantize in place; a disk-vs-repo mismatch at P0 is a **recorded finding, never auto-refetched**). Speed tables annotate **quant FAMILY** (IQ vs K-quant vs MXFP4 — dequant cost differs on CUDA; families are never mixed silently).
+
+| # | Registry id | Rule | Artifact |
+|---|---|---|---|
+| 1 | qwen3.6-35b-a3b | 1 | on-disk `bartowski/Qwen_Qwen3.6-35B-A3B-GGUF` IQ4_XS (the v1 scorecard artifact — resolves bartowski-vs-unsloth by rule, not preference) |
+| 2 | gemma-4-26b-a4b | 1 | on-disk `unsloth/gemma-4-26B-A4B-it-qat-GGUF` UD-Q4_K_XL |
+| 3 | ornith-1.0-35b | 1 | **the on-disk 18.4 GB MXFP4 hybrid** (session-5/6 measured artifact; jashepp `Ornith-1.0-35B-A3B-MXFP4_MOE_Q8_0-Imatrix` mirrors it). Registry notes the v1 scorecard row used bartowski IQ4_XS — different artifact, `v1_continuity` recorded per data source |
+| 4 | gpt-oss-20b | 1 | on-disk `unsloth/gpt-oss-20b-GGUF` F16 (MXFP4 experts) — **shakedown model** |
+| 5 | qwen3.6-27b-dense | 1 | on-disk `unsloth/Qwen3.6-27B-GGUF` Q5_K_M (session-5/6 games + n-gram artifact; v1 scorecard's NVFP4-GGUF conversion noted in registry) |
+| 6 | qwen3-coder-30b | 2 | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` UD-Q4_K_XL (no local history → house ladder) |
+
+Any substitution is a registry diff, not a table footnote.
 
 ---
 
@@ -199,7 +206,7 @@ Three judges — **Claude, Codex, Gemini** — each grades every packet independ
 - Rubric fix → new `rubric_sha` → new packet_ids → natural re-judge; old judgments retained for audit; aggregation at table time selects judgments matching the checked-out `rubric_sha`.
 - **Blinding:** seed per **(packet, judge)** — per-judge letter permutations so position bias decorrelates across the panel; permutations recorded in the **committed map** (`results/packets/`). Judgment rows store **letter AND resolved model_id at write time** — interpretability survives any single file loss; the committed map is audit/recovery, not a dependency.
 - **Judgment row:** `(packet_id, judge_id, judge_model_pin, judge_cli_version, letter, model_id, score_0_10, rank, reason ← inline plain one-liner, ts)` — idempotent on `(packet_id, judge_id, letter)`. Spread>2 triage is self-contained in-repo.
-- Invocation: one packet per headless call; JSON-schema-constrained response (per-letter score + one-line reason + ranking + anchor scores); invalid → one retry → else `status=error`.
+- Invocation: one packet per headless call; JSON-schema-constrained response (per-letter score + one-line reason + ranking). **The schema requires the full letter set — a parseable-but-partial response is invalid → one retry → else `status=error`; no partial packets.** The calibration pair rides as blinded letters **indistinguishable from cohort answers** (anchor scores are recovered at aggregation via the map, not requested separately).
 - Aggregates (median/spread/kin-delta/agreement) are **computed at table time, never stored** — a judging re-run cannot desync aggregates.
 
 ---
@@ -264,7 +271,7 @@ Write-time validation uses the identical `schema.py` validator CI runs. **Result
 
 `request_endpoint(model_id, runtime, flags_overlay={}, parallel=1, ctx=…, kv=…) → EndpointHandle{base_url, session_id, provenance}`
 
-- **Per-runtime translation layer** (llama-server flags / Ollama env+options / vLLM args) producing the **normalized config** recorded on the session + raw invocation — cross-runtime B5 comparability lives in data, not prose.
+- **Per-runtime translation layer** (llama-server flags / Ollama env+options / vLLM args) producing the **normalized config** recorded on the session + raw invocation — cross-runtime B5 comparability lives in data, not prose. The sanctioned Ollama arm's env (`OLLAMA_KV_CACHE_TYPE`, flash-attn) lives **here**, in the translation layer; fork build hash + Ollama version are pinned in config alongside the judge pins.
 - **Startup orphan sweep:** detect/kill stray llama-server/ollama processes + VRAM audit before any launch (crashed runs are guaranteed by the resume story).
 - **VRAM preflight calls `registry.fits()`** — one code path for placement and preflight.
 - Standard-flag composition (CLAUDE.md defaults) + battery overlay; config-match reuse; teardown by PID with VRAM-drain verification; port allocation; logs → artifacts.
@@ -303,7 +310,7 @@ llmtest import-legacy                                   # v1 scorecard + Section
 
 ### 7.6 CI (integrity only, never GPU)
 
-Schema validation (all shards) · fixture lint incl. **no-client-path lint** · tables-regenerate-byte-clean · gitleaks-class secret scan · append-only shard check vs tags. GitHub Issues = home of the flagged-disagreement → rubric-bug workflow.
+Schema validation (all shards) · fixture lint incl. **no-client-path lint** · **non-ASCII/mojibake lint on docs AND fixtures** (in a fixture, an invisible mojibake character silently alters tokenization for every model) · tables-regenerate-byte-clean · gitleaks-class secret scan · append-only shard check vs tags. GitHub Issues = home of the flagged-disagreement → rubric-bug workflow.
 
 ---
 
@@ -334,7 +341,7 @@ B1 15×1 (8′) · B2 8 (4′) · B3 12 + one 32k curve point (8′) · B4 32k N
 
 | Phase | Contents | Est. |
 |---|---|---|
-| P0 | repo init, schema+validator, configs, CI, GitHub remote, registry SHAs frozen | 0.5–1 d |
+| P0 | repo init, schema+validator, configs, CI, GitHub remote, registry SHAs frozen. **EXIT CRITERION: remote created + first push verified BEFORE any task authoring** (`gh` install is P0-blocking, not a parallel chore) — authored rubrics never accumulate unpushed on one NVMe | 0.5–1 d |
 | P1 | ServerManager + debug CLI; validated by Ornith ngram A/B canary (→ §7.5, re-runnable) | 0.5–1 d |
 | P2 | B5 plugin (ABC client #1 — owns servers) | 1 d |
 | P3 | B1 + judging end-to-end; **judge pins frozen (Michael signs off) + quota dry-run (~20 packets)** | 1.5–2 d |
@@ -359,14 +366,23 @@ B1 15×1 (8′) · B2 8 (4′) · B3 12 + one 32k curve point (8′) · B4 32k N
 
 ## 11. Setup prerequisites & open items
 
-1. **Gemini judge access** — confirm gemini CLI (or API key) on this machine before P3.
-2. **GitHub private remote** — `gh` auth confirmed at P0; repo created and pushed.
-3. **Judge pins** — live enumeration + Michael sign-off at P3 (candidates in §6.1); frozen in `judges.yaml`.
-4. **Two Copilot outputs** (Tier-3 unit definitions) — Michael drops them at an agreed path before P7.
-5. **WSL2 state** — confirm WSL2 + Hermes install + LiteLLM versions at P6; pins recorded then.
-6. **qwen3-coder-30b + qwen3.6-35b artifact confirmation** — exact quant file + SHA256 at P0 intake.
-7. **Ollama q8-KV sanctioned arm** — B5 shootout uses a dedicated Ollama instance configuration mirroring v1 (:11435-style), documented in `config/`.
+1. **GitHub private remote — P0-BLOCKING:** `gh` CLI is **not currently installed** (verified 2026-07-16); install + auth + repo create + first push verified is the P0 exit criterion (§9).
+2. **Gemini judge access** — confirm gemini CLI (or API key) on this machine before P3.
+3. **Judge pins** — live enumeration + Michael sign-off at P3 (candidates in §6.1); frozen in `judges.yaml` with CLI versions.
+4. **Runtime pins in config** — fork binary build hash + Ollama version pinned alongside judge pins; sanctioned Ollama arm env in the ServerManager translation layer (§7.3).
+5. **Baseline artifact freeze (all six)** — selection rule §3.5 applied at P0: on-disk SHA256 + download date recorded; disk-vs-repo mismatches recorded as findings.
+6. **Node + Playwright + Chromium** — P5 dependency; SwiftShader flags for WebGL/3D probes noted in the gate spec.
+7. **WSL2 vLLM env** — built and **VERSION-MATCHED to the chosen Verda image** (the laptop↔PRO-6000 calibration anchor requires same-version); confirmed before the B5 rented session.
+8. **Verda account readiness** — SSH keys, quota, image choice, spot-price check (budgets.yaml) before P8's rented session.
+9. **Disk audit** — ≥150 GB headroom including artifacts growth; retention/rotation policy noted (artifacts are gitignored; cold-storage sync optional).
+10. **Bench-night profile** — AC power + performance plan, sleep/hibernate off, **Windows Update PAUSED for the baseline window**, no other GPU consumers; profile recorded on session rows (ties to §7.2 power_mode/ac_state fields).
+11. **WSL2 harness state** — Hermes install + LiteLLM versions confirmed at P6; pins recorded then.
+12. **Two Copilot outputs** (Tier-3 unit definitions) — Michael drops them at an agreed path before P7.
 
 ## 12. Decision log
 
-Amendments 1–24 from the §1/§2 design review plus the eight seed-question resolutions (scope, judging panel, B6 gate/N, Verda budget, harness roster, tiered registry, Tier-3 layers, repo hardening) are folded inline above; the brainstorm transcript is the authoritative record. `suite_version` for the first freeze: **suite-v2.0.0**.
+Amendments 1–24 from the §1/§2 design review plus the eight seed-question resolutions (scope, judging panel, B6 gate/N, Verda budget, harness roster, tiered registry, Tier-3 layers, repo hardening) are folded inline above; the brainstorm transcript is the authoritative record.
+
+**Approval:** TESTPLAN approved by Michael 2026-07-16, conditional on amendments **25–30** (artifact selection rule · judgment completeness/blinded anchors · §11 prerequisite additions · P0 exit criterion · mojibake lint · registry provenance) — folded in this revision. Task authoring gated on P0 exit (§9). `suite_version` for the first freeze: **suite-v2.0.0**.
+
+**Spec version:** 2.0.0 (approved) · supersedes 2.0.0-draft1.
