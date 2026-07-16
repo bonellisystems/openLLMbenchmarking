@@ -826,7 +826,7 @@ def run_validate(root: Path | str = ".") -> int:
     return 1 if errors else 0
 ```
 
-- [ ] **Step 5: Run tests** — `python -m pytest tests/test_registry.py -v` → PASS; `python -m llmtest validate` → exit 0 (no rows yet, configs clean). Note: emoji in docs are > 0x2E7F — if validate flags TESTPLAN emoji/box-drawing, extend the allowlist in `validate_cmd.py` to skip chars in ranges 0x2500-0x27BF and 0x1F300-0x1FAFF *before* committing, and add a test asserting the 每-class CJK char IS flagged.
+- [ ] **Step 5: Run tests** — `python -m pytest tests/test_registry.py -v` → PASS; `python -m llmtest validate` → exit 0 (no rows yet, configs clean). Note: emoji in docs are > 0x2E7F — if validate flags TESTPLAN emoji/box-drawing, extend the allowlist in `validate_cmd.py` to skip chars in ranges 0x2500-0x27BF and 0x1F300-0x1FAFF *before* committing, and add a test asserting the U+6BCF CJK char IS flagged.
 
 - [ ] **Step 6: Commit** — `git add config/ llmtest/registry.py llmtest/validate_cmd.py tests/test_registry.py && git commit -m "feat(p0): configs, registry+fits(), validate cmd with mojibake lint" && git push`
 
