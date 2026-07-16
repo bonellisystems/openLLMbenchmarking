@@ -26,3 +26,10 @@ def test_resume_index_reads_all_shards(tmp_path):
     r1, r2 = _row(1), _row(2)
     s.append(r1); s.append(r2)
     assert Store(tmp_path).existing_row_ids() == {r1["row_id"], r2["row_id"]}
+
+def test_jsonl_lines_end_lf_only(tmp_path):
+    s = Store(tmp_path)
+    s.append(_row()); s.append_session({"session_id": "s1"})
+    for f in list(tmp_path.glob("rows-*.jsonl")) + [tmp_path / "sessions.jsonl"]:
+        raw = f.read_bytes()
+        assert b"\r" not in raw, f"CRLF found in {f.name}"

@@ -37,12 +37,12 @@ class Store:
             raise SchemaError("; ".join(errs))
         if row["row_id"] in self.existing_row_ids():
             return False
-        with self._shard(row["suite_version"]).open("a", encoding="utf-8") as f:
+        with self._shard(row["suite_version"]).open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(row, sort_keys=True) + "\n")
         return True
 
     def append_session(self, d: dict) -> None:
-        with (self.dir / "sessions.jsonl").open("a", encoding="utf-8") as f:
+        with (self.dir / "sessions.jsonl").open("a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps(d, sort_keys=True) + "\n")
 
     def iter_sessions(self) -> Iterator[dict]:
