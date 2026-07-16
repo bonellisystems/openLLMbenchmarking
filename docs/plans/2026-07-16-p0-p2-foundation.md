@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.10+ (stdlib-first: `dataclasses`, `hashlib`, `json`, `subprocess`, `urllib`), `pytest`, `PyYAML`, GitHub Actions (integrity CI only), prism-ml llama.cpp fork binary (existing, pinned), `gh` CLI.
 
+> **PLAN AMENDMENT (2026-07-16, Michael): LOCAL-GIT-ONLY.** No GitHub remote. Consequences for every task: **(a) Task 1 is SKIPPED entirely** (no gh install/auth/repo-create); **(b) every `git push`, `gh run watch`, and "verify Actions green" step is a NO-OP — commit locally only**; (c) Task 7's exit check becomes: local `python -m pytest -q -m "not gpu"` green + `python -m llmtest validate` exit 0 + tables byte-clean re-run; `ci.yml` is still authored (dormant). P0 exit criterion = the local integrity pass.
+
 ## Global Constraints (from TESTPLAN v2.0.0 — every task inherits these)
 
 - Windows 11 host; primary shell PowerShell; python = `python` (3.10+); repo root = `D:\BUILT-TOOLS\LLMtesting\llmtest-v2`.

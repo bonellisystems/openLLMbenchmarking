@@ -213,7 +213,7 @@ Three judges — **Claude, Codex, Gemini** — each grades every packet independ
 
 ## 7. Architecture
 
-### 7.1 Repo (`D:\BUILT-TOOLS\LLMtesting\llmtest-v2\`, standalone git + private GitHub remote)
+### 7.1 Repo (`D:\BUILT-TOOLS\LLMtesting\llmtest-v2\`, standalone git — **LOCAL-ONLY by decision 2026-07-16**; no remote. Public-from-birth hygiene retained so a remote can be added later without history rewrites. Single-NVMe backup risk accepted by Michael; optional cold-copy of the repo folder is a manual chore, not framework scope.)
 
 ```
 llmtest-v2/
@@ -310,7 +310,7 @@ llmtest import-legacy                                   # v1 scorecard + Section
 
 ### 7.6 CI (integrity only, never GPU)
 
-Schema validation (all shards) · fixture lint incl. **no-client-path lint** · **non-ASCII/mojibake lint on docs AND fixtures** (in a fixture, an invisible mojibake character silently alters tokenization for every model) · tables-regenerate-byte-clean · gitleaks-class secret scan · append-only shard check vs tags. GitHub Issues = home of the flagged-disagreement → rubric-bug workflow.
+Schema validation (all shards) · fixture lint incl. **no-client-path lint** · **non-ASCII/mojibake lint on docs AND fixtures** (in a fixture, an invisible mojibake character silently alters tokenization for every model) · tables-regenerate-byte-clean · secret scan · append-only shard check vs tags. **Local-only amendment:** these run as `llmtest validate` + pytest locally (the P0 exit gate); `ci.yml` is authored but dormant until a remote ever exists. Flagged-disagreement → rubric-bug workflow tracks in `results/FLAGS.md`.
 
 ---
 
@@ -341,7 +341,7 @@ B1 15×1 (8′) · B2 8 (4′) · B3 12 + one 32k curve point (8′) · B4 32k N
 
 | Phase | Contents | Est. |
 |---|---|---|
-| P0 | repo init, schema+validator, configs, CI, GitHub remote, registry SHAs frozen. **EXIT CRITERION: remote created + first push verified BEFORE any task authoring** (`gh` install is P0-blocking, not a parallel chore) — authored rubrics never accumulate unpushed on one NVMe | 0.5–1 d |
+| P0 | repo init, schema+validator, configs, integrity checks, registry SHAs frozen. **EXIT CRITERION (amended 2026-07-16, local-only): full local integrity pass green — pytest + `llmtest validate` + tables byte-clean — BEFORE any task authoring.** GitHub remote dropped by decision; `ci.yml` authored but dormant | 0.5–1 d |
 | P1 | ServerManager + debug CLI; validated by Ornith ngram A/B canary (→ §7.5, re-runnable) | 0.5–1 d |
 | P2 | B5 plugin (ABC client #1 — owns servers) | 1 d |
 | P3 | B1 + judging end-to-end; **judge pins frozen (Michael signs off) + quota dry-run (~20 packets)** | 1.5–2 d |
@@ -366,7 +366,7 @@ B1 15×1 (8′) · B2 8 (4′) · B3 12 + one 32k curve point (8′) · B4 32k N
 
 ## 11. Setup prerequisites & open items
 
-1. **GitHub private remote — P0-BLOCKING:** `gh` CLI is **not currently installed** (verified 2026-07-16); install + auth + repo create + first push verified is the P0 exit criterion (§9).
+1. ~~GitHub private remote~~ **DROPPED (Michael, 2026-07-16): repo stays local-git-only.** No `gh` dependency. P0 exit criterion = local integrity pass (§9). Flagged-disagreement workflow (§6.1/§7.6) tracks in `results/FLAGS.md` instead of GitHub Issues.
 2. **Gemini judge access** — confirm gemini CLI (or API key) on this machine before P3.
 3. **Judge pins** — live enumeration + Michael sign-off at P3 (candidates in §6.1); frozen in `judges.yaml` with CLI versions.
 4. **Runtime pins in config** — fork binary build hash + Ollama version pinned alongside judge pins; sanctioned Ollama arm env in the ServerManager translation layer (§7.3).
