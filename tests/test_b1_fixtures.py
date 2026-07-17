@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 from llmtest.batteries import b1_fixtures as f
 
@@ -18,3 +19,28 @@ def test_check_signals_all_types():
     assert all(v["pass"] for v in out.values())
     out2 = f.check_signals("nothing here", sig)
     assert not any(v["pass"] for v in out2.values())
+
+
+def test_check_signals_keys_are_named():
+    """Check that signal result keys are named (e.g. 'contains-0') not integer indices."""
+    sig = [{"type": "contains", "value": "MFA"}]
+    out = f.check_signals("MFA on", sig)
+    assert "contains-0" in out
+    assert 0 not in out
+
+
+def test_check_signals_bad_regex_no_crash():
+    """Bad regex at runtime returns error dict, not crash."""
+    out = f.check_signals("text", [{"type": "regex", "value": "(unclosed"}])
+    assert "regex-0" in out
+    assert out["regex-0"]["pass"] is False
+    assert "error" in out["regex-0"]
+
+
+def test_loader_raises_on_malformed(tmp_path):
+    """Malformed fixture should raise ValueError, not silently skip."""
+    unit_dir = tmp_path / "suite" / "b1_business" / "cybersecurity"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "task-01.yaml").write_text("id: [broken", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed fixture"):
+        f.load_unit_tasks(tmp_path, "cybersecurity")

@@ -100,6 +100,49 @@ def run_validate(root: Path | str = ".") -> int:
                                 f"fixture {rel_path} signal {sig_idx} has unknown type "
                                 f"'{sig_type}' (must be one of {valid_signal_types})"
                             )
+
+                        # Validate signal value exists and is the correct type
+                        sig_value = sig.get("value")
+                        if sig_value is None:
+                            errors.append(
+                                f"fixture {rel_path} signal {sig_idx} missing or null 'value' key"
+                            )
+                        elif sig_type == "regex":
+                            # Try to compile regex
+                            try:
+                                re.compile(sig_value)
+                            except re.error as e:
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} regex value "
+                                    f"'{sig_value}' failed to compile: {e}"
+                                )
+                            # Also check it's a string
+                            if not isinstance(sig_value, str):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} regex value "
+                                    f"must be string, got {type(sig_value).__name__}"
+                                )
+                        elif sig_type == "numeric":
+                            # Check value is numeric
+                            if not isinstance(sig_value, (int, float)) or isinstance(sig_value, bool):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} numeric value "
+                                    f"must be int or float, got {type(sig_value).__name__}"
+                                )
+                            # Check tolerance if present
+                            tolerance = sig.get("tolerance")
+                            if tolerance is not None and not isinstance(tolerance, (int, float)):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} tolerance "
+                                    f"must be numeric, got {type(tolerance).__name__}"
+                                )
+                        elif sig_type == "contains":
+                            # Check value is string
+                            if not isinstance(sig_value, str):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} contains value "
+                                    f"must be string, got {type(sig_value).__name__}"
+                                )
                 except Exception as e:
                     rel_path = task_file.relative_to(root) if task_file.exists() else task_file
                     errors.append(f"fixture {rel_path} failed to parse: {e}")

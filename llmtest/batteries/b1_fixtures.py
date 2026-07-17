@@ -32,6 +32,9 @@ def load_unit_tasks(root: Path, unit: str) -> list[Task]:
 
     Returns:
         List of Task objects, sorted by id
+
+    Raises:
+        ValueError: If a fixture file is malformed and cannot be parsed
     """
     tasks_dir = root / "suite" / "b1_business" / unit
     if not tasks_dir.exists():
@@ -53,9 +56,9 @@ def load_unit_tasks(root: Path, unit: str) -> list[Task]:
                 path=task_file
             )
             tasks.append(task)
-        except Exception:
-            # Skip malformed files
-            continue
+        except Exception as e:
+            # Fail loud on malformed fixtures
+            raise ValueError(f"malformed fixture {task_file}: {e}") from e
 
     return sorted(tasks, key=lambda t: t.id)
 
@@ -68,23 +71,28 @@ def check_signals(text: str, signals: list[dict]) -> dict:
         signals: List of signal dicts with type, value, and optional tolerance
 
     Returns:
-        Dict mapping signal index to result dict with 'pass' key
+        Dict mapping signal name (e.g. "contains-0") to result dict with 'pass' key
     """
     results = {}
 
     for idx, sig in enumerate(signals):
         sig_type = sig.get("type")
         sig_value = sig.get("value")
+        sig_key = f"{sig_type}-{idx}"
 
         if sig_type == "contains":
-            results[idx] = {"pass": sig_value in text}
+            results[sig_key] = {"pass": sig_value in text}
         elif sig_type == "regex":
-            results[idx] = {"pass": bool(re.search(sig_value, text))}
+            try:
+                results[sig_key] = {"pass": bool(re.search(sig_value, text))}
+            except re.error as e:
+                # Defensive: regex compile fails at runtime (shouldn't happen after lint)
+                results[sig_key] = {"pass": False, "error": f"regex compile error: {e}"}
         elif sig_type == "numeric":
             tolerance = sig.get("tolerance", 0.01)
-            results[idx] = {"pass": _check_numeric(text, sig_value, tolerance)}
+            results[sig_key] = {"pass": _check_numeric(text, sig_value, tolerance)}
         else:
-            results[idx] = {"pass": False}
+            results[sig_key] = {"pass": False}
 
     return results
 
