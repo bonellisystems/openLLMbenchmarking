@@ -95,6 +95,16 @@ Pin = **SHA256 + download date** (HF repos requantize in place; a disk-vs-repo m
 | 5 | qwen3.6-27b-dense | 1 | on-disk `unsloth/Qwen3.6-27B-GGUF` Q5_K_M (session-5/6 games + n-gram artifact; v1 scorecard's NVFP4-GGUF conversion noted in registry) |
 | 6 | qwen3-coder-30b | 2 | `unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF` UD-Q4_K_XL (no local history → house ladder) |
 
+**Roster expansion (Michael, 2026-07-16):**
+
+| # | Registry id | Rule | Artifact |
+|---|---|---|---|
+| 7 | nemotron-3-nano-30b | 1 | on-disk `unsloth/Nemotron-3-Nano-30B-A3B-GGUF` UD-Q4_K_XL (session-6 artifact; 21.3 GB — expect `fits-short-context` on T1) |
+| 8 | granite-4.1-30b | 1 | on-disk `unsloth/granite-4.1-30b-GGUF` UD-Q4_K_XL (session-6 artifact; hybrid Mamba; the 12.08× n-gram case) |
+| 9 | bonsai-ternary-27b | 1 | on-disk `prism-ml/Ternary-Bonsai-27B-gguf` Q2_0 (6.7 GB; needs the prism fork's custom kernels — the T1 standard binary) |
+
+**Quantization floor policy (Michael, 2026-07-16):** no artifact below 4-bit enters the suite — quality-loss/hallucination risk — with exactly ONE designated exception: `prism-ml/Ternary-Bonsai-27B` (1.71 bpw) rides as the **sub-4-bit exhibit**, included specifically to pressure-test its "95% intelligence retained" marketing against the full battery. Its rows carry tag `sub4bit-exhibit`; intake auto-parks any other <4-bit candidate with reason `below-quant-floor`.
+
 Any substitution is a registry diff, not a table footnote.
 
 ---
