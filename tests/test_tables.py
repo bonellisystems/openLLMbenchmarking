@@ -5,7 +5,13 @@ from pathlib import Path
 
 from llmtest.judging.aggregate import aggregate
 from llmtest.store import Store
-from llmtest.tables import render_flags, render_scorecard, render_serving_table, run_tables
+from llmtest.tables import (
+    _current_rubric_sha,
+    render_flags,
+    render_scorecard,
+    render_serving_table,
+    run_tables,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -188,7 +194,19 @@ def test_run_tables_writes_three_files_byte_clean_on_rerun(tmp_path):
     root = _scaffold_root(tmp_path)
     store = Store(root / "results")
 
-    maps, judgments = _sample_maps_and_judgments()
+    # _scaffold_root copies the repo's real grading/anchors -- since Task 9
+    # populated real anchor files, run_tables() now filters judgments to the
+    # CURRENTLY checked-out rubric_sha per unit (TESTPLAN 6.2). Build maps
+    # with the real sha so this fixture's judgments survive that filter
+    # regardless of anchor content, instead of hardcoding a stale "sha1".
+    rubric = _current_rubric_sha(root)
+    _, judgments = _sample_maps_and_judgments()
+    maps = {
+        "p1": _map("b1.finance-01", unit="finance",
+                    rubric_sha=rubric.get("finance", "sha1")),
+        "p2": _map("b1.it_infra-01", unit="it_infra",
+                    rubric_sha=rubric.get("it_infra", "sha1")),
+    }
     for packet_id, m in maps.items():
         (root / "results" / "packets" / f"{packet_id}.map.json").write_text(
             json.dumps(m, sort_keys=True), encoding="utf-8")
