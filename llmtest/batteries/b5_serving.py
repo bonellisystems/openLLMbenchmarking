@@ -76,7 +76,7 @@ class B5Serving(Battery):
             if str(m.get("local_path", "")).startswith("TO-"):
                 continue                    # artifact not on disk yet
             for cond in _conditions(order, extra_runtimes=extra_runtimes):
-                for run_n in (1,):          # serving rows: 1 run per condition (repeat via --force)
+                for run_n in (1,):          # serving rows: 1 run per condition (re-measurement needs a run_n bump — see docs/backlog-p3.md)
                     rid = schema.compute_row_id(
                         suite_version=sv, model_id=model_id,
                         quant_sha256=m["provenance"]["sha256"], battery=5,

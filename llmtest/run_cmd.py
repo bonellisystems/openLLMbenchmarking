@@ -35,7 +35,13 @@ def run_run(args) -> int:
         for item in pending:
             try:
                 for row in battery.execute(item, ctx):
-                    store.append(row)
+                    appended = store.append(row)
+                    if not appended and args.force:
+                        failures += 1
+                        print(f"EXEC-ERROR {item.task_id} {item.condition}: "
+                              "--force re-ran the item but the row key already exists — "
+                              "new measurement DISCARDED (run_n bump/supersede design "
+                              "pending, see docs/backlog-p3.md)")
                     if args.debug:
                         dbg = root / "artifacts" / "debug"
                         dbg.mkdir(parents=True, exist_ok=True)
