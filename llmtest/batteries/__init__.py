@@ -49,6 +49,8 @@ def get(battery_id: int) -> Battery:
             from llmtest.batteries import b2_toolcalling  # noqa: F401
         elif battery_id == 3:
             from llmtest.batteries import b3_hallucination  # noqa: F401
+        elif battery_id == 4:
+            from llmtest.batteries import b4_longcontext  # noqa: F401
         elif battery_id == 5:
             from llmtest.batteries import b5_serving  # noqa: F401
     if battery_id not in _REGISTRY:
