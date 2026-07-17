@@ -8,6 +8,7 @@ import pytest
 
 from llmtest.batteries.b1_business import B1Business
 from llmtest.batteries import WorkItem
+from llmtest.batteries.b1_fixtures import load_unit_tasks
 from llmtest import schema
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,44 @@ class FakeStore:
     """Fake store for plan() tests."""
     def iter_rows(self):
         return []
+
+
+def _cybersecurity_task():
+    """Load the real exemplar task via the loader (source of truth for fixture_sha)."""
+    tasks = load_unit_tasks(ROOT, "cybersecurity")
+    return next(t for t in tasks if t.id == "cybersecurity-01")
+
+
+def _make_exec_item(cfg, task, run_n=1):
+    """Build a WorkItem matching what plan() now produces (per-task fixture_sha,
+    prompt/signals/cls riding in payload so execute() doesn't re-load YAML)."""
+    condition = "runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1"
+    suite_version = "suite-v2.0.0-shakedown"
+    row_id = schema.compute_row_id(
+        suite_version=suite_version,
+        model_id="gpt-oss-20b",
+        quant_sha256=cfg.registry["models"]["gpt-oss-20b"]["provenance"]["sha256"],
+        battery=1,
+        task_id="b1.cybersecurity-01",
+        fixture_sha=task.fixture_sha,
+        condition=condition,
+        run_n=run_n
+    )
+    return WorkItem(
+        row_id=row_id,
+        model_id="gpt-oss-20b",
+        battery=1,
+        task_id="b1.cybersecurity-01",
+        condition=condition,
+        run_n=run_n,
+        payload={"model": cfg.registry["models"]["gpt-oss-20b"],
+                 "task_id": task.id,
+                 "fixture_sha": task.fixture_sha,
+                 "suite_version": suite_version,
+                 "prompt": task.prompt,
+                 "signals": task.signals,
+                 "cls": task.cls}
+    )
 
 
 def test_plan_covers_11_models_excluding_quant_arm(tmp_path):
@@ -91,37 +130,22 @@ def test_execute_produces_judging_row_with_artifact(tmp_path, monkeypatch):
         root=tmp_path
     )
 
-    # Create a WorkItem for the exemplar task
-    task_sha = hashlib.sha256(b"cybersecurity").hexdigest()
-    row_id = schema.compute_row_id(
-        suite_version="suite-v2.0.0-shakedown",
-        model_id="gpt-oss-20b",
-        quant_sha256="4e4f9cd88d6456e4f389e7262eca4a8d565211e2b22ece9ca7a8556168ff3c66",
-        battery=1,
-        task_id="b1.cybersecurity-01",
-        fixture_sha=task_sha,
-        condition="runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1",
-        run_n=1
-    )
-
-    item = WorkItem(
-        row_id=row_id,
-        model_id="gpt-oss-20b",
-        battery=1,
-        task_id="b1.cybersecurity-01",
-        condition="runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1",
-        run_n=1,
-        payload={"model": cfg.registry["models"]["gpt-oss-20b"],
-                 "task_id": "cybersecurity-01",
-                 "fixture_sha": task_sha,
-                 "suite_version": "suite-v2.0.0-shakedown"}
-    )
+    # Create a WorkItem for the exemplar task, using the loader's real per-task
+    # fixture_sha (content hash of the task YAML bytes) — NOT a hand-built
+    # unit-name hash. prompt/signals/cls ride in payload like plan() now does.
+    task = _cybersecurity_task()
+    item = _make_exec_item(cfg, task, run_n=1)
 
     b1 = B1Business()
     rows = b1.execute(item, ctx)
 
     assert len(rows) == 1
     row = rows[0]
+
+    # Verify row_id and fixture_sha are exactly what plan() computed/carried —
+    # execute() must not recompute fixture_sha from the unit name.
+    assert row["row_id"] == item.row_id
+    assert row["fixture_sha"] == task.fixture_sha
 
     # Verify row structure
     assert row["needs_judging"] is True
@@ -189,3 +213,70 @@ def test_preflight_missing_unit_returns_error_row(tmp_path):
         assert row["condition"] == "cond=SELFTEST"
         assert row["run_n"] == 1
         assert row["battery"] == 1
+
+
+def test_plan_force_bumps_run_n_condition_scoped(tmp_path):
+    """--force plans exactly ONE new item per (model, task), at
+    run_n = max(existing run_n for that (model_id, task_id, condition)) + 1.
+    A same-model/same-task row under a DIFFERENT condition must NOT influence
+    the bump (condition-scoped, not just model+task scoped)."""
+    from llmtest.registry import load_config
+    cfg = load_config(ROOT)
+
+    model_id = "gpt-oss-20b"
+    task_id = "b1.cybersecurity-01"
+    target_condition = "runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1"
+    other_condition = "runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=OTHER"
+
+    seeded_rows = [
+        {"model_id": model_id, "task_id": task_id, "condition": target_condition,
+         "run_n": 1, "row_id": "seed-run1"},
+        {"model_id": model_id, "task_id": task_id, "condition": target_condition,
+         "run_n": 2, "row_id": "seed-run2"},
+        # Same model+task, DIFFERENT condition, much higher run_n — must be ignored.
+        {"model_id": model_id, "task_id": task_id, "condition": other_condition,
+         "run_n": 7, "row_id": "seed-run7"},
+    ]
+
+    class SeededStore:
+        def iter_rows(self):
+            return seeded_rows
+
+    b1 = B1Business()
+    items = b1.plan(cfg, SeededStore(), model_filter=model_id, force=True)
+
+    matching = [it for it in items if it.model_id == model_id and it.task_id == task_id]
+    assert len(matching) == 1  # exactly ONE new item per (model, task) when forced
+
+    item = matching[0]
+    assert item.run_n == 3  # max(1, 2) + 1 for the matching condition — NOT 8
+    assert item.row_id not in {"seed-run1", "seed-run2", "seed-run7"}
+
+
+def test_sampling_records_runtime_default_temp(tmp_path):
+    """sampling must record that temperature was omitted (runtime default), not silently drop it."""
+    from llmtest.registry import load_config
+    cfg = load_config(ROOT)
+
+    class StubHandle:
+        session_id = "s-stub"
+        normalized_config = {}
+        def chat(self, messages, **kwargs):
+            return {
+                "choices": [{"message": {"content": "Enable MFA. CVE-2026-1234. $4,200."}}],
+                "timings": {}
+            }
+
+    class StubMgr:
+        def request_endpoint(self, *a, **k):
+            return StubHandle()
+
+    ctx = SimpleNamespace(cfg=cfg, server_manager=lambda: StubMgr(), root=tmp_path)
+
+    task = _cybersecurity_task()
+    item = _make_exec_item(cfg, task, run_n=1)
+
+    rows = B1Business().execute(item, ctx)
+    row = rows[0]
+
+    assert row["sampling"] == {"temp": "runtime-default", "max_tokens": 900}

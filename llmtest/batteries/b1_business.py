@@ -33,6 +33,13 @@ class B1Business(Battery):
             if tasks:
                 all_tasks[unit] = tasks
 
+        # Condition is constant for B1 tasks — compute once, outside every loop.
+        condition = schema.canonical_condition(
+            {"runtime": "fork", "spec": "ngram32", "kv": "q8",
+             "ctx": "16k", "cond": "B1"},
+            order
+        )
+
         # Iterate over registry models
         for model_id, m in sorted(cfg.registry["models"].items()):
             if model_filter and model_id != model_filter:
@@ -47,41 +54,46 @@ class B1Business(Battery):
             # For each available task
             for unit, tasks in all_tasks.items():
                 for task in tasks:
-                    # fixture_sha is the hash of the unit directory name (deterministic)
-                    fixture_sha = hashlib.sha256(unit.encode("utf-8")).hexdigest()
+                    task_id = f"b1.{task.id}"
+                    # fixture_sha is the per-task content hash from the loader
+                    # (sha256 of the task YAML bytes) — NOT a per-unit constant.
+                    fixture_sha = task.fixture_sha
 
-                    # For each run
-                    for run_n in range(1, n_runs + 1):
-                        if force:
-                            # Find the max run_n for this task+model+condition
-                            existing = [r["run_n"] for r in store.iter_rows()
-                                       if r["task_id"] == f"b1.{task.id}"
-                                       and r["model_id"] == model_id]
-                            run_n = (max(existing) + 1) if existing else 1
+                    if force:
+                        # Exactly ONE new item at max(existing run_n for this
+                        # (model, task, condition)) + 1 — computed ONCE here,
+                        # not inside a run_n loop (that would make every
+                        # forced item share the same run_n and collide).
+                        existing = [r["run_n"] for r in store.iter_rows()
+                                   if r["task_id"] == task_id
+                                   and r["model_id"] == model_id
+                                   and r["condition"] == condition]
+                        run_ns = [(max(existing) + 1) if existing else 1]
+                    else:
+                        run_ns = range(1, n_runs + 1)
 
-                        # Build canonical condition
-                        condition = schema.canonical_condition(
-                            {"runtime": "fork", "spec": "ngram32", "kv": "q8",
-                             "ctx": "16k", "cond": "B1"},
-                            order
-                        )
-
+                    for run_n in run_ns:
                         # Compute row_id
                         rid = schema.compute_row_id(
                             suite_version=sv, model_id=model_id,
                             quant_sha256=m["provenance"]["sha256"], battery=1,
-                            task_id=f"b1.{task.id}", fixture_sha=fixture_sha,
+                            task_id=task_id, fixture_sha=fixture_sha,
                             condition=condition, run_n=run_n)
 
                         items.append(WorkItem(
                             row_id=rid, model_id=model_id, battery=1,
-                            task_id=f"b1.{task.id}", condition=condition,
+                            task_id=task_id, condition=condition,
                             run_n=run_n,
                             payload={
                                 "model": m,
                                 "task_id": task.id,
                                 "fixture_sha": fixture_sha,
-                                "suite_version": sv
+                                "suite_version": sv,
+                                # Ride prompt/signals/cls along so execute()
+                                # doesn't have to re-load the unit YAML.
+                                "prompt": task.prompt,
+                                "signals": task.signals,
+                                "cls": task.cls,
                             }))
 
         return items
@@ -97,7 +109,11 @@ class B1Business(Battery):
         sv = ctx.cfg.suite["suite_version"]
 
         for unit in ctx.cfg.suite["b1"]["units_tier1"]:
-            # fixture_sha is the hash of the unit directory name
+            # Selftest rows aren't tied to any one task file, so there's no
+            # single content hash to use here. Sanctioned exception to the
+            # "fixture_sha must be a per-task content hash" rule (Task 4
+            # review Finding 1): deterministic hash of the unit directory
+            # name, used ONLY for these preflight selftest rows.
             fixture_sha = hashlib.sha256(unit.encode("utf-8")).hexdigest()
 
             # Try to load tasks from this unit
@@ -155,21 +171,20 @@ class B1Business(Battery):
         task_id = item.payload["task_id"]
         fixture_sha = item.payload["fixture_sha"]
         suite_version = item.payload["suite_version"]
-
-        # Load the task to get prompt and signals
-        unit = task_id.split("-")[0]  # e.g., "cybersecurity-01" -> "cybersecurity"
-        tasks = load_unit_tasks(cfg.root, unit)
-        task = next((t for t in tasks if t.id == task_id), None)
-        if not task:
-            raise RuntimeError(f"task {task_id} not found in unit {unit}")
+        # prompt/signals/cls ride in the payload from plan() — no re-loading
+        # the unit YAML here (redundant I/O; fixture_sha must come from the
+        # loader via plan(), never be recomputed here).
+        prompt = item.payload["prompt"]
+        signals = item.payload["signals"]
+        cls = item.payload["cls"]
 
         # Request endpoint
         endpoint = ctx.server_manager().request_endpoint(
             item.model_id, ctx=16384, kv="q8_0", timing_authoritative=False)
 
-        # Make chat call (temperature omitted from request body)
-        messages = [{"role": "user", "content": task.prompt}]
-        max_tokens = cfg.suite["b1"]["max_tokens_by_class"].get(task.cls, 1600)
+        # Make chat call (temperature omitted from request body -> runtime default)
+        messages = [{"role": "user", "content": prompt}]
+        max_tokens = cfg.suite["b1"]["max_tokens_by_class"].get(cls, 1600)
 
         response = endpoint.chat(messages, max_tokens=max_tokens, temperature=None)
 
@@ -177,7 +192,7 @@ class B1Business(Battery):
         text = response["choices"][0]["message"]["content"]
 
         # Check signals
-        det_checks = check_signals(text, task.signals)
+        det_checks = check_signals(text, signals)
 
         # Save artifact
         artifacts_root = (ctx.root / "artifacts" / "b1") if hasattr(ctx, 'root') else (Path("artifacts") / "b1")
@@ -197,7 +212,7 @@ class B1Business(Battery):
             task_id=item.task_id, fixture_sha=fixture_sha,
             condition=item.condition, run_n=item.run_n,
             session_id=endpoint.session_id,
-            sampling={"max_tokens": max_tokens},
+            sampling={"temp": "runtime-default", "max_tokens": max_tokens},
             det_checks=det_checks,
             needs_judging=True,
             metrics={"chars": len(text)},
