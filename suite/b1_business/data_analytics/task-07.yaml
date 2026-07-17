@@ -1,0 +1,59 @@
+id: data_analytics-07
+unit: data_analytics
+difficulty: hard
+class: long
+industry: legal
+prompt: |
+  You're auditing a law firm's nightly ETL pipeline that loads attorney time entries from the
+  practice-management system into a `time_entries_fact` reporting table. Four issues have
+  surfaced:
+
+  1. Duplicate ingestion: the nightly job re-pulls the full trailing 24 hours with no de-dup
+     key, and after an on-call retry two nights ago, 340 time-entry rows were ingested TWICE
+     (identical source timestamps). Duplicated rows average 0.6 hours each, at a blended
+     $285/hour billing rate.
+
+  2. Orphaned foreign keys: 85 time-entry rows reference a `matter_id` that no longer exists in
+     the `matters` dimension table (the matter was closed/purged before the entry synced).
+     These rows silently vanish from any report that INNER JOINs `time_entries_fact` to
+     `matters`, even though they still exist in the fact table itself. Orphaned rows average
+     1.2 hours each.
+
+  3. NULL handling: 460 time-entry rows have a NULL `rate_type` (should be "standard" or
+     "contingency"). The standard hourly-realization report filters `WHERE rate_type =
+     'standard'`, which silently excludes all 460 NULL rows rather than raising any error or
+     warning.
+
+  4. Timezone mismatch: entries are timestamped in the source system's local time (US/Eastern)
+     but loaded into the warehouse as if they were already UTC, with no conversion applied --
+     shifting each entry's stored "billing date" by several hours, which can push late-evening
+     entries onto the wrong calendar day in day-level reports, particularly near billing-period
+     cutoffs.
+
+  Rank the four issues by financial/reporting risk. Quantify the dollar impact of issue 1
+  (duplicate ingestion) and the hours silently dropped from matter-level reporting by issue 2
+  (orphaned matter_id). Explain specifically WHY the NULL rate_type rows are silently excluded
+  rather than erroring (the underlying SQL semantics), not just that they are excluded. Give a
+  concrete pipeline fix for each of the four issues.
+signals:
+  - {type: numeric, value: 58140, tolerance: 0.02, weight: critical}
+  - {type: numeric, value: 102, tolerance: 0.02, weight: critical}
+  - {type: regex, value: "(?i)\\bNULL\\b", weight: critical}
+  - {type: regex, value: "(?i)\\b(idempotent|de-?dup\\w*|upsert)\\b", weight: evidence}
+notes: |
+  Data Analytics Task 07 -- data-quality audit of a described pipeline (hard). Industry: legal.
+  Arithmetic verified (verify_arith_da_pm.py): duplicate-ingestion overstatement = 340 rows x 0.6
+  hrs = 204 hours; 204 x $285/hr = $58,140 of phantom billable value double-counted. Orphaned-key
+  hours silently dropped from matter-level (INNER JOIN) reports = 85 rows x 1.2 hrs = 102 hours
+  (these hours still exist in the raw fact table -- a join/grain issue, not a source-data loss,
+  which the answer should distinguish from issue 1's true duplication). NULL rate_type mechanism:
+  SQL's three-valued logic means `rate_type = 'standard'` evaluates to UNKNOWN (not FALSE) when
+  `rate_type IS NULL`, and a WHERE clause only keeps rows where the predicate evaluates to TRUE
+  -- so NULL rows are silently dropped rather than erroring, which is exactly why the anchors flag
+  logic bugs that "silently ... drop rows" as a hard red flag. Correct fixes: (1) an idempotent
+  upsert keyed on the source system's stable entry_id to make retries safe; (2) either backfill
+  the purged matters or switch matter-level reports to a LEFT JOIN with an explicit "Unknown
+  Matter" bucket instead of an INNER JOIN; (3) an explicit `rate_type IS NULL OR rate_type =
+  'standard'` predicate plus a data-quality alert on NULL rate_type volume, instead of silent
+  exclusion; (4) convert source timestamps to UTC at ingestion with explicit timezone-aware
+  conversion rather than treating local time as UTC.

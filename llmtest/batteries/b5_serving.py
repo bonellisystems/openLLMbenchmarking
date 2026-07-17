@@ -64,7 +64,7 @@ def _conditions(order, extra_runtimes=False):
 class B5Serving(Battery):
     id = 5
 
-    def plan(self, cfg, store, model_filter=None) -> list[WorkItem]:
+    def plan(self, cfg, store, model_filter=None, force=False) -> list[WorkItem]:
         order = cfg.suite["condition_order"]
         fx = _fixture_sha(cfg.root)
         sv = cfg.suite["suite_version"]
@@ -76,17 +76,23 @@ class B5Serving(Battery):
             if str(m.get("local_path", "")).startswith("TO-"):
                 continue                    # artifact not on disk yet
             for cond in _conditions(order, extra_runtimes=extra_runtimes):
-                for run_n in (1,):          # serving rows: 1 run per condition (re-measurement needs a run_n bump — see docs/backlog-p3.md)
-                    rid = schema.compute_row_id(
-                        suite_version=sv, model_id=model_id,
-                        quant_sha256=m["provenance"]["sha256"], battery=5,
-                        task_id="b5.serving", fixture_sha=fx,
-                        condition=cond, run_n=run_n)
-                    items.append(WorkItem(row_id=rid, model_id=model_id, battery=5,
-                                          task_id="b5.serving", condition=cond,
-                                          run_n=run_n,
-                                          payload={"model": m, "fixture_sha": fx,
-                                                   "suite_version": sv}))
+                if force:
+                    existing = [r["run_n"] for r in store.iter_rows()
+                               if r["task_id"] == "b5.serving" and r["model_id"] == model_id
+                               and r["condition"] == cond]
+                    run_n = (max(existing) + 1) if existing else 1
+                else:
+                    run_n = 1
+                rid = schema.compute_row_id(
+                    suite_version=sv, model_id=model_id,
+                    quant_sha256=m["provenance"]["sha256"], battery=5,
+                    task_id="b5.serving", fixture_sha=fx,
+                    condition=cond, run_n=run_n)
+                items.append(WorkItem(row_id=rid, model_id=model_id, battery=5,
+                                      task_id="b5.serving", condition=cond,
+                                      run_n=run_n,
+                                      payload={"model": m, "fixture_sha": fx,
+                                               "suite_version": sv}))
         return items
 
     def execute(self, item: WorkItem, ctx) -> list[dict]:
@@ -101,8 +107,10 @@ class B5Serving(Battery):
                                       flags_overlay=overlay, parallel=conc,
                                       ctx=ctx_len, kv="q8_0",
                                       timing_authoritative=True)
+        actual_max_tokens = None
         if conc > 1:
             results, errors, lock = [], [], threading.Lock()
+            actual_max_tokens = fixture["conc_max_tokens"]
             def worker():
                 try:
                     d = handle.chat([{"role": "user", "content": fixture["conc_prompt"]}],
@@ -129,13 +137,13 @@ class B5Serving(Battery):
                 prompt = build_sustained_prompt(fixture["sustained_filler_paragraph"],
                                                 fixture["sustained_ctx_tokens"],
                                                 fixture["sustained_question"])
-                max_tokens = fixture["sustained_max_tokens"]
+                actual_max_tokens = fixture["sustained_max_tokens"]
             else:
                 prompt = fixture["peak_prompt"]
-                max_tokens = fixture["peak_max_tokens"]
+                actual_max_tokens = fixture["peak_max_tokens"]
             t0 = time.time()
             d = handle.chat([{"role": "user", "content": prompt}],
-                            max_tokens=max_tokens)
+                            max_tokens=actual_max_tokens)
             ttft = d.get("timings", {}).get("prompt_ms", (time.time() - t0) * 1000)
             metrics = resp_meta = peak_metrics(d.get("timings", {}), ttft_ms=ttft)
         m = item.payload["model"]
@@ -146,7 +154,7 @@ class B5Serving(Battery):
             task_id=item.task_id, fixture_sha=item.payload["fixture_sha"],
             condition=item.condition, run_n=item.run_n,
             session_id=handle.session_id,
-            sampling={"temp": 0.0, "max_tokens": 0, "top_p": None, "seed": None},
+            sampling={"temp": 0.0, "max_tokens": actual_max_tokens, "top_p": None, "seed": None},
             response_meta={k: v for k, v in resp_meta.items() if v is not None},
             metrics={k: v for k, v in metrics.items() if v is not None},
             timing_authoritative=True)

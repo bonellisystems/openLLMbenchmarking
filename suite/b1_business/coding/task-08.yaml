@@ -1,0 +1,63 @@
+id: coding-08
+unit: coding
+difficulty: hard
+class: long
+industry: life_sciences
+prompt: |
+  Write a bash script `archive_freezer_logs.sh` for a biotech lab's ultra-low-temperature
+  freezer monitoring system. Requirements:
+
+  1. It processes every `.csv` file directly inside `/data/freezer_logs/` -- filenames may
+     contain spaces (e.g., `Freezer 3 Log.csv`), since that's how the monitoring software
+     names its exports.
+  2. Any file whose last-modified time is more than 7 days old gets gzip-compressed into
+     `/data/freezer_logs/archive/`, then the original is removed -- but ONLY after the
+     compression step has actually succeeded. These are irreplaceable sponsor-sample
+     temperature logs, so a file must never be deleted if its archive copy might not have
+     been written correctly.
+  3. Files modified within the last 7 days must NOT be touched -- the logging process may
+     still be actively appending to them.
+  4. The script runs daily via cron. It must be safe to re-run on a directory that already has
+     some files archived, without erroring out or re-compressing files it already archived on
+     a previous run.
+
+  Write the script, then explain the two specific bugs a naive version commonly has that yours
+  avoids: (a) iterating over filenames in a way that breaks on the spaces described in
+  requirement 1, and (b) deleting a source file even when its compression step actually
+  failed.
+signals:
+  - {type: regex, value: "(?i)\\b(-print0|IFS=|read -r -d)\\b", weight: critical}
+  - {type: regex, value: "(?i)\\bmtime\\b", weight: critical}
+  - {type: regex, value: "(?i)\\b(&&|exit code|exit status)\\b", weight: critical}
+  - {type: contains, value: ".gz", weight: evidence}
+notes: |
+  Coding Task 08 -- PowerShell/bash script to a spec (hard).
+  Industry: life_sciences (biotech lab, irreplaceable ultra-low-freezer sample logs).
+  Reference implementation, verified line by line:
+  ```
+  #!/usr/bin/env bash
+  set -euo pipefail
+  SRC_DIR="/data/freezer_logs"
+  ARCHIVE_DIR="${SRC_DIR}/archive"
+  mkdir -p "$ARCHIVE_DIR"
+  find "$SRC_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 -print0 |
+  while IFS= read -r -d '' file; do
+      base="$(basename "$file")"
+      dest="${ARCHIVE_DIR}/${base}.gz"
+      [[ -f "$dest" ]] && continue
+      gzip -c "$file" > "$dest" && rm -f "$file"
+  done
+  ```
+  Bug (a), spaces: the classic broken pattern is `for f in $(ls *.csv)` or an unquoted glob
+  loop, which word-splits on the spaces in filenames like "Freezer 3 Log.csv" into three
+  separate broken tokens. The fix is `find ... -print0` piped into `while IFS= read -r -d ''`,
+  which is NUL-delimited and therefore correct regardless of spaces -- real, standard bash
+  practice, not a stylistic preference. `-mtime +7` correctly means "modified more than 7*24
+  hours ago," satisfying requirement 3 without a separate freshness check. Bug (b), unsafe
+  delete: a naive two-step version (e.g., `find ... -exec gzip {} \; -exec rm {} \;`, or gzip
+  followed by an unconditional `rm` on the next line) removes the source file regardless of
+  whether `gzip` actually succeeded -- if compression fails partway (e.g., disk full), the
+  source is still deleted and the data is permanently lost, which is the specific real-world
+  stake called out for irreplaceable sample logs. The fix is chaining `gzip ... > "$dest" &&
+  rm -f "$file"` with `&&`, so `rm` only runs if `gzip`'s exit status was 0. Idempotency
+  (requirement 4) comes from the `[[ -f "$dest" ]] && continue` check before compressing again.

@@ -1,0 +1,45 @@
+strong: |
+  ```sql
+  SELECT
+      l.lot_id,
+      l.product_line,
+      l.production_date,
+      COUNT(se.event_id) AS scan_count
+  FROM lots l
+  LEFT JOIN scan_events se ON se.lot_id = l.lot_id
+  LEFT JOIN recalls r ON r.lot_id = l.lot_id
+  WHERE l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+    AND r.recall_id IS NULL
+  GROUP BY l.lot_id, l.product_line, l.production_date
+  HAVING COUNT(se.event_id) < 3
+  ORDER BY l.production_date ASC;
+  ```
+
+  Why LEFT JOIN, not INNER JOIN, on `scan_events`: an INNER JOIN would require at least one
+  matching scan_events row to keep a lot in the result at all, so a lot with ZERO scan events
+  -- the worst version of the documentation gap this query is supposed to find -- would be
+  silently dropped entirely instead of surfaced. LEFT JOIN keeps every lot in `lots` regardless
+  of whether it has scan events, and `COUNT(se.event_id)` correctly returns 0 for a lot with no
+  matching rows (COUNT of a column ignores NULLs, so an unmatched LEFT JOIN row counts as 0,
+  not 1).
+
+  Why HAVING, not WHERE, for the scan-count filter: `COUNT(se.event_id)` is an aggregate that
+  isn't computed until after grouping; WHERE clauses are evaluated before GROUP BY/aggregation,
+  so `WHERE COUNT(...) < 3` is invalid SQL. The count filter has to go in a HAVING clause, which
+  runs after the GROUP BY aggregates the rows.
+
+  The "not recalled" condition is also a LEFT JOIN/anti-join pattern (`LEFT JOIN recalls r ...
+  WHERE r.recall_id IS NULL`) for the same reason -- an INNER JOIN to recalls would only keep
+  lots that already have a recall, the opposite of what's needed.
+weak: |
+  ```sql
+  SELECT lot_id, product_line, production_date, COUNT(*)
+  FROM lots
+  JOIN scan_events ON scan_events.lot_id = lots.lot_id
+  WHERE production_date >= CURRENT_DATE - INTERVAL '24 months'
+    AND COUNT(*) < 3
+    AND lot_id NOT IN (SELECT lot_id FROM recalls)
+  ORDER BY production_date;
+  ```
+  This joins the lots to their scan events and filters out any lot that's been recalled or has
+  fewer than 3 scans.

@@ -1,0 +1,43 @@
+strong: |
+  Risk ranking, highest first:
+
+  1. Duplicate ingestion (340 rows double-loaded). Dollar impact: 340 rows x 0.6 hrs/row = 204
+  duplicate hours; 204 hrs x $285/hr = $58,140 of phantom billable value sitting in the fact
+  table right now. This is the highest-risk issue because it directly inflates billed/billable
+  revenue figures used in client-facing reports, not just internal ones.
+
+  2. Orphaned matter_id rows (85 rows). These don't create phantom hours -- they SILENTLY DROP
+  85 x 1.2 hrs = 102 hours from any report that INNER JOINs to the matters dimension, even though
+  those hours still sit in the fact table. High risk because matter-level realization reports
+  would understate hours for affected (former) matters with no visible error.
+
+  3. NULL rate_type (460 rows) excluded from the standard-rate realization report. This happens
+  because of SQL's three-valued logic: the predicate `rate_type = 'standard'` evaluates to
+  UNKNOWN, not FALSE, when rate_type IS NULL, and a WHERE clause only keeps rows that evaluate to
+  TRUE -- so NULL rows are silently excluded rather than raising any error.
+
+  4. Timezone mismatch (source local time loaded as if it were UTC, no conversion). Lower
+  immediate dollar risk than the other three, but can misassign entries to the wrong calendar day
+  in day-level reports, which matters most near billing-period cutoffs.
+
+  Fixes: (1) an idempotent upsert keyed on the source system's stable entry_id so retries can't
+  double-load a row; (2) either backfill/reconcile the purged matters, or switch matter-level
+  reports from INNER JOIN to LEFT JOIN with an explicit "Unknown Matter" bucket so hours aren't
+  silently dropped; (3) an explicit `rate_type IS NULL OR rate_type = 'standard'` predicate plus
+  a data-quality alert on NULL rate_type volume, instead of silent exclusion; (4) convert source
+  timestamps to UTC at ingestion with explicit timezone-aware conversion rather than treating
+  local time as already-UTC.
+weak: |
+  The pipeline has a few data-quality gaps worth cleaning up when there's time -- some duplicate
+  rows, some entries missing a matter reference, a handful of blank rate types, and a timezone
+  quirk. None of these looks like it's causing major reporting problems day to day, so I'd batch
+  them into a low-priority backlog item for the engineering team rather than treating this as
+  urgent. Overall the pipeline is working fine for the firm's needs.
+notes: |
+  Weak answer waves off all four issues as low-priority ("nothing urgent," "working fine"),
+  never quantifies the duplicate-ingestion dollar impact or the orphaned-hours undercount, never
+  explains the NULL three-valued-logic mechanism, and never proposes concrete fixes -- directly
+  contradicting the given facts (a $58,140 phantom-revenue issue and a 102-hour silent drop are
+  not minor). Fails the 58140 numeric signal, fails the 102 numeric signal, fails the NULL regex
+  (never explains the mechanism), and fails the idempotent/de-dup/upsert regex (proposes no
+  concrete fix at all).

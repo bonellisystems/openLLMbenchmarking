@@ -1,0 +1,93 @@
+id: data_analytics-06
+unit: data_analytics
+difficulty: hard
+class: long
+industry: aec
+prompt: |
+  You're the analyst for a general contractor. Write ANSI-standard, PostgreSQL-compatible SQL
+  against the following schema (types shown for clarity):
+
+  ```sql
+  CREATE TABLE projects (
+    project_id      INT PRIMARY KEY,
+    project_name    TEXT,
+    contract_value  NUMERIC
+  );
+
+  CREATE TABLE change_orders (
+    co_id       INT PRIMARY KEY,
+    project_id  INT REFERENCES projects(project_id),
+    co_amount   NUMERIC
+  );
+
+  CREATE TABLE invoices (
+    invoice_id      INT PRIMARY KEY,
+    project_id      INT REFERENCES projects(project_id),
+    invoice_amount  NUMERIC
+  );
+  ```
+
+  Each project can have MANY change_orders rows and, independently, MANY invoices rows (both
+  are one-to-many off of projects; change_orders and invoices have no direct relationship to
+  each other). For project_id 101 ("Riverside Office Park"), the data is:
+
+  change_orders: CO-1 $50,000, CO-2 $30,000, CO-3 $20,000 (3 rows, true total $100,000).
+  invoices: INV-1 $500,000, INV-2 $500,000, INV-3 $500,000, INV-4 $300,000 (4 rows, true total
+  $1,800,000).
+
+  Write a single query that returns, per project, the total change-order amount and the total
+  invoiced amount, both correct, in one result set. Do NOT join projects to change_orders and
+  invoices directly in the same query and then SUM both amount columns -- explain specifically
+  what goes wrong numerically if you do that for project 101 (show the wrong totals it would
+  produce and why), and show the correct query instead. State the general rule for when two
+  one-to-many child tables must be aggregated before being joined together.
+signals:
+  - {type: numeric, value: 100000, tolerance: 0.01, weight: critical}
+  - {type: numeric, value: 1800000, tolerance: 0.01, weight: critical}
+  - {type: regex, value: "(?i)\\bGROUP BY\\b", weight: critical}
+  - {type: regex, value: "(?i)\\b(double[- ]count\\w*|fan-?out|inflat\\w*)\\b", weight: evidence}
+notes: |
+  Data Analytics Task 06 -- NL->SQL against a fully-described schema, fan-out join / grain trap
+  (hard). Industry: aec. Dialect: ANSI/PostgreSQL, stated explicitly in the prompt as required.
+
+  Verified by executing both queries against an in-memory SQLite DB seeded with the exact stated
+  rows (verify_sql.py):
+
+  CORRECT query (aggregate each child table in its own subquery/CTE before joining):
+  ```sql
+  SELECT
+    p.project_id,
+    p.project_name,
+    COALESCE(co.total_co_amount, 0) AS total_co_amount,
+    COALESCE(inv.total_invoiced, 0) AS total_invoiced
+  FROM projects p
+  LEFT JOIN (
+    SELECT project_id, SUM(co_amount) AS total_co_amount
+    FROM change_orders GROUP BY project_id
+  ) co ON co.project_id = p.project_id
+  LEFT JOIN (
+    SELECT project_id, SUM(invoice_amount) AS total_invoiced
+    FROM invoices GROUP BY project_id
+  ) inv ON inv.project_id = p.project_id;
+  ```
+  Executed result for project 101: total_co_amount = 100,000, total_invoiced = 1,800,000 --
+  matches the true totals exactly.
+
+  WRONG naive query (direct triple join then SUM, the trap):
+  ```sql
+  SELECT p.project_id, SUM(co.co_amount) AS total_co, SUM(i.invoice_amount) AS total_inv
+  FROM projects p
+  JOIN change_orders co ON co.project_id = p.project_id
+  JOIN invoices i ON i.project_id = p.project_id
+  GROUP BY p.project_id;
+  ```
+  Executed result for project 101: total_co = 400,000, total_inv = 5,400,000, 12 rows produced
+  by the join (3 change_orders x 4 invoices = 12, the classic one-to-many-times-one-to-many
+  fan-out). Each of the 3 change-order amounts gets repeated once per invoice row (x4), so
+  SUM(co_amount) = 4 x 100,000 = 400,000 (4x overstated); each of the 4 invoice amounts gets
+  repeated once per change-order row (x3), so SUM(invoice_amount) = 3 x 1,800,000 = 5,400,000 (3x
+  overstated). This is the anchors' core red flag for this unit ("SQL or logic bug that would
+  silently double-count or drop rows"). Signal design note: the wrong totals (400,000 /
+  5,400,000) are far outside the 1% tolerance band around the correct targets (100,000 /
+  1,800,000), so a response reproducing the naive query's numbers fails both numeric signals
+  cleanly.

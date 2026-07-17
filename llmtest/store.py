@@ -53,3 +53,30 @@ class Store:
             for line in f:
                 if line.strip():
                     yield json.loads(line)
+
+    def _judgments_path(self) -> Path:
+        return self.dir / "judgments.jsonl"
+
+    def iter_judgments(self) -> Iterator[dict]:
+        p = self._judgments_path()
+        if not p.exists():
+            return
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
+    def existing_judgment_keys(self) -> set[tuple]:
+        return {(j["packet_id"], j["judge_id"], j["letter"]) for j in self.iter_judgments()}
+
+    def append_judgment(self, d: dict) -> bool:
+        errs = schema.validate_judgment(d)
+        if errs:
+            raise SchemaError("; ".join(errs))
+        key = (d["packet_id"], d["judge_id"], d["letter"])
+        if key in self.existing_judgment_keys():
+            return False
+        with self._judgments_path().open("a", encoding="utf-8", newline="\n") as f:
+            f.write(json.dumps(d, sort_keys=True) + "\n")
+        return True

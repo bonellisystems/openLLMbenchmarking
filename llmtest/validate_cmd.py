@@ -1,6 +1,8 @@
 """llmtest validate — shard + config integrity + mojibake lint. Same checks CI runs. Exit 0 = clean."""
 from pathlib import Path
 
+import yaml
+
 from llmtest import schema
 from llmtest.registry import load_config
 from llmtest.store import Store
@@ -36,6 +38,157 @@ def run_validate(root: Path | str = ".") -> int:
         if bad:
             bad_hex = [f"U+{ord(c):04X}" for c in bad[:3]]
             errors.append(f"suspicious non-ASCII in {p.relative_to(root)}: {bad_hex}")
+    # Fixture linting for B1
+    b1_config = cfg.suite.get("b1")
+    if b1_config:
+        b1_units = set(b1_config.get("units_tier1", []))
+        industries_vocab = set(b1_config.get("industries", []))
+        difficulties = {"easy", "medium", "hard"}
+        classes = {"short", "standard", "long"}
+        valid_signal_types = {"contains", "regex", "numeric"}
+
+        fixtures_dir = root / "suite" / "b1_business"
+        if fixtures_dir.exists():
+            # Collect fixtures by unit for distribution checks
+            fixtures_by_unit = {}
+
+            for task_file in fixtures_dir.rglob("task-*.yaml"):
+                try:
+                    data = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+                    rel_path = task_file.relative_to(root)
+
+                    # Required keys
+                    for key in ("id", "unit", "difficulty", "class", "industry", "prompt", "signals"):
+                        if key not in data:
+                            errors.append(f"fixture {rel_path} missing required key: {key}")
+
+                    # Validate unit
+                    if data.get("unit") not in b1_units:
+                        errors.append(
+                            f"fixture {rel_path} unit '{data.get('unit')}' not in b1.units_tier1"
+                        )
+
+                    # Validate industry
+                    if data.get("industry") not in industries_vocab:
+                        errors.append(
+                            f"fixture {rel_path} industry '{data.get('industry')}' not in b1.industries"
+                        )
+
+                    # Track fixtures by unit for distribution checks
+                    unit = data.get("unit")
+                    if unit not in fixtures_by_unit:
+                        fixtures_by_unit[unit] = []
+                    fixtures_by_unit[unit].append({
+                        "file": rel_path,
+                        "id": data.get("id"),
+                        "industry": data.get("industry")
+                    })
+
+                    # Validate difficulty
+                    if data.get("difficulty") not in difficulties:
+                        errors.append(
+                            f"fixture {rel_path} difficulty '{data.get('difficulty')}' "
+                            f"not in {difficulties}"
+                        )
+
+                    # Validate class
+                    if data.get("class") not in classes:
+                        errors.append(
+                            f"fixture {rel_path} class '{data.get('class')}' not in {classes}"
+                        )
+
+                    # Validate id format
+                    task_id = data.get("id", "")
+                    unit = data.get("unit", "")
+                    if unit and not task_id.startswith(f"{unit}-"):
+                        errors.append(
+                            f"fixture {rel_path} id '{task_id}' doesn't match pattern "
+                            f"'{unit}-<NN>'"
+                        )
+                    import re
+                    if not re.match(r"^[a-z_]+-\d{2}$", task_id):
+                        errors.append(
+                            f"fixture {rel_path} id '{task_id}' doesn't match "
+                            f"pattern '<unit>-<NN>'"
+                        )
+
+                    # Validate signals
+                    for sig_idx, sig in enumerate(data.get("signals", [])):
+                        sig_type = sig.get("type")
+                        if sig_type not in valid_signal_types:
+                            errors.append(
+                                f"fixture {rel_path} signal {sig_idx} has unknown type "
+                                f"'{sig_type}' (must be one of {valid_signal_types})"
+                            )
+
+                        # Validate signal value exists and is the correct type
+                        sig_value = sig.get("value")
+                        if sig_value is None:
+                            errors.append(
+                                f"fixture {rel_path} signal {sig_idx} missing or null 'value' key"
+                            )
+                        elif sig_type == "regex":
+                            # Try to compile regex
+                            try:
+                                re.compile(sig_value)
+                            except re.error as e:
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} regex value "
+                                    f"'{sig_value}' failed to compile: {e}"
+                                )
+                            # Also check it's a string
+                            if not isinstance(sig_value, str):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} regex value "
+                                    f"must be string, got {type(sig_value).__name__}"
+                                )
+                        elif sig_type == "numeric":
+                            # Check value is numeric
+                            if not isinstance(sig_value, (int, float)) or isinstance(sig_value, bool):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} numeric value "
+                                    f"must be int or float, got {type(sig_value).__name__}"
+                                )
+                            # Check tolerance if present
+                            tolerance = sig.get("tolerance")
+                            if tolerance is not None and not isinstance(tolerance, (int, float)):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} tolerance "
+                                    f"must be numeric, got {type(tolerance).__name__}"
+                                )
+                        elif sig_type == "contains":
+                            # Check value is string
+                            if not isinstance(sig_value, str):
+                                errors.append(
+                                    f"fixture {rel_path} signal {sig_idx} contains value "
+                                    f"must be string, got {type(sig_value).__name__}"
+                                )
+                except Exception as e:
+                    rel_path = task_file.relative_to(root) if task_file.exists() else task_file
+                    errors.append(f"fixture {rel_path} failed to parse: {e}")
+
+            # Per-unit distribution check: ≥8 tasks → ≥5 distinct industries, ≤2 tasks per industry
+            for unit, fixtures in fixtures_by_unit.items():
+                if len(fixtures) >= 8:
+                    # Check ≥5 distinct industries
+                    distinct_industries = set(f["industry"] for f in fixtures)
+                    if len(distinct_industries) < 5:
+                        errors.append(
+                            f"unit {unit}: {len(fixtures)} fixtures must span ≥5 distinct industries "
+                            f"(found {len(distinct_industries)})"
+                        )
+                    # Check ≤2 tasks per industry
+                    industry_counts = {}
+                    for f in fixtures:
+                        ind = f["industry"]
+                        industry_counts[ind] = industry_counts.get(ind, 0) + 1
+                    for ind, count in industry_counts.items():
+                        if count > 2:
+                            errors.append(
+                                f"unit {unit}: industry '{ind}' appears {count} times "
+                                f"(max 2 tasks per industry)"
+                            )
+
     for e in errors:
         print(f"VALIDATE-ERROR: {e}")
     print(f"validate: {n} rows checked, {len(errors)} errors")

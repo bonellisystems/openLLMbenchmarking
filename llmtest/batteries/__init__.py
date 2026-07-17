@@ -20,7 +20,7 @@ class Battery(ABC):
     id: int
 
     @abstractmethod
-    def plan(self, cfg, store, model_filter=None) -> list[WorkItem]: ...
+    def plan(self, cfg, store, model_filter=None, force=False) -> list[WorkItem]: ...
 
     def preflight(self, ctx) -> list[dict]:
         return []
@@ -43,7 +43,9 @@ def register(cls):
 def get(battery_id: int) -> Battery:
     if battery_id not in _REGISTRY:
         # import battery modules lazily so registration side-effects run
-        if battery_id == 5:
+        if battery_id == 1:
+            from llmtest.batteries import b1_business  # noqa: F401
+        elif battery_id == 5:
             from llmtest.batteries import b5_serving  # noqa: F401
     if battery_id not in _REGISTRY:
         raise KeyError(f"unknown battery {battery_id}")

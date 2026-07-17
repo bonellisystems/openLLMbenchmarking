@@ -148,3 +148,49 @@ def validate_row(d: dict) -> list[str]:
     except (TypeError, ValueError):
         errs.append("row is not JSON-serializable")
     return errs
+
+
+# --- Judgment rows (TESTPLAN 6.1/7.5, Task 7) ---
+# One row per (packet_id, judge_id, letter); idempotency key is that triple
+# (Store.append_judgment). A failed judge call after retry writes ONE row
+# per (packet_id, judge_id) with letter="-", score=None, status="error".
+
+JUDGMENT_STATUSES = {"ok", "error"}
+_JUDGMENT_REQUIRED = [
+    "schema_version", "packet_id", "judge_id", "judge_model_pin", "judge_cli_version",
+    "letter", "model_id", "score", "reason", "rank", "ts", "status",
+]
+
+
+def validate_judgment(d: dict) -> list[str]:
+    errs = []
+    for f in _JUDGMENT_REQUIRED:
+        if f not in d:
+            errs.append(f"missing field: {f}")
+    if errs:
+        return errs
+    if d["schema_version"] != SCHEMA_VERSION:
+        errs.append(f"schema_version must be {SCHEMA_VERSION}")
+    if d["status"] not in JUDGMENT_STATUSES:
+        errs.append(f"status must be one of {sorted(JUDGMENT_STATUSES)}")
+    score = d["score"]
+    if d["status"] == "error":
+        if score is not None:
+            errs.append("score must be None when status == 'error'")
+    else:
+        if isinstance(score, bool) or not isinstance(score, int):
+            errs.append(f"score must be an int 0-10 when status != 'error': {score!r}")
+        elif not (0 <= score <= 10):
+            errs.append(f"score out of range 0-10: {score}")
+    if d["letter"] == "-" and d["status"] != "error":
+        errs.append("letter '-' requires status == 'error'")
+    if d["status"] == "error" and d["letter"] != "-":
+        errs.append("status == 'error' requires letter == '-'")
+    for f in ("packet_id", "judge_id", "letter"):
+        if not isinstance(d[f], str) or not d[f]:
+            errs.append(f"{f} must be a non-empty string")
+    try:
+        json.dumps(d)
+    except (TypeError, ValueError):
+        errs.append("judgment row is not JSON-serializable")
+    return errs

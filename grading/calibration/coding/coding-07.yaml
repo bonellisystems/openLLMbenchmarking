@@ -1,0 +1,39 @@
+strong: |
+  Original behavior, traced exhaustively:
+  - is_final_punchlist=True: rate=0 if percent_complete>=100, else rate=0.05 for ANY
+    percent_complete<100 (even a low value like 20 -- unusual, but that is what the original
+    code actually does, and a refactor has to preserve it, not "fix" it).
+  - is_final_punchlist=False: percent<50 -> 0.10; 50<=percent<90 -> 0.10 (identical to the
+    previous branch, dead duplication); 90<=percent<=100 -> 0.05; percent>100 -> 0.05 (also
+    identical to the previous branch). So the non-final-punchlist case is really just
+    "0.10 if percent_complete < 90 else 0.05".
+
+  Tracing the tempting naive refactor -- `return 0 if (is_final_punchlist and percent_complete
+  >= 100) else (0.10 if percent_complete < 90 else 0.05)` -- against
+  is_final_punchlist=True, percent_complete=70:
+  - Original: takes the is_final_punchlist branch; 70>=100 is False; returns rate=0.05.
+  - Naive refactor: `is_final_punchlist and percent_complete>=100` = `True and False` = False,
+    so it falls through to `0.10 if percent_complete<90 else 0.05`; 70<90 is True, so it
+    returns 0.10.
+  - 0.10 != 0.05 -- the naive refactor is WRONG for this input. It silently drops the rule that
+    ANY percent_complete<100 during final punchlist still gets 0.05, not the 90%-threshold
+    logic that only applies when is_final_punchlist is False.
+
+  Correct refactor, verified against all branches above:
+  ```python
+  def get_retention_rate(percent_complete, is_final_punchlist):
+      if is_final_punchlist:
+          return 0 if percent_complete >= 100 else 0.05
+      return 0.10 if percent_complete < 90 else 0.05
+  ```
+  Checked against the trap input: is_final_punchlist=True, percent_complete=70 -> takes the
+  `if is_final_punchlist` branch, 70>=100 is False, returns 0.05 -- matches the original.
+weak: |
+  The original code is pretty repetitive so it can be simplified to something like:
+  ```python
+  def get_retention_rate(percent_complete, is_final_punchlist):
+      if is_final_punchlist and percent_complete >= 100:
+          return 0
+      return 0.10 if percent_complete < 90 else 0.05
+  ```
+  This is much cleaner and should behave the same as the original in all cases.

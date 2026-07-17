@@ -33,3 +33,38 @@ def test_jsonl_lines_end_lf_only(tmp_path):
     for f in list(tmp_path.glob("rows-*.jsonl")) + [tmp_path / "sessions.jsonl"]:
         raw = f.read_bytes()
         assert b"\r" not in raw, f"CRLF found in {f.name}"
+
+
+def _judgment(letter="A", **overrides):
+    d = dict(schema_version=schema.SCHEMA_VERSION, packet_id="p1", judge_id="claude",
+              judge_model_pin="pin-x", judge_cli_version="v1", letter=letter,
+              model_id="model-a", score=7, reason="solid", rank=1,
+              ts="2026-07-17T00:00:00+00:00", status="ok")
+    d.update(overrides)
+    return d
+
+
+def test_append_judgment_dedupes_by_packet_judge_letter(tmp_path):
+    s = Store(tmp_path)
+    assert s.append_judgment(_judgment()) is True
+    assert s.append_judgment(_judgment()) is False               # same triple -> skipped
+    assert s.append_judgment(_judgment(letter="B")) is True       # different letter -> written
+    assert len(list(s.iter_judgments())) == 2
+    assert (tmp_path / "judgments.jsonl").exists()
+
+
+def test_append_judgment_rejects_invalid(tmp_path):
+    bad = _judgment(); bad["status"] = "nope"
+    with pytest.raises(SchemaError):
+        Store(tmp_path).append_judgment(bad)
+
+
+def test_iter_judgments_empty_when_no_file(tmp_path):
+    assert list(Store(tmp_path).iter_judgments()) == []
+
+
+def test_judgments_jsonl_lines_end_lf_only(tmp_path):
+    s = Store(tmp_path)
+    s.append_judgment(_judgment())
+    raw = (tmp_path / "judgments.jsonl").read_bytes()
+    assert b"\r" not in raw

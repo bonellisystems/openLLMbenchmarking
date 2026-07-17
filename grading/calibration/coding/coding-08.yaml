@@ -1,0 +1,49 @@
+strong: |
+  ```bash
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  SRC_DIR="/data/freezer_logs"
+  ARCHIVE_DIR="${SRC_DIR}/archive"
+  mkdir -p "$ARCHIVE_DIR"
+
+  find "$SRC_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 -print0 |
+  while IFS= read -r -d '' file; do
+      base="$(basename "$file")"
+      dest="${ARCHIVE_DIR}/${base}.gz"
+      if [[ -f "$dest" ]]; then
+          continue
+      fi
+      gzip -c "$file" > "$dest" && rm -f "$file"
+  done
+  ```
+
+  Bug (a) it avoids -- filenames with spaces: a naive version using `for f in $(ls *.csv)` or
+  an unquoted `for f in *.csv; do mv $f ...; done` word-splits "Freezer 3 Log.csv" into three
+  broken tokens ("Freezer", "3", "Log.csv"), breaking on every file with a space in its name.
+  This script instead uses `find ... -print0` piped into `while IFS= read -r -d ''`, which is
+  NUL-delimited and correctly handles any filename, spaces included, and every use of `$file`
+  is double-quoted.
+
+  Bug (b) it avoids -- unsafe delete on failed compression: a naive version does the compress
+  and delete as two independent steps (e.g., `gzip "$file"` on one line, `rm "$file"` on the
+  next, or two separate `-exec` clauses on a `find` command), which deletes the source
+  regardless of whether `gzip` actually succeeded. If `gzip` fails partway (disk full,
+  permissions, interrupted), the source file is still removed and the sample data is
+  permanently lost. This script chains the two with `&&` -- `gzip -c "$file" > "$dest" && rm -f
+  "$file"` -- so `rm` only executes if `gzip`'s exit status was 0.
+
+  `-mtime +7` correctly means "last modified more than 7*24 hours ago," so files still being
+  actively appended to (modified within the last 7 days) are never touched. The `[[ -f "$dest"
+  ]]` check before compressing makes re-runs idempotent -- a file already archived on a
+  previous run is skipped rather than re-compressed or erroring out.
+weak: |
+  ```bash
+  #!/bin/bash
+  for f in $(ls /data/freezer_logs/*.csv); do
+      gzip $f
+      mv $f.gz /data/freezer_logs/archive/
+  done
+  ```
+  This compresses all the csv files and moves them to the archive folder. You could add a check
+  for file age with `find -mtime +7` if you only want to archive older files.

@@ -1,0 +1,43 @@
+id: coding-05
+unit: coding
+difficulty: medium
+class: standard
+industry: healthcare_compliance
+prompt: |
+  Review this diff for a clinic's patient-lookup API endpoint (the clinic is a HIPAA covered
+  entity). Identify every security or compliance issue the diff introduces, cite the specific
+  line(s) it appears on, and give corrected code for the query-construction line.
+
+  ```diff
+  --- a/patient_lookup.py
+  +++ b/patient_lookup.py
+  @@ -10,12 +10,14 @@ def lookup_patient(request):
+       mrn = request.args.get("mrn")
+  -    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+  -    cursor.execute(query, (mrn,))
+  +    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
+  +    cursor.execute(query)
+  +    logging.info(f"Patient lookup request: {request.args}")
+       row = cursor.fetchone()
+       return jsonify(row)
+  ```
+signals:
+  - {type: regex, value: "(?i)\\b(SQL injection|SQLi)\\b", weight: critical}
+  - {type: regex, value: "(?i)\\bssn\\b", weight: critical}
+  - {type: regex, value: "(?i)\\b(parameteriz\\w*|placeholder|%s)\\b", weight: evidence}
+notes: |
+  Coding Task 05 -- code review of a provided diff (medium).
+  Industry: healthcare_compliance (patient-lookup endpoint, HIPAA covered entity).
+  Two real, distinct issues introduced by the diff, both verified against real query-execution
+  semantics: (1) the query changes from a parameterized query (`%s` placeholder with `mrn`
+  passed separately as a tuple to `cursor.execute(query, (mrn,))`, which is the standard
+  DB-API-2.0 safe pattern) to an f-string that interpolates the raw, attacker-controlled `mrn`
+  value directly into the SQL text and executes it with no parameters -- a textbook SQL
+  injection introduced by removing parameterization, not a hypothetical one; (2) the SELECT
+  list gains `ssn`, so a lookup endpoint that previously never exposed SSN now returns it in
+  every response, a PHI minimum-necessary violation for an endpoint whose job is just patient
+  lookup. The added `logging.info` of raw `request.args` is a secondary, lower-severity finding
+  (logging unvalidated request data) that a thorough answer may also flag, but the SQL
+  injection and SSN exposure are the two load-bearing findings the signals check for. Correct
+  fix for the query line: revert to `query = "SELECT id, name, dob FROM patients WHERE mrn =
+  %s"` with `cursor.execute(query, (mrn,))`, and drop `ssn` from the SELECT list.

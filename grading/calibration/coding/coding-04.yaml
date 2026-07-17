@@ -1,0 +1,38 @@
+strong: |
+  Why line 10 fails for this call: `calculate_permit_fee("residential_addition", 1200,
+  FEE_SCHEDULE)` passes `square_footage=1200`. The condition on line 8, `square_footage > 5000`,
+  is `1200 > 5000` -> False, so line 9 (`surcharge = fee_schedule.get(...)`) never executes.
+  Python decides at compile time that `surcharge` is a local variable for the whole function,
+  because it IS assigned somewhere in the function body (line 9) -- it does not fall back to
+  any outer/global scope just because that particular assignment didn't run this time.
+  Referencing `surcharge` on line 10 before it was bound on this execution path is exactly what
+  raises `UnboundLocalError: local variable 'surcharge' referenced before assignment`.
+
+  Fixed version, also handling the missing-key edge case:
+  ```python
+  def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+      base_fee = fee_schedule[permit_type]
+      surcharge = 0
+      if square_footage > 5000:
+          surcharge = fee_schedule.get("large_project_surcharge", 0)
+      total = base_fee + surcharge * square_footage / 1000
+      return round(total, 2)
+  ```
+  Initializing `surcharge = 0` before the `if` guarantees it's always defined regardless of
+  which branch runs. Using `.get("large_project_surcharge", 0)` instead of the original
+  `.get("large_project_surcharge")` also fixes a second latent bug: if `square_footage > 5000`
+  but the fee schedule is missing that key, the original `.get()` call (no default) returns
+  `None`, and `None * square_footage` would raise `TypeError` on line 10 -- a different crash
+  that a fix only addressing the UnboundLocalError would leave in place.
+weak: |
+  The error happens because `surcharge` isn't defined. Just set `surcharge = fee_schedule.get(
+  "large_project_surcharge")` outside the if statement so it always runs:
+
+  ```python
+  def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+      base_fee = fee_schedule[permit_type]
+      surcharge = fee_schedule.get("large_project_surcharge")
+      total = base_fee + surcharge * square_footage / 1000
+      return round(total, 2)
+  ```
+  This should fix the crash.
