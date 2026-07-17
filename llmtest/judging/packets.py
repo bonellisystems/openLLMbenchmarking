@@ -29,7 +29,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from llmtest.batteries.b1_fixtures import load_unit_tasks
+import yaml
+
+from llmtest.batteries.b1_fixtures import check_signals, load_unit_tasks
 
 _LETTERS = [chr(ord("A") + i) for i in range(26)]
 
@@ -68,6 +70,10 @@ class PacketRecord:
     bodies: dict = field(default_factory=dict)   # judge_id -> Path
     map_path: Path | None = None
     skipped_reason: str | None = None
+    cal_fallback: bool = False   # True when the global strong.md/weak.md pair
+                                  # was used because no per-task calibration
+                                  # file (grading/calibration/<unit>/<task>.yaml)
+                                  # was found.
 
 
 def _unit_from_task_id(task_id: str) -> str:
@@ -83,20 +89,28 @@ def _task_suffix(task_id: str) -> str:
     return task_id.split(".", 1)[1] if "." in task_id else task_id
 
 
-def _answer_artifact(artifacts: dict) -> dict | None:
-    """Pick the artifact entry that holds the model's answer text. B1 rows
-    write a single artifact per row (currently keyed "b1"); prefer a
-    "response" key if present for forward-compatibility, else fall back to
-    the sole entry."""
+def _answer_artifact(artifacts: dict) -> tuple[dict | None, list[str] | None]:
+    """Pick the artifact entry that holds the model's answer text.
+
+    Primary: the canonical TESTPLAN "response" key. Sole-entry fallback
+    covers rows that write exactly one artifact under a different key. When
+    there are MULTIPLE entries and none is "response", the answer is
+    genuinely ambiguous -- we don't know which one is the model's answer --
+    so this returns (None, sorted(keys)) instead of guessing, letting the
+    caller report that distinctly from a plain missing-file skip.
+
+    Returns (artifact_dict_or_None, ambiguous_keys_or_None).
+    """
     if "response" in artifacts:
-        return artifacts["response"]
+        return artifacts["response"], None
     if len(artifacts) == 1:
-        return next(iter(artifacts.values()))
-    return None
+        return next(iter(artifacts.values())), None
+    if len(artifacts) > 1:
+        return None, sorted(artifacts)
+    return None, None
 
 
-def _read_answer_text(root: Path, artifacts: dict) -> str | None:
-    art = _answer_artifact(artifacts or {})
+def _read_artifact_text(root: Path, art: dict) -> str | None:
     if not art or "relpath" not in art:
         return None
     relpath = art["relpath"]
@@ -119,14 +133,53 @@ def _task_prompt(root: Path, unit: str, task_id: str) -> str | None:
 
 
 def _format_evidence(det_checks: dict) -> str:
+    """Render the det-signal evidence block for one answer.
+
+    Every letter in a packet (cohort answer or calibration reference) runs
+    through this SAME formatter, so the evidence section is structurally
+    identical for all of them -- only the pass/fail contents (which vary
+    naturally) differ. This is deliberate: it must never be possible to
+    pick out the calibration letters by evidence-block *shape* alone.
+    """
     if not det_checks:
-        return "(no det-signal evidence)"
-    lines = ["| Check | Result |", "|---|---|"]
+        return "Evidence: (no det-signal evidence)"
+    lines = ["Evidence:", "", "| Check | Result |", "|---|---|"]
     for name in sorted(det_checks):
         result = det_checks[name]
         passed = result.get("pass") if isinstance(result, dict) else bool(result)
         lines.append(f"| {name} | {'PASS' if passed else 'FAIL'} |")
     return "\n".join(lines)
+
+
+def _resolve_calibration(
+    calibration_dir: Path, unit: str, task_suffix: str,
+) -> tuple[str | None, str | None, bool]:
+    """Resolve the calibration (strong, weak) text pair for one task.
+
+    Preference order (PLAN AMENDMENT, Task-5 review Finding 1c):
+    1. Per-task pair at grading/calibration/<unit>/<task_suffix>.yaml,
+       keys {strong, weak} (both required to count as present).
+    2. Global fallback grading/calibration/strong.md + weak.md.
+
+    Returns (strong_text, weak_text, used_fallback). When neither source is
+    usable, returns (None, None, False) -- the caller skips the cohort.
+    """
+    per_task_path = calibration_dir / unit / f"{task_suffix}.yaml"
+    if per_task_path.exists():
+        try:
+            data = yaml.safe_load(per_task_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        if isinstance(data, dict) and "strong" in data and "weak" in data:
+            return str(data["strong"]), str(data["weak"]), False
+
+    strong_path = calibration_dir / "strong.md"
+    weak_path = calibration_dir / "weak.md"
+    if strong_path.exists() and weak_path.exists():
+        return (strong_path.read_text(encoding="utf-8"),
+                weak_path.read_text(encoding="utf-8"), True)
+
+    return None, None, False
 
 
 def build_cohort_packets(
@@ -140,13 +193,16 @@ def build_cohort_packets(
     judge_ids: list[str],
     cohort_models: list[str],
     judge_prompt_path: Path,
+    signals_by_task: dict[str, list] | None = None,
 ) -> tuple[list[PacketRecord], list[dict]]:
     """Build blinded judging packets for every complete (battery, task, run) cohort.
 
     Args:
         rows: needs_judging result rows (dicts, as read from Store).
         rubric_dir: directory of per-unit anchor files (grading/anchors/<unit>.md).
-        calibration_dir: directory holding strong.md / weak.md (grading/calibration/).
+        calibration_dir: directory holding calibration references -- either
+            per-task grading/calibration/<unit>/<task>.yaml pairs (preferred)
+            or the global strong.md / weak.md fallback.
         out_artifacts: directory packet bodies are written to (gitignored).
         out_maps: directory committed letter maps are written to.
         root: repo root -- used to resolve answer artifact files (root/artifacts/...)
@@ -158,6 +214,16 @@ def build_cohort_packets(
             (suite.yaml b1.cohort_models knob, wired by Task 12; default =
             full non-quant-arm roster is the caller's responsibility).
         judge_prompt_path: path to the judge_prompt.md template.
+        signals_by_task: optional {task_id: [signal dicts]} map, used to run
+            the calibration answers through the SAME check_signals() logic
+            as cohort answers so every letter's evidence block is uniformly
+            formatted (Task-5 review Finding 1 -- packets must never leak
+            which letters are calibration references). When a task_id is
+            absent from this map, ALL letters of that packet (cohort AND
+            calibration) render an empty evidence table -- showing real
+            det_checks for cohort answers only, while calibration answers
+            go blank for lack of live signals, would itself be a structural
+            tell, so the whole packet degrades uniformly instead.
 
     Returns:
         (packets, skipped) -- packets is a list of PacketRecord for every
@@ -166,6 +232,7 @@ def build_cohort_packets(
         {battery, task_id, run_n, reason} dicts for every group that could
         not be turned into a packet.
     """
+    signals_by_task = signals_by_task or {}
     root = Path(root)
     rubric_dir = Path(rubric_dir)
     calibration_dir = Path(calibration_dir)
@@ -212,13 +279,16 @@ def build_cohort_packets(
             continue
         anchor_bytes = anchor_path.read_bytes()
 
-        strong_path = calibration_dir / "strong.md"
-        weak_path = calibration_dir / "weak.md"
-        if not strong_path.exists() or not weak_path.exists():
-            _skip(f"missing calibration files in {calibration_dir}")
+        task_suffix = _task_suffix(task_id)
+        strong_text, weak_text, cal_fallback = _resolve_calibration(
+            calibration_dir, unit, task_suffix)
+        if strong_text is None or weak_text is None:
+            per_task_path = calibration_dir / unit / f"{task_suffix}.yaml"
+            _skip(
+                f"missing calibration: no per-task pair at {per_task_path} "
+                f"and no global fallback in {calibration_dir}"
+            )
             continue
-        strong_text = strong_path.read_text(encoding="utf-8")
-        weak_text = weak_path.read_text(encoding="utf-8")
 
         task_prompt = _task_prompt(root, unit, task_id)
         if task_prompt is None:
@@ -226,15 +296,23 @@ def build_cohort_packets(
             continue
 
         answers: dict[str, tuple[str, str, dict]] = {}  # model_id -> (row_id, text, det_checks)
-        missing_artifact_model = None
+        artifact_skip_reason = None
         for model_id, r in ok_by_model.items():
-            text = _read_answer_text(root, r.get("artifacts", {}))
+            art, ambiguous_keys = _answer_artifact(r.get("artifacts", {}) or {})
+            if art is None:
+                if ambiguous_keys is not None:
+                    artifact_skip_reason = (
+                        f"ambiguous artifact keys (no 'response'): {ambiguous_keys}")
+                else:
+                    artifact_skip_reason = f"missing artifact file for model {model_id}"
+                break
+            text = _read_artifact_text(root, art)
             if text is None:
-                missing_artifact_model = model_id
+                artifact_skip_reason = f"missing artifact file for model {model_id}"
                 break
             answers[model_id] = (r["row_id"], text, r.get("det_checks", {}))
-        if missing_artifact_model:
-            _skip(f"missing artifact file for model {missing_artifact_model}")
+        if artifact_skip_reason:
+            _skip(artifact_skip_reason)
             continue
 
         rubric_sha = hashlib.sha256(anchor_bytes + judge_prompt_bytes).hexdigest()
@@ -275,10 +353,28 @@ def build_cohort_packets(
             "task_id": task_id,
             "run_n": run_n,
             "unit": unit,
+            "cal_fallback": cal_fallback,
         }
         map_path = out_maps / f"{packet_id}.map.json"
         map_path.write_text(
             json.dumps(map_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+        # Uniform evidence (Task-5 review Finding 1): every letter -- cohort
+        # answer or calibration reference -- goes through _format_evidence()
+        # with no special-cased marker text. When this task's signals aren't
+        # available, the WHOLE packet degrades to empty evidence uniformly
+        # rather than let CAL letters stand out as the only blank ones.
+        task_signals = signals_by_task.get(task_id)
+        if task_signals is None:
+            evidence_by_identity = {identity: _format_evidence({}) for identity in identities}
+        else:
+            evidence_by_identity = {}
+            for row_id, (_text, dc) in by_row_id.items():
+                evidence_by_identity[row_id] = _format_evidence(dc)
+            evidence_by_identity["CAL-strong"] = _format_evidence(
+                check_signals(strong_text, task_signals))
+            evidence_by_identity["CAL-weak"] = _format_evidence(
+                check_signals(weak_text, task_signals))
 
         bodies: dict[str, Path] = {}
         for judge_id in judge_ids:
@@ -288,10 +384,9 @@ def build_cohort_packets(
                 identity = letter_map[letter]
                 if identity in ("CAL-strong", "CAL-weak"):
                     raw = strong_text if identity == "CAL-strong" else weak_text
-                    evidence = "(calibration reference -- no det-signal evidence)"
                 else:
-                    raw, dc = by_row_id[identity]
-                    evidence = _format_evidence(dc)
+                    raw, _dc = by_row_id[identity]
+                evidence = evidence_by_identity[identity]
                 parts.append(f"### Answer {letter}\n\n{evidence}\n\n{scrub(raw)}\n")
             answers_block = "\n".join(parts)
 
@@ -308,6 +403,7 @@ def build_cohort_packets(
         packets.append(PacketRecord(
             packet_id=packet_id, task_id=task_id, run_n=run_n, unit=unit,
             rubric_sha=rubric_sha, bodies=bodies, map_path=map_path,
+            cal_fallback=cal_fallback,
         ))
 
     return packets, skipped

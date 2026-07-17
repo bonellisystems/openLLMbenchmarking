@@ -5,10 +5,8 @@
 You are one of three independent judges (Claude, Codex, Gemini) scoring a set
 of blinded answers to a single MSP-realistic business task. You do not know
 which model produced which answer -- every answer below is labeled only by a
-letter. Two of the answers are calibration references (one deliberately
-strong, one deliberately weak); do not assume which letters they are, and do
-not try to guess model identity from writing style. Score only what is on the
-page against the anchors below.
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
 
 ## Anchors
 
@@ -28,9 +26,7 @@ The task given to every model in this cohort:
 Each answer below is followed by a compact table of deterministic signal
 checks (pass/fail) run against that answer's text. These are automated
 substring / regex / numeric probes, not a full grade -- treat them as
-supporting evidence only, never as the verdict itself. Calibration
-references carry no det-signal evidence (they are not graded against this
-task's signals).
+supporting evidence only, never as the verdict itself.
 
 ## Answers
 

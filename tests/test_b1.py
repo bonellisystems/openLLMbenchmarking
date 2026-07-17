@@ -166,9 +166,10 @@ def test_execute_produces_judging_row_with_artifact(tmp_path, monkeypatch):
     # Verify sampling records max_tokens (temperature omitted from request)
     assert row["sampling"].get("max_tokens") == 900  # short class max_tokens
 
-    # Verify artifact was written
-    assert "b1" in row["artifacts"]
-    artifact_info = row["artifacts"]["b1"]
+    # Verify artifact was written under the canonical "response" key
+    # (TESTPLAN shape; Finding 2 of the P3 Task 5 review).
+    assert "response" in row["artifacts"]
+    artifact_info = row["artifacts"]["response"]
     assert "sha256" in artifact_info
     assert "relpath" in artifact_info
 

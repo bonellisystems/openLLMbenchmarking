@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
+
+import yaml
 
 from llmtest import schema
 from llmtest.judging.packets import build_cohort_packets, scrub
@@ -39,7 +42,19 @@ def _write_calibration(cal_dir: Path):
     (cal_dir / "weak.md").write_text("A vague, partly-wrong reference answer.", encoding="utf-8")
 
 
-def _make_row(root: Path, model_id: str, run_n=1, text=None, status="ok"):
+def _write_per_task_calibration(cal_dir: Path, unit: str, task_suffix: str,
+                                 strong_text: str, weak_text: str) -> Path:
+    """grading/calibration/<unit>/<task_suffix>.yaml -- {strong, weak} keys."""
+    unit_dir = cal_dir / unit
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    path = unit_dir / f"{task_suffix}.yaml"
+    path.write_text(yaml.safe_dump({"strong": strong_text, "weak": weak_text}),
+                     encoding="utf-8")
+    return path
+
+
+def _make_row(root: Path, model_id: str, run_n=1, text=None, status="ok",
+              det_checks=None):
     text = text or f"Answer from {model_id}: MFA enforced, CVE-2026-9999 patched on all endpoints."
     quant_sha = hashlib.sha256(model_id.encode("utf-8")).hexdigest()
     row = schema.ResultRow.new(
@@ -48,14 +63,15 @@ def _make_row(root: Path, model_id: str, run_n=1, text=None, status="ok"):
         task_id=TASK_ID, fixture_sha="f" * 64,
         condition="runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1",
         run_n=run_n, session_id="s", needs_judging=True, status=status,
-        det_checks={"contains-0": {"pass": True}})
+        det_checks=det_checks if det_checks is not None else {"contains-0": {"pass": True}})
     if status == "ok":
+        # Canonical TESTPLAN artifact shape (Finding 2): keyed "response", not "b1".
         art_dir = root / "artifacts" / "b1"
         art_dir.mkdir(parents=True, exist_ok=True)
         path = art_dir / f"{row.row_id}.txt"
         path.write_text(text, encoding="utf-8")
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        row.artifacts = {"b1": {"sha256": sha, "relpath": f"b1/{row.row_id}.txt"}}
+        row.artifacts = {"response": {"sha256": sha, "relpath": f"b1/{row.row_id}.txt"}}
     return row.to_dict()
 
 
@@ -148,7 +164,7 @@ def test_missing_artifact_file_skipped_defensively(tmp_path):
 
     # Delete model-b's artifact file after the row was written, simulating a
     # missing artifact (disk cleanup, partial sync, etc).
-    relpath = rows[1]["artifacts"]["b1"]["relpath"]
+    relpath = rows[1]["artifacts"]["response"]["relpath"]
     (tmp_path / "artifacts" / relpath).unlink()
 
     packets, skipped = build_cohort_packets(rows, **kwargs)
@@ -163,3 +179,133 @@ def test_scrub_removes_self_identification_and_vendor_names():
     out = scrub("I am Gemma, made by Google")
     assert "Gemma" not in out
     assert "Google" not in out
+
+
+# --- Review-fix regression tests (calibration leak, artifact key, skip paths) ---
+
+_SIGNALS = [{"type": "contains", "value": "endpoint"}]
+
+
+def test_packet_body_is_calibration_silent(tmp_path):
+    """Finding 1 (Critical): packet bodies must never announce which letters
+    are calibration references, and every answer -- cohort or CAL -- gets
+    the same evidence-table treatment (uniform format; pass/fail pattern
+    varies naturally, no structural tell)."""
+    rows = [
+        _make_row(tmp_path, "model-a", det_checks={"contains-0": {"pass": True}}),
+        _make_row(tmp_path, "model-b", det_checks={"contains-0": {"pass": False}}),
+    ]
+    kwargs = _base_kwargs(tmp_path)
+    _write_per_task_calibration(
+        kwargs["calibration_dir"], UNIT, TASK_SUFFIX,
+        "A frontier-quality reference answer covering the endpoint fleet.",
+        "A vague, partly-wrong reference answer with no endpoint detail.")
+
+    packets, skipped = build_cohort_packets(
+        rows, signals_by_task={TASK_ID: _SIGNALS}, **kwargs)
+    assert skipped == []
+    rec = packets[0]
+
+    body = Path(rec.bodies["claude"]).read_text(encoding="utf-8")
+    low = body.lower()
+    assert "calibration" not in low
+    assert "cal-" not in low
+
+    answers = re.findall(r"### Answer [A-Z]", body)
+    evid = re.findall(r"Evidence", body)
+    assert len(answers) == 4  # 2 cohort models + CAL-strong + CAL-weak
+    assert len(evid) >= len(answers)
+
+
+def test_per_task_calibration_preferred_over_global(tmp_path):
+    """Finding 1c: a per-task grading/calibration/<unit>/<task>.yaml pair
+    (strong/weak keys) is preferred over the global strong.md/weak.md
+    fallback; cal_fallback records which source was used, on both the
+    PacketRecord and the committed map JSON."""
+    rows = [_make_row(tmp_path, "model-a"), _make_row(tmp_path, "model-b")]
+    kwargs = _base_kwargs(tmp_path)  # also writes global strong.md/weak.md
+
+    per_task_path = _write_per_task_calibration(
+        kwargs["calibration_dir"], UNIT, TASK_SUFFIX,
+        "PERTASK-STRONG-MARKER endpoint answer.",
+        "PERTASK-WEAK-MARKER answer.")
+
+    packets, skipped = build_cohort_packets(
+        rows, signals_by_task={TASK_ID: _SIGNALS}, **kwargs)
+    assert skipped == []
+    rec = packets[0]
+    assert rec.cal_fallback is False
+
+    body = Path(rec.bodies["claude"]).read_text(encoding="utf-8")
+    assert "PERTASK-STRONG-MARKER" in body
+    assert "A frontier-quality reference answer." not in body  # global text absent
+
+    map_data = json.loads(rec.map_path.read_text(encoding="utf-8"))
+    assert map_data["cal_fallback"] is False
+
+    # Remove the per-task pair -> falls back to the global strong/weak files.
+    per_task_path.unlink()
+    packets2, skipped2 = build_cohort_packets(
+        rows, signals_by_task={TASK_ID: _SIGNALS}, **kwargs)
+    assert skipped2 == []
+    rec2 = packets2[0]
+    assert rec2.cal_fallback is True
+
+    body2 = Path(rec2.bodies["claude"]).read_text(encoding="utf-8")
+    assert "PERTASK-STRONG-MARKER" not in body2
+    assert "A frontier-quality reference answer." in body2
+
+    map_data2 = json.loads(rec2.map_path.read_text(encoding="utf-8"))
+    assert map_data2["cal_fallback"] is True
+
+
+def test_artifact_key_response_and_ambiguous_reason(tmp_path):
+    """Finding 2: canonical artifact key is 'response' (resolves cleanly);
+    when multiple artifact entries exist and none is 'response', the skip
+    reason must name the ambiguity distinctly -- never misreport it as a
+    plain missing-file skip."""
+    kwargs = _base_kwargs(tmp_path)
+    row_a = _make_row(tmp_path, "model-a")
+    assert "response" in row_a["artifacts"]  # canonical shape resolves fine
+
+    row_b = _make_row(tmp_path, "model-b")
+    relpath = row_b["artifacts"]["response"]["relpath"]
+    row_b["artifacts"] = {
+        "stdout": {"sha256": "a" * 64, "relpath": relpath},
+        "transcript": {"sha256": "b" * 64, "relpath": relpath},
+    }
+
+    packets, skipped = build_cohort_packets([row_a, row_b], **kwargs)
+    assert packets == []
+    assert len(skipped) == 1
+    assert "ambiguous artifact keys (no 'response')" in skipped[0]["reason"]
+
+
+def test_missing_anchor_file_skipped_with_reason_naming_path(tmp_path):
+    """Finding 3: a missing unit anchor file is skipped with a reason that
+    names the path that was checked."""
+    rows = [_make_row(tmp_path, "model-a"), _make_row(tmp_path, "model-b")]
+    kwargs = _base_kwargs(tmp_path)
+    anchor_path = kwargs["rubric_dir"] / f"{UNIT}.md"
+    anchor_path.unlink()
+
+    packets, skipped = build_cohort_packets(rows, **kwargs)
+    assert packets == []
+    assert len(skipped) == 1
+    assert str(anchor_path) in skipped[0]["reason"]
+
+
+def test_missing_calibration_per_task_and_global_skipped(tmp_path):
+    """Finding 3: when neither a per-task calibration pair nor the global
+    fallback exists, the cohort is skipped with a reason mentioning
+    calibration (not silently treated as complete)."""
+    rows = [_make_row(tmp_path, "model-a"), _make_row(tmp_path, "model-b")]
+    kwargs = _base_kwargs(tmp_path)
+    (kwargs["calibration_dir"] / "strong.md").unlink()
+    (kwargs["calibration_dir"] / "weak.md").unlink()
+    # No per-task pair written either -> both sources absent.
+
+    packets, skipped = build_cohort_packets(rows, **kwargs)
+    assert packets == []
+    assert len(skipped) == 1
+    assert "calibration" in skipped[0]["reason"].lower()

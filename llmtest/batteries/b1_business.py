@@ -217,8 +217,8 @@ class B1Business(Battery):
             needs_judging=True,
             metrics={"chars": len(text)},
             timing_authoritative=False,
-            artifacts={"b1": {"sha256": artifact_sha,
-                             "relpath": f"b1/{item.row_id}.txt"}},
+            artifacts={"response": {"sha256": artifact_sha,
+                                    "relpath": f"b1/{item.row_id}.txt"}},
             status="ok",
             tags=[]
         )
