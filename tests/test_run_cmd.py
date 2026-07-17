@@ -14,9 +14,9 @@ class FakeBattery:
             run_n=1, session_id="pending")
         return [SimpleNamespace(row_id=row.row_id, model_id="m",
                                 task_id="b5.fake", condition="cond=PEAK",
-                                run_n=1, template=row)]
+                                run_n=1, payload={"row": row})]
     def execute(self, item, ctx):
-        r = item.template; r.session_id = "s-fake"; return [r.to_dict()]
+        r = item.payload["row"]; r.session_id = "s-fake"; return [r.to_dict()]
 
 def test_run_skips_done_items(tmp_path, monkeypatch):
     monkeypatch.setattr(run_cmd, "_get_battery", lambda i: FakeBattery())
