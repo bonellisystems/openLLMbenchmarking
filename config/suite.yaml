@@ -4,7 +4,7 @@ condition_vocab:
   runtime: [fork, ollama, vllm]
   spec: [ngram32, off]
   kv: [f16, q8, q4]
-  cond: [PEAK, SUSTAINED32K, B1, SELFTEST]
+  cond: [PEAK, SUSTAINED32K, B1, B4, SELFTEST]
   conc: [1, 2, 4, 8, 16, 32, 64, 128]
 n_runs_judged: 3
 n_runs_harness: 2
@@ -33,3 +33,40 @@ b1:
                 finance, operations, helpdesk, knowledge_mgmt, legal_compliance,
                 data_analytics, project_mgmt, hr_people_ops]
   industries: [life_sciences, oil_gas_energy, legal, financial_services, aec, manufacturing_ag, healthcare_compliance, generic_smb, public_sector, msp_internal]
+b4:
+  # TESTPLAN 5.4: 256k target, 128k floor. n_runs=1 -- long-context prefill is the
+  # dominant cost (§8.1: "1.5-2h/model, dominated by prefill"); N>=3 belongs to judged
+  # tasks (§4), not deterministic needle-retrieval checks.
+  n_runs: 1
+  # 16k/64k/128k/256k. Tiers beyond a model's claimed_ctx are dropped for that model
+  # (not run at all) UNLESS every configured tier exceeds claimed_ctx, in which case
+  # the model's own max rides as a single row instead of zero rows for that model
+  # (TESTPLAN 5.4: "tested at their max ... tagged fits-short-context, not skipped").
+  ctx_tiers: [16384, 65536, 131072, 262144]
+  # Headroom subtracted from the requested ctx before padding the document, so the
+  # instructions + planted needles + question + generation budget all still fit
+  # inside the endpoint's context window.
+  reserve_tokens: 1024
+  max_tokens: 300
+  # CAPABILITY sweep (TESTPLAN 5.4 "Capability" bullet): every non-quant-arm roster
+  # model gets this single kv arm across its claimed_ctx-filtered ctx tiers, pruned
+  # to arms that physically fit on T1 (b4_longcontext._arm_fits_estimate) -- this is
+  # what keeps the full-roster grid from planning launches that would never boot.
+  standard_kv: q8
+  # KV-QUANT QUALITY sweep (TESTPLAN 5.4 "KV-quant quality cost" bullet): the
+  # designated model(s) get the FULL kv_sweep across claimed_ctx-filtered tiers,
+  # NOT physically-fit-pruned -- infeasible arms still get PLANNED (trusting
+  # TESTPLAN's explicit intent to empirically discover the boundary) but are tagged
+  # fits-short-context as an advisory rather than silently dropped.
+  kv_sweep: [f16, q8, q4]
+  kv_sweep_models: [qwen3.6-35b-a3b]
+  # TESTPLAN 5.4 full-attention spot-check: "qwen3.6-27b-dense (32k, f16-vs-q4, NIAH
+  # slice, ~15 min) -- the primary model's ~75%-linear attention makes it the LEAST
+  # KV-quant-sensitive architecture on the roster; the q8 standard must not be
+  # generalized from the easy case." Named point rides through unfiltered (same as
+  # kv_sweep_models) even though the physical-fit estimate predicts the f16 arm is
+  # tight on T1 (~25.7 GB vs 23.5 GB usable) -- flagged fits-short-context, not pruned.
+  kv_spot_check:
+    model: qwen3.6-27b-dense
+    ctx_tiers: [32768]
+    kv_sweep: [f16, q4]

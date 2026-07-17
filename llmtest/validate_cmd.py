@@ -1,4 +1,5 @@
 """llmtest validate — shard + config integrity + mojibake lint. Same checks CI runs. Exit 0 = clean."""
+import re
 from pathlib import Path
 
 import yaml
@@ -6,6 +7,61 @@ import yaml
 from llmtest import schema
 from llmtest.registry import load_config
 from llmtest.store import Store
+
+
+_VALID_SIGNAL_TYPES = {"contains", "regex", "numeric", "not_contains"}
+
+
+def _lint_signal_values(rel_path, signals: list[dict], errors: list[str],
+                        valid_types: set[str] = _VALID_SIGNAL_TYPES) -> None:
+    """Shared signal-value lint used by both the B1 and B4 fixture blocks below
+    (validates VALUES, not just that a 'type' key exists): missing 'value', regex
+    that doesn't compile, non-numeric 'numeric' value, non-string 'contains'/
+    'not_contains' value."""
+    for sig_idx, sig in enumerate(signals):
+        sig_type = sig.get("type")
+        if sig_type not in valid_types:
+            errors.append(
+                f"fixture {rel_path} signal {sig_idx} has unknown type "
+                f"'{sig_type}' (must be one of {valid_types})"
+            )
+
+        sig_value = sig.get("value")
+        if sig_value is None:
+            errors.append(
+                f"fixture {rel_path} signal {sig_idx} missing or null 'value' key"
+            )
+        elif sig_type == "regex":
+            try:
+                re.compile(sig_value)
+            except re.error as e:
+                errors.append(
+                    f"fixture {rel_path} signal {sig_idx} regex value "
+                    f"'{sig_value}' failed to compile: {e}"
+                )
+            if not isinstance(sig_value, str):
+                errors.append(
+                    f"fixture {rel_path} signal {sig_idx} regex value "
+                    f"must be string, got {type(sig_value).__name__}"
+                )
+        elif sig_type == "numeric":
+            if not isinstance(sig_value, (int, float)) or isinstance(sig_value, bool):
+                errors.append(
+                    f"fixture {rel_path} signal {sig_idx} numeric value "
+                    f"must be int or float, got {type(sig_value).__name__}"
+                )
+            tolerance = sig.get("tolerance")
+            if tolerance is not None and not isinstance(tolerance, (int, float)):
+                errors.append(
+                    f"fixture {rel_path} signal {sig_idx} tolerance "
+                    f"must be numeric, got {type(tolerance).__name__}"
+                )
+        elif sig_type in ("contains", "not_contains"):
+            if not isinstance(sig_value, str):
+                errors.append(
+                    f"fixture {rel_path} signal {sig_idx} {sig_type} value "
+                    f"must be string, got {type(sig_value).__name__}"
+                )
 
 
 def run_validate(root: Path | str = ".") -> int:
@@ -45,7 +101,7 @@ def run_validate(root: Path | str = ".") -> int:
         industries_vocab = set(b1_config.get("industries", []))
         difficulties = {"easy", "medium", "hard"}
         classes = {"short", "standard", "long"}
-        valid_signal_types = {"contains", "regex", "numeric"}
+        b1_signal_types = {"contains", "regex", "numeric"}
 
         fixtures_dir = root / "suite" / "b1_business"
         if fixtures_dir.exists():
@@ -105,64 +161,15 @@ def run_validate(root: Path | str = ".") -> int:
                             f"fixture {rel_path} id '{task_id}' doesn't match pattern "
                             f"'{unit}-<NN>'"
                         )
-                    import re
                     if not re.match(r"^[a-z_]+-\d{2}$", task_id):
                         errors.append(
                             f"fixture {rel_path} id '{task_id}' doesn't match "
                             f"pattern '<unit>-<NN>'"
                         )
 
-                    # Validate signals
-                    for sig_idx, sig in enumerate(data.get("signals", [])):
-                        sig_type = sig.get("type")
-                        if sig_type not in valid_signal_types:
-                            errors.append(
-                                f"fixture {rel_path} signal {sig_idx} has unknown type "
-                                f"'{sig_type}' (must be one of {valid_signal_types})"
-                            )
-
-                        # Validate signal value exists and is the correct type
-                        sig_value = sig.get("value")
-                        if sig_value is None:
-                            errors.append(
-                                f"fixture {rel_path} signal {sig_idx} missing or null 'value' key"
-                            )
-                        elif sig_type == "regex":
-                            # Try to compile regex
-                            try:
-                                re.compile(sig_value)
-                            except re.error as e:
-                                errors.append(
-                                    f"fixture {rel_path} signal {sig_idx} regex value "
-                                    f"'{sig_value}' failed to compile: {e}"
-                                )
-                            # Also check it's a string
-                            if not isinstance(sig_value, str):
-                                errors.append(
-                                    f"fixture {rel_path} signal {sig_idx} regex value "
-                                    f"must be string, got {type(sig_value).__name__}"
-                                )
-                        elif sig_type == "numeric":
-                            # Check value is numeric
-                            if not isinstance(sig_value, (int, float)) or isinstance(sig_value, bool):
-                                errors.append(
-                                    f"fixture {rel_path} signal {sig_idx} numeric value "
-                                    f"must be int or float, got {type(sig_value).__name__}"
-                                )
-                            # Check tolerance if present
-                            tolerance = sig.get("tolerance")
-                            if tolerance is not None and not isinstance(tolerance, (int, float)):
-                                errors.append(
-                                    f"fixture {rel_path} signal {sig_idx} tolerance "
-                                    f"must be numeric, got {type(tolerance).__name__}"
-                                )
-                        elif sig_type == "contains":
-                            # Check value is string
-                            if not isinstance(sig_value, str):
-                                errors.append(
-                                    f"fixture {rel_path} signal {sig_idx} contains value "
-                                    f"must be string, got {type(sig_value).__name__}"
-                                )
+                    # Validate signals (values, not just declared type)
+                    _lint_signal_values(rel_path, data.get("signals", []), errors,
+                                       valid_types=b1_signal_types)
                 except Exception as e:
                     rel_path = task_file.relative_to(root) if task_file.exists() else task_file
                     errors.append(f"fixture {rel_path} failed to parse: {e}")
@@ -188,6 +195,60 @@ def run_validate(root: Path | str = ".") -> int:
                                 f"unit {unit}: industry '{ind}' appears {count} times "
                                 f"(max 2 tasks per industry)"
                             )
+
+    # Fixture linting for B4 (long-context: id/kind/needles/depth_pct/signals,
+    # incl. the not_contains signal type B4 adds for distractor rejection).
+    b4_config = cfg.suite.get("b4")
+    if b4_config:
+        b4_kinds = {"single_needle", "multi_needle", "multi_hop", "distractor"}
+        fixtures_dir = root / "suite" / "b4_longcontext"
+        if fixtures_dir.exists():
+            for task_file in sorted(fixtures_dir.glob("task-*.yaml")):
+                try:
+                    data = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+                    rel_path = task_file.relative_to(root)
+
+                    for key in ("id", "kind", "filler_template", "needles",
+                               "question", "signals"):
+                        if key not in data:
+                            errors.append(f"fixture {rel_path} missing required key: {key}")
+
+                    if data.get("kind") not in b4_kinds:
+                        errors.append(
+                            f"fixture {rel_path} kind '{data.get('kind')}' not in {b4_kinds}"
+                        )
+
+                    task_id = data.get("id", "")
+                    if not re.match(r"^[a-z]+(-[a-z]+)*-\d{2}$", task_id):
+                        errors.append(
+                            f"fixture {rel_path} id '{task_id}' doesn't match "
+                            f"pattern '<kind-slug>-<NN>'"
+                        )
+
+                    needles = data.get("needles") or []
+                    if not needles:
+                        errors.append(f"fixture {rel_path} needles must be a non-empty list")
+                    for n_idx, needle in enumerate(needles):
+                        if "depth_pct" not in needle or "text" not in needle:
+                            errors.append(
+                                f"fixture {rel_path} needle {n_idx} missing depth_pct or text"
+                            )
+                            continue
+                        depth = needle["depth_pct"]
+                        if not isinstance(depth, (int, float)) or not (0 <= depth <= 100):
+                            errors.append(
+                                f"fixture {rel_path} needle {n_idx} depth_pct '{depth}' "
+                                f"must be a number in 0-100"
+                            )
+                        if not isinstance(needle.get("text"), str) or not needle.get("text").strip():
+                            errors.append(
+                                f"fixture {rel_path} needle {n_idx} text must be a non-empty string"
+                            )
+
+                    _lint_signal_values(rel_path, data.get("signals", []), errors)
+                except Exception as e:
+                    rel_path = task_file.relative_to(root) if task_file.exists() else task_file
+                    errors.append(f"fixture {rel_path} failed to parse: {e}")
 
     for e in errors:
         print(f"VALIDATE-ERROR: {e}")
