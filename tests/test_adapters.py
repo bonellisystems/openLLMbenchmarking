@@ -403,6 +403,33 @@ def test_file_delivery_adapter_requires_packet_path():
         adapter.invoke("text", LETTERS)               # no packet_path -- file delivery needs one
 
 
+def test_base_adapter_invoke_resolves_argv0_via_which(monkeypatch):
+    # Windows quirk (surfaced live in the Task 12 quota dry-run): CLI shims
+    # installed by npm (codex -> codex.CMD) aren't found by subprocess.run
+    # without shell=True -- CreateProcess doesn't apply PATHEXT the way an
+    # interactive shell (or `where`) does, so a bare "codex" argv[0] raises
+    # WinError 2 even though the binary is genuinely on PATH. BaseAdapter
+    # resolves argv[0] via shutil.which() (same resolution `where` uses)
+    # before handing argv to subprocess.run so shimmed CLIs launch correctly;
+    # a token shutil.which() can't resolve (already a full path, a POSIX
+    # binary, or genuinely missing) passes through unchanged.
+    captured = {}
+
+    def fake_which(cmd):
+        return "C:\\resolved\\codex.CMD" if cmd == "codex" else None
+
+    def fake_run(argv, input, capture_output, text, encoding, timeout):
+        captured["argv"] = argv
+        return _FakeCompletedProcess(returncode=0, stdout=_valid_json())
+
+    monkeypatch.setattr("llmtest.judging.adapters.shutil.which", fake_which)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    adapter = BaseAdapter("t", "pin-x", "v1", argv=["codex", "exec", "-"])
+    adapter.invoke("packet body", LETTERS)
+
+    assert captured["argv"] == ["C:\\resolved\\codex.CMD", "exec", "-"]
+
+
 def test_base_adapter_default_delivery_ignores_packet_path(monkeypatch):
     # Stdin adapters accept the packet_path kwarg (uniform call signature
     # for the runner) but ignore it -- argv/stdin unaffected.

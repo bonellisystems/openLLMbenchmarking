@@ -28,6 +28,7 @@ import -- subprocess only runs inside `invoke()`.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -160,9 +161,36 @@ class BaseAdapter:
         self.cli_version = cli_version
         self.argv = list(argv)
 
+    @staticmethod
+    def _resolve_argv0(argv: list[str]) -> list[str]:
+        """Resolve argv[0] via shutil.which() before handing argv to
+        subprocess.run().
+
+        Windows quirk (surfaced live in the Task 12 quota dry-run): many CLI
+        tools (codex -- and any other npm-global install) are .cmd/.bat
+        shims. subprocess.run(argv, shell=False) launches via CreateProcess
+        directly, which does NOT apply PATHEXT resolution the way an
+        interactive shell (or `where`) does -- a bare "codex" argv[0] raises
+        WinError 2 ("cannot find the file specified") even though the CLI is
+        genuinely on PATH and works fine when typed at a prompt.
+        shutil.which() performs that same PATHEXT resolution, so this makes
+        subprocess.run() see what the shell would have. A token
+        shutil.which() can't resolve (already a full path, a POSIX binary
+        subprocess can launch directly, or a genuinely missing binary) passes
+        through unchanged -- this must never mask a real "binary not found"
+        error into something else.
+        """
+        if not argv:
+            return argv
+        resolved = shutil.which(argv[0])
+        if resolved is None:
+            return argv
+        return [resolved, *argv[1:]]
+
     def invoke(self, packet_text: str, expected_letters: list[str],
                timeout: int = 300, packet_path: Path | str | None = None) -> JudgeReply:
         argv, stdin_input = self._build_invocation(packet_text, packet_path)
+        argv = self._resolve_argv0(argv)
         run_kwargs: dict = dict(capture_output=True, text=True, encoding="utf-8",
                                  timeout=timeout)
         if stdin_input is None:
