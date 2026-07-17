@@ -105,6 +105,21 @@ Pin = **SHA256 + download date** (HF repos requantize in place; a disk-vs-repo m
 
 **Quantization floor policy (Michael, 2026-07-16):** no artifact below 4-bit enters the suite — quality-loss/hallucination risk — with exactly ONE designated exception: `prism-ml/Ternary-Bonsai-27B` (1.71 bpw) rides as the **sub-4-bit exhibit**, included specifically to pressure-test its "95% intelligence retained" marketing against the full battery. Its rows carry tag `sub4bit-exhibit`; intake auto-parks any other <4-bit candidate with reason `below-quant-floor`.
 
+**Roster expansion 2 (Michael, 2026-07-16, from live HF search):**
+
+| # | Registry id | Rule | Artifact |
+|---|---|---|---|
+| 10 | agents-a1-35b | 2 | `jashepp/Agents-A1-35B-A3B-MXFP4_MOE_Hybrid-Imatrix-GGUF` MXFP4_MOE_Q8_0 (18.4 GB) — InternScience Agents-A1, agentic+VLM |
+| 11 | ornith-1.0-9b | 2 | `jashepp/Ornith-1.0-9B-MXFP4_Hybrid-Imatrix-GGUF` MXFP4_Q8_0 (8.9 GB, MIT) |
+| — | gemma-4-26b-a4b-mxfp4 | quant-arm | `FreedomAISVR/Gemma-4-26B-A4B-it-QAT-MXFP4-GGUF` mxfp4_moe (13.7 GB) — **not a scorecard roster member**; runs B5+B2+B6 arms only |
+
+**The controlled-comparison grid these purchases:**
+- **Training delta:** agents-a1-35b vs ornith-1.0-35b — same qwen3.5-MoE backbone, same jashepp MXFP4 recipe, same size class; only the training differs.
+- **Scale delta:** ornith-1.0-9b vs ornith-1.0-35b — same family, same quant recipe.
+- **Quant-format delta:** gemma-4-26b-a4b (QAT-UD-Q4_K_XL) vs gemma-4-26b-a4b-mxfp4 (QAT-MXFP4_MOE) — same google QAT base weights; only the container differs.
+
+Baseline = **11 full-battery models + 1 quant-arm**; est. ≈ 15–16 laptop-nights. T3 lineage note: `unsloth/Qwen3-Coder-Next-GGUF` (80B-A3B, ~43 GB @ Q4) confirmed available — the Coder-30B → Next → 480B middle rung for the rented tier.
+
 Any substitution is a registry diff, not a table footnote.
 
 ---
