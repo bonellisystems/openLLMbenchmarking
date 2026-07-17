@@ -29,7 +29,7 @@ def _cybersecurity_task():
 def _make_exec_item(cfg, task, run_n=1):
     """Build a WorkItem matching what plan() now produces (per-task fixture_sha,
     prompt/signals/cls riding in payload so execute() doesn't re-load YAML)."""
-    condition = "runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1"
+    condition = "runtime=fork;spec=ngram32;kv=q8;ctx=32k;cond=B1"
     suite_version = "suite-v2.0.0-shakedown"
     row_id = schema.compute_row_id(
         suite_version=suite_version,
@@ -168,7 +168,7 @@ def test_execute_produces_judging_row_with_artifact(tmp_path, monkeypatch):
     assert row["metrics"]["chars"] == len("Enable MFA. CVE-2024-3400 patched. $4,200.")
 
     # Verify sampling records max_tokens (temperature omitted from request)
-    assert row["sampling"].get("max_tokens") == 900  # short class max_tokens
+    assert row["sampling"].get("max_tokens") == 4000  # short class max_tokens
 
     # Verify artifact was written under the canonical "response" key
     # (TESTPLAN shape; Finding 2 of the P3 Task 5 review).
@@ -230,8 +230,8 @@ def test_plan_force_bumps_run_n_condition_scoped(tmp_path):
 
     model_id = "gpt-oss-20b"
     task_id = "b1.cybersecurity-01"
-    target_condition = "runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=B1"
-    other_condition = "runtime=fork;spec=ngram32;kv=q8;ctx=16k;cond=OTHER"
+    target_condition = "runtime=fork;spec=ngram32;kv=q8;ctx=32k;cond=B1"
+    other_condition = "runtime=fork;spec=ngram32;kv=q8;ctx=32k;cond=OTHER"
 
     seeded_rows = [
         {"model_id": model_id, "task_id": task_id, "condition": target_condition,
@@ -284,4 +284,4 @@ def test_sampling_records_runtime_default_temp(tmp_path):
     rows = B1Business().execute(item, ctx)
     row = rows[0]
 
-    assert row["sampling"] == {"temp": "runtime-default", "max_tokens": 900}
+    assert row["sampling"] == {"temp": "runtime-default", "max_tokens": 4000}

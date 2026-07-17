@@ -36,7 +36,7 @@ class B1Business(Battery):
         # Condition is constant for B1 tasks — compute once, outside every loop.
         condition = schema.canonical_condition(
             {"runtime": "fork", "spec": "ngram32", "kv": "q8",
-             "ctx": "16k", "cond": "B1"},
+             "ctx": "32k", "cond": "B1"},
             order
         )
 
@@ -160,7 +160,7 @@ class B1Business(Battery):
     def execute(self, item: WorkItem, ctx) -> list[dict]:
         """Execute a B1 business task.
 
-        - Request endpoint with ctx=16384, kv="q8_0"
+        - Request endpoint with ctx from suite config (b1.ctx), kv="q8_0"
         - Chat call with temperature omitted (runtime default)
         - Check signals against the response
         - Save artifact under artifacts/b1/<row_id>.txt
@@ -180,7 +180,8 @@ class B1Business(Battery):
 
         # Request endpoint
         endpoint = ctx.server_manager().request_endpoint(
-            item.model_id, ctx=16384, kv="q8_0", timing_authoritative=False)
+            item.model_id, ctx=cfg.suite["b1"]["ctx"], kv="q8_0",
+            timing_authoritative=False)
 
         # Make chat call (temperature omitted from request body -> runtime default)
         messages = [{"role": "user", "content": prompt}]
