@@ -20,7 +20,20 @@ def run_run(args) -> int:
     cfg = load_config(root)
     store = Store(_results_dir(root))
     battery = _get_battery(args.battery)
-    items = battery.plan(cfg, store, model_filter=args.model)
+    ctx = RunContext(cfg=cfg, store=store, root=root,
+                     keep_server=args.keep_server, debug=args.debug)
+    pre = battery.preflight(ctx)
+    bad = False
+    for row in pre:
+        store.append(row)
+        if row.get("status") != "ok":
+            bad = True
+    if bad:
+        print("PREFLIGHT-FAIL: battery refused to execute (selftest rows appended)")
+        if ctx._server is not None:
+            ctx._server.teardown()
+        return 1
+    items = battery.plan(cfg, store, model_filter=args.model, force=args.force)
     if args.task_id:
         items = [i for i in items if i.task_id == args.task_id]
     if args.condition:
@@ -28,20 +41,12 @@ def run_run(args) -> int:
     done = store.existing_row_ids()
     pending = [i for i in items if args.force or i.row_id not in done]
     print(f"run: {len(items)} planned, {len(pending)} pending")
-    ctx = RunContext(cfg=cfg, store=store, root=root,
-                     keep_server=args.keep_server, debug=args.debug)
     failures = 0
     try:
         for item in pending:
             try:
                 for row in battery.execute(item, ctx):
                     appended = store.append(row)
-                    if not appended and args.force:
-                        failures += 1
-                        print(f"EXEC-ERROR {item.task_id} {item.condition}: "
-                              "--force re-ran the item but the row key already exists — "
-                              "new measurement DISCARDED (run_n bump/supersede design "
-                              "pending, see docs/backlog-p3.md)")
                     if args.debug:
                         dbg = root / "artifacts" / "debug"
                         dbg.mkdir(parents=True, exist_ok=True)

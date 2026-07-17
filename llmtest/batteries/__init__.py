@@ -20,7 +20,7 @@ class Battery(ABC):
     id: int
 
     @abstractmethod
-    def plan(self, cfg, store, model_filter=None) -> list[WorkItem]: ...
+    def plan(self, cfg, store, model_filter=None, force=False) -> list[WorkItem]: ...
 
     def preflight(self, ctx) -> list[dict]:
         return []
