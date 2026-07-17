@@ -53,6 +53,8 @@ def get(battery_id: int) -> Battery:
             from llmtest.batteries import b4_longcontext  # noqa: F401
         elif battery_id == 5:
             from llmtest.batteries import b5_serving  # noqa: F401
+        elif battery_id == 6:
+            from llmtest.batteries import b6_agenticcoding  # noqa: F401
     if battery_id not in _REGISTRY:
         raise KeyError(f"unknown battery {battery_id}")
     return _REGISTRY[battery_id]()
