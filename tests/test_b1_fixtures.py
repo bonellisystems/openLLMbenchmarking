@@ -44,3 +44,39 @@ def test_loader_raises_on_malformed(tmp_path):
     (unit_dir / "task-01.yaml").write_text("id: [broken", encoding="utf-8")
     with pytest.raises(ValueError, match="malformed fixture"):
         f.load_unit_tasks(tmp_path, "cybersecurity")
+
+
+def test_loader_requires_industry_field(tmp_path):
+    """Loader must require 'industry' field and fail loud if missing."""
+    unit_dir = tmp_path / "suite" / "b1_business" / "test_unit"
+    unit_dir.mkdir(parents=True)
+    fixture = unit_dir / "task-01.yaml"
+    fixture.write_text("""\
+id: test_unit-01
+unit: test_unit
+difficulty: easy
+class: short
+prompt: Test prompt
+signals: []
+""", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed fixture|missing.*industry"):
+        f.load_unit_tasks(tmp_path, "test_unit")
+
+
+def test_loader_reads_industry_field(tmp_path):
+    """Loader must read and return the industry field on Task objects."""
+    unit_dir = tmp_path / "suite" / "b1_business" / "test_unit"
+    unit_dir.mkdir(parents=True)
+    fixture = unit_dir / "task-01.yaml"
+    fixture.write_text("""\
+id: test_unit-01
+unit: test_unit
+difficulty: easy
+class: short
+industry: financial_services
+prompt: Test prompt
+signals: []
+""", encoding="utf-8")
+    tasks = f.load_unit_tasks(tmp_path, "test_unit")
+    assert len(tasks) == 1
+    assert tasks[0].industry == "financial_services"

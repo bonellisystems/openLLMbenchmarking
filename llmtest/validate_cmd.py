@@ -42,19 +42,23 @@ def run_validate(root: Path | str = ".") -> int:
     b1_config = cfg.suite.get("b1")
     if b1_config:
         b1_units = set(b1_config.get("units_tier1", []))
+        industries_vocab = set(b1_config.get("industries", []))
         difficulties = {"easy", "medium", "hard"}
         classes = {"short", "standard", "long"}
         valid_signal_types = {"contains", "regex", "numeric"}
 
         fixtures_dir = root / "suite" / "b1_business"
         if fixtures_dir.exists():
+            # Collect fixtures by unit for distribution checks
+            fixtures_by_unit = {}
+
             for task_file in fixtures_dir.rglob("task-*.yaml"):
                 try:
                     data = yaml.safe_load(task_file.read_text(encoding="utf-8"))
                     rel_path = task_file.relative_to(root)
 
                     # Required keys
-                    for key in ("id", "unit", "difficulty", "class", "prompt", "signals"):
+                    for key in ("id", "unit", "difficulty", "class", "industry", "prompt", "signals"):
                         if key not in data:
                             errors.append(f"fixture {rel_path} missing required key: {key}")
 
@@ -63,6 +67,22 @@ def run_validate(root: Path | str = ".") -> int:
                         errors.append(
                             f"fixture {rel_path} unit '{data.get('unit')}' not in b1.units_tier1"
                         )
+
+                    # Validate industry
+                    if data.get("industry") not in industries_vocab:
+                        errors.append(
+                            f"fixture {rel_path} industry '{data.get('industry')}' not in b1.industries"
+                        )
+
+                    # Track fixtures by unit for distribution checks
+                    unit = data.get("unit")
+                    if unit not in fixtures_by_unit:
+                        fixtures_by_unit[unit] = []
+                    fixtures_by_unit[unit].append({
+                        "file": rel_path,
+                        "id": data.get("id"),
+                        "industry": data.get("industry")
+                    })
 
                     # Validate difficulty
                     if data.get("difficulty") not in difficulties:
@@ -146,6 +166,28 @@ def run_validate(root: Path | str = ".") -> int:
                 except Exception as e:
                     rel_path = task_file.relative_to(root) if task_file.exists() else task_file
                     errors.append(f"fixture {rel_path} failed to parse: {e}")
+
+            # Per-unit distribution check: ≥8 tasks → ≥5 distinct industries, ≤2 tasks per industry
+            for unit, fixtures in fixtures_by_unit.items():
+                if len(fixtures) >= 8:
+                    # Check ≥5 distinct industries
+                    distinct_industries = set(f["industry"] for f in fixtures)
+                    if len(distinct_industries) < 5:
+                        errors.append(
+                            f"unit {unit}: {len(fixtures)} fixtures must span ≥5 distinct industries "
+                            f"(found {len(distinct_industries)})"
+                        )
+                    # Check ≤2 tasks per industry
+                    industry_counts = {}
+                    for f in fixtures:
+                        ind = f["industry"]
+                        industry_counts[ind] = industry_counts.get(ind, 0) + 1
+                    for ind, count in industry_counts.items():
+                        if count > 2:
+                            errors.append(
+                                f"unit {unit}: industry '{ind}' appears {count} times "
+                                f"(max 2 tasks per industry)"
+                            )
 
     for e in errors:
         print(f"VALIDATE-ERROR: {e}")

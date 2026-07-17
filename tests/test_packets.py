@@ -25,7 +25,7 @@ def _write_fixture(root: Path):
     unit_dir = root / "suite" / "b1_business" / UNIT
     unit_dir.mkdir(parents=True, exist_ok=True)
     (unit_dir / "task-01.yaml").write_text(
-        "id: {}\nunit: {}\ndifficulty: easy\nclass: short\nprompt: |\n  {}\nsignals: []\n"
+        "id: {}\nunit: {}\ndifficulty: easy\nclass: short\nindustry: generic_smb\nprompt: |\n  {}\nsignals: []\n"
         .format(TASK_SUFFIX, UNIT, TASK_PROMPT),
         encoding="utf-8",
     )

@@ -10,9 +10,21 @@ B1 fixtures are YAML task definitions for the Business suite — realistic MSP t
 - **unit** (string): Business unit name. Must be one of the configured `b1.units_tier1` values in `config/suite.yaml`.
 - **difficulty** (string): Task difficulty level. Must be one of: `easy`, `medium`, `hard`.
 - **class** (string): Token class determining max output tokens. Must be one of: `short`, `standard`, `long`. Maps to `b1.max_tokens_by_class` in `config/suite.yaml`.
-- **prompt** (string): The full, self-contained task prompt. Should be realistic MSP scenario language.
+- **industry** (string): Industry context for the task. Must be one of the configured values in `b1.industries` in `config/suite.yaml`. Tasks are industry-diverse (not MSP-specific); the industry field describes the scenario context while work shapes remain realistic.
+- **prompt** (string): The full, self-contained task prompt. Should be realistic scenario language for the chosen industry.
 - **signals** (list): Deterministic checks for grading (see below).
 - **notes** (string, optional): Authoring rationale, source-of-truth pointers, or placeholder markers.
+
+## Industry Distribution Rule
+
+For units with ≥8 tasks, the following distribution constraints apply:
+
+- **≥5 distinct industries**: Tasks in a unit must span at least 5 different industries from the configured vocabulary.
+- **≤2 tasks per industry**: No single industry can appear more than 2 times within a unit.
+
+**Rationale:** Ensures industry diversity and prevents over-specialization in any single vertical.
+
+**Small units exemption:** Units with <8 tasks skip the distribution check (e.g., during mid-authoring stages).
 
 ## Signal Vocabulary
 
@@ -59,8 +71,9 @@ id: cybersecurity-01
 unit: cybersecurity
 difficulty: easy
 class: short
+industry: generic_smb
 prompt: |
-  You are responding to an MSP client about a security vulnerability.
+  You are responding to a security incident at a financial services client.
   A recent scan found CVE-2026-1234 affecting their network.
   Estimate the remediation cost at $4,200 per system.
   Recommend a timeline using MFA enforcement.
@@ -71,6 +84,7 @@ signals:
 notes: |
   Cybersecurity Task 01 - Vulnerability Remediation Estimate.
   Source: MSP best practices for breach response.
+  Industry: generic_smb (could be financial_services in alternate version).
 ```
 
 ## Validation

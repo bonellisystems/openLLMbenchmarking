@@ -34,7 +34,7 @@ def _write_task(root: Path, unit: str, num: int, prompt: str, signals=None) -> s
     unit_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"{unit}-{num:02d}"
     data = {"id": suffix, "unit": unit, "difficulty": "easy", "class": "short",
-            "prompt": prompt, "signals": signals or []}
+            "industry": "generic_smb", "prompt": prompt, "signals": signals or []}
     (unit_dir / f"task-{num:02d}.yaml").write_text(
         yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
     return f"b1.{suffix}"

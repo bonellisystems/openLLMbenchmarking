@@ -17,6 +17,7 @@ class Task:
     unit: str
     difficulty: str
     cls: str
+    industry: str
     prompt: str
     signals: list[dict]
     fixture_sha: str
@@ -45,11 +46,15 @@ def load_unit_tasks(root: Path, unit: str) -> list[Task]:
         try:
             data = yaml.safe_load(task_file.read_text(encoding="utf-8"))
             fixture_sha = hashlib.sha256(task_file.read_bytes()).hexdigest()
+            # Require industry field
+            if "industry" not in data:
+                raise ValueError("missing required key: industry")
             task = Task(
                 id=data["id"],
                 unit=data["unit"],
                 difficulty=data["difficulty"],
                 cls=data["class"],
+                industry=data["industry"],
                 prompt=data["prompt"],
                 signals=data.get("signals", []),
                 fixture_sha=fixture_sha,
