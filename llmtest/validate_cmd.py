@@ -1,4 +1,5 @@
 """llmtest validate — shard + config integrity + mojibake lint. Same checks CI runs. Exit 0 = clean."""
+import re
 from pathlib import Path
 
 import yaml
@@ -105,7 +106,6 @@ def run_validate(root: Path | str = ".") -> int:
                             f"fixture {rel_path} id '{task_id}' doesn't match pattern "
                             f"'{unit}-<NN>'"
                         )
-                    import re
                     if not re.match(r"^[a-z_]+-\d{2}$", task_id):
                         errors.append(
                             f"fixture {rel_path} id '{task_id}' doesn't match "
@@ -188,6 +188,138 @@ def run_validate(root: Path | str = ".") -> int:
                                 f"unit {unit}: industry '{ind}' appears {count} times "
                                 f"(max 2 tasks per industry)"
                             )
+
+    # Fixture linting for B3 (hallucination curve)
+    b3_config = cfg.suite.get("b3")
+    if b3_config:
+        b3_categories = set(b3_config.get("categories", []))
+        b3_industries = set(b3_config.get("industries", []))
+        difficulties = {"easy", "medium", "hard"}
+        classes = {"short", "standard", "long"}
+        expects = {"hedge", "answer"}
+        valid_signal_types = {"contains", "regex", "numeric"}
+
+        b3_fixtures_dir = root / "suite" / "b3_hallucination"
+        if b3_fixtures_dir.exists():
+            for task_file in sorted(b3_fixtures_dir.glob("task-*.yaml")):
+                try:
+                    data = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+                    rel_path = task_file.relative_to(root)
+
+                    for key in ("id", "category", "difficulty", "class", "industry", "expect"):
+                        if key not in data:
+                            errors.append(f"fixture {rel_path} missing required key: {key}")
+
+                    if data.get("category") not in b3_categories:
+                        errors.append(
+                            f"fixture {rel_path} category '{data.get('category')}' "
+                            f"not in b3.categories"
+                        )
+
+                    if data.get("industry") not in b3_industries:
+                        errors.append(
+                            f"fixture {rel_path} industry '{data.get('industry')}' "
+                            f"not in b3.industries"
+                        )
+
+                    if data.get("difficulty") not in difficulties:
+                        errors.append(
+                            f"fixture {rel_path} difficulty '{data.get('difficulty')}' "
+                            f"not in {difficulties}"
+                        )
+
+                    if data.get("class") not in classes:
+                        errors.append(
+                            f"fixture {rel_path} class '{data.get('class')}' "
+                            f"not in {classes}"
+                        )
+
+                    expect = data.get("expect")
+                    if expect not in expects:
+                        errors.append(
+                            f"fixture {rel_path} expect '{expect}' not in {expects}"
+                        )
+
+                    # Exactly one of prompt/turns; turns needs >=2 entries.
+                    has_prompt = "prompt" in data
+                    has_turns = "turns" in data
+                    if has_prompt == has_turns:
+                        errors.append(
+                            f"fixture {rel_path} must have exactly one of 'prompt' or 'turns'"
+                        )
+                    elif has_turns and (not isinstance(data["turns"], list) or len(data["turns"]) < 2):
+                        errors.append(
+                            f"fixture {rel_path} 'turns' must be a list of >=2 prompts"
+                        )
+
+                    # expect-conditional signal requirements.
+                    if expect == "hedge" and not data.get("trap_signals"):
+                        errors.append(
+                            f"fixture {rel_path} expect=='hedge' requires >=1 trap_signals"
+                        )
+                    if expect == "answer" and not data.get("answer_signals"):
+                        errors.append(
+                            f"fixture {rel_path} expect=='answer' requires >=1 answer_signals"
+                        )
+
+                    # id format: hallucination-<NN>
+                    task_id = data.get("id", "")
+                    if not re.match(r"^hallucination-\d{2}$", task_id):
+                        errors.append(
+                            f"fixture {rel_path} id '{task_id}' doesn't match "
+                            f"pattern 'hallucination-<NN>'"
+                        )
+
+                    # Validate every signal list present (trap/answer/hedge).
+                    for sig_group in ("trap_signals", "answer_signals", "hedge_signals"):
+                        for sig_idx, sig in enumerate(data.get(sig_group, [])):
+                            sig_type = sig.get("type")
+                            if sig_type not in valid_signal_types:
+                                errors.append(
+                                    f"fixture {rel_path} {sig_group} {sig_idx} has unknown "
+                                    f"type '{sig_type}' (must be one of {valid_signal_types})"
+                                )
+
+                            sig_value = sig.get("value")
+                            if sig_value is None:
+                                errors.append(
+                                    f"fixture {rel_path} {sig_group} {sig_idx} missing or "
+                                    f"null 'value' key"
+                                )
+                            elif sig_type == "regex":
+                                try:
+                                    re.compile(sig_value)
+                                except re.error as e:
+                                    errors.append(
+                                        f"fixture {rel_path} {sig_group} {sig_idx} regex "
+                                        f"value '{sig_value}' failed to compile: {e}"
+                                    )
+                                if not isinstance(sig_value, str):
+                                    errors.append(
+                                        f"fixture {rel_path} {sig_group} {sig_idx} regex "
+                                        f"value must be string, got {type(sig_value).__name__}"
+                                    )
+                            elif sig_type == "numeric":
+                                if not isinstance(sig_value, (int, float)) or isinstance(sig_value, bool):
+                                    errors.append(
+                                        f"fixture {rel_path} {sig_group} {sig_idx} numeric "
+                                        f"value must be int or float, got {type(sig_value).__name__}"
+                                    )
+                                tolerance = sig.get("tolerance")
+                                if tolerance is not None and not isinstance(tolerance, (int, float)):
+                                    errors.append(
+                                        f"fixture {rel_path} {sig_group} {sig_idx} tolerance "
+                                        f"must be numeric, got {type(tolerance).__name__}"
+                                    )
+                            elif sig_type == "contains":
+                                if not isinstance(sig_value, str):
+                                    errors.append(
+                                        f"fixture {rel_path} {sig_group} {sig_idx} contains "
+                                        f"value must be string, got {type(sig_value).__name__}"
+                                    )
+                except Exception as e:
+                    rel_path = task_file.relative_to(root) if task_file.exists() else task_file
+                    errors.append(f"fixture {rel_path} failed to parse: {e}")
 
     for e in errors:
         print(f"VALIDATE-ERROR: {e}")
