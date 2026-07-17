@@ -1,0 +1,63 @@
+strong: |
+  Do NOT join projects to change_orders and invoices directly in one query and then SUM both
+  amount columns. If you do, for project 101 (3 change_orders rows x 4 invoices rows), the join
+  produces a 3x4=12-row fan-out, because change_orders and invoices have no relationship to each
+  other -- every change-order row gets paired with every invoice row. Summing co_amount over
+  those 12 rows repeats each of the 3 change-order amounts 4 times: SUM(co_amount) = 4 x
+  ($50,000+$30,000+$20,000) = 4 x $100,000 = $400,000, a 4x overstatement of the true $100,000
+  total. Summing invoice_amount over the same 12 rows repeats each of the 4 invoice amounts 3
+  times: SUM(invoice_amount) = 3 x ($500,000+$500,000+$500,000+$300,000) = 3 x $1,800,000 =
+  $5,400,000, a 3x overstatement of the true $1,800,000 total.
+
+  Correct query -- aggregate each child table separately before joining:
+
+  ```sql
+  SELECT
+    p.project_id,
+    p.project_name,
+    COALESCE(co.total_co_amount, 0) AS total_co_amount,
+    COALESCE(inv.total_invoiced, 0) AS total_invoiced
+  FROM projects p
+  LEFT JOIN (
+    SELECT project_id, SUM(co_amount) AS total_co_amount
+    FROM change_orders
+    GROUP BY project_id
+  ) co ON co.project_id = p.project_id
+  LEFT JOIN (
+    SELECT project_id, SUM(invoice_amount) AS total_invoiced
+    FROM invoices
+    GROUP BY project_id
+  ) inv ON inv.project_id = p.project_id;
+  ```
+
+  For project 101 this returns total_co_amount = $100,000 and total_invoiced = $1,800,000, both
+  correct.
+
+  General rule: whenever you need totals from TWO different one-to-many child tables hanging off
+  the same parent, and the children have no relationship to each other, aggregate each child
+  independently (a GROUP BY in a subquery or CTE) before joining the aggregates back to the
+  parent. Joining both children directly to the parent in the same query and summing afterward
+  will silently double-count (fan out) whenever either child has more than one row per parent.
+weak: |
+  Here's a query that gets the totals:
+
+  ```sql
+  SELECT p.project_id, SUM(co.co_amount) AS total_co, SUM(i.invoice_amount) AS total_inv
+  FROM projects p
+  JOIN change_orders co ON co.project_id = p.project_id
+  JOIN invoices i ON i.project_id = p.project_id
+  GROUP BY p.project_id;
+  ```
+
+  For project 101 this gives total_co = $400,000 in change orders and total_inv = $5,400,000
+  invoiced. The GROUP BY p.project_id correctly rolls everything up to the project level, so
+  these are the totals to report.
+notes: |
+  Weak answer is exactly the naive triple-join trap: it reports the fan-out-inflated $400,000 and
+  $5,400,000 (verified wrong by sqlite3 execution in verify_sql.py) as if they were correct,
+  never mentions double-counting/fan-out, and incorrectly claims the GROUP BY makes the totals
+  correct (a GROUP BY after a fan-out join still sums over the inflated row set). Fails the
+  100000 numeric signal (reports 400000 instead), fails the 1800000 numeric signal (reports
+  5400000 instead), and fails the double-count/fan-out/inflate regex (never uses any of those
+  terms). It does contain "GROUP BY" so that signal passes -- illustrating that GROUP BY alone
+  doesn't guarantee correctness when the join itself already fanned out the rows.
