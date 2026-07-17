@@ -1,24 +1,36 @@
-"""Judge CLI adapters (TESTPLAN 6.1) -- stdin invocation, strict reply parser, FakeJudge.
+"""Judge CLI adapters (TESTPLAN 6.1) -- stdin/file invocation, strict reply parser, FakeJudge.
 
-Three headless CLI judges (claude / codex / gemini) are driven identically:
-the blinded packet body goes in on **stdin** (Windows argv-length limits kill
-a 10k-token argument), stdout is captured whole, and `parse_reply` extracts
-the first balanced top-level JSON object from whatever prose/fences the CLI
-wrapped it in. Validation is total -- a partially-valid reply (missing
-letter, wrong type, non-permutation ranking) is treated as fully invalid;
-the runner (Task 7) owns the one-retry-then-error policy.
+Three headless CLI judges (claude / codex / gemini) are driven per the
+`delivery:` key in `config/judges.yaml`:
 
-Pins in `config/judges.yaml` are still DRAFT ("TO-FREEZE-P3") as of this
-module -- live enumeration and the G1/G3 human-gated freeze are a separate,
-non-code controller step. Nothing in this module invokes a real judge CLI;
-`make_adapter` only builds argv from whatever `invoke` template a config
-entry carries.
+- `delivery: stdin` (claude, codex) -- the blinded packet body goes in on
+  **stdin** (Windows argv-length limits kill a 10k-token argument), stdout
+  is captured whole, and `parse_reply` extracts the first balanced
+  top-level JSON object from whatever prose/fences the CLI wrapped it in.
+- `delivery: file` (gemini, via the AntiGravity `agy` CLI -- gemini-cli
+  itself is deprecated) -- `--print` does not forward stdin to the model
+  and argv caps at 32k chars, so the packet body is delivered as a file
+  path (already under `artifacts/packets/`, matching agy's `--add-dir`
+  grant) embedded into an instruction string; nothing goes on stdin. See
+  `FileDeliveryAdapter`.
+
+Validation is total -- a partially-valid reply (missing letter, wrong type,
+non-permutation ranking) is treated as fully invalid; the runner
+(`llmtest/judging/runner.py`) owns the one-retry-then-error policy.
+
+Pins in `config/judges.yaml` are FROZEN (G1/G3 signed off 2026-07-17:
+claude-fable-5 / gpt-5.6-sol / Gemini 3.1 Pro (High) via agy) -- see the
+`frozen:` key in that file. `make_adapter` builds argv (and, for file
+delivery, the per-call instruction) from whatever `invoke` template the
+config entry carries; nothing in this module invokes a real judge CLI on
+import -- subprocess only runs inside `invoke()`.
 """
 from __future__ import annotations
 
 import json
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -149,10 +161,11 @@ class BaseAdapter:
         self.argv = list(argv)
 
     def invoke(self, packet_text: str, expected_letters: list[str],
-               timeout: int = 300) -> JudgeReply:
+               timeout: int = 300, packet_path: Path | str | None = None) -> JudgeReply:
+        argv, stdin_input = self._build_invocation(packet_text, packet_path)
         try:
             proc = subprocess.run(
-                self.argv, input=packet_text, capture_output=True, text=True,
+                argv, input=stdin_input, capture_output=True, text=True,
                 encoding="utf-8", timeout=timeout,
             )
         except subprocess.TimeoutExpired:
@@ -167,6 +180,15 @@ class BaseAdapter:
         parsed, error = self._parse_stdout(stdout, expected_letters)
         return JudgeReply(raw=stdout, parsed=parsed, error=error)
 
+    def _build_invocation(self, packet_text: str,
+                           packet_path: Path | str | None) -> tuple[list[str], str | None]:
+        """Input-side hook, symmetric to `_parse_stdout` -- builds the final
+        argv + stdin payload for one call. Default (stdin delivery): argv is
+        unchanged, packet_text goes on stdin. `FileDeliveryAdapter` overrides
+        this to embed `packet_path` into the argv's `{instruction}` token
+        and send nothing on stdin."""
+        return self.argv, packet_text
+
     def _parse_stdout(self, stdout: str,
                        expected_letters: list[str]) -> tuple[dict | None, str | None]:
         """Hook for CLI-specific envelope unwrapping. Default: stdout IS the
@@ -174,11 +196,47 @@ class BaseAdapter:
         return parse_reply(stdout, expected_letters)
 
 
-def _substitute_argv(argv_template: list[str], model_pin: str) -> list[str]:
-    """Replace the literal '{model}' placeholder in each token. Tokens with
-    no placeholder (flags, the bare '-'/'-p' stdin sentinel, etc) pass
-    through unchanged."""
-    return [tok.replace("{model}", model_pin) for tok in argv_template]
+class FileDeliveryAdapter(BaseAdapter):
+    """Mixin overriding the input side of `invoke()` for CLIs that read the
+    packet from a file path rather than stdin (Task 6 gemini/agy handoff:
+    `--print` doesn't forward stdin and argv caps at 32k chars).
+
+    Combined with a concrete adapter class (see `make_adapter`'s
+    `_file_delivery_variant`) so the CLI-specific `_parse_stdout` override
+    (e.g. Claude's envelope unwrap) still applies if a future judge needs
+    both; `_build_invocation` is the only thing this mixin overrides.
+    """
+
+    INSTRUCTION_TEMPLATE = (
+        "Read the file at {path} and follow its instructions exactly. "
+        "Reply with ONLY the JSON object it specifies."
+    )
+
+    def _build_invocation(self, packet_text: str,
+                           packet_path: Path | str | None) -> tuple[list[str], str | None]:
+        if packet_path is None:
+            raise ValueError(
+                f"{type(self).__name__} requires packet_path (file delivery, no stdin)")
+        instruction = self.INSTRUCTION_TEMPLATE.format(path=packet_path)
+        argv = [tok.replace("{instruction}", instruction) for tok in self.argv]
+        return argv, None
+
+
+def _substitute_argv(argv_template: list[str], model_pin: str,
+                      cli: str | None = None) -> list[str]:
+    """Replace the literal '{model}' and '{cli}' placeholders in each token
+    (cli only when provided). The '{instruction}' placeholder, when present,
+    is deliberately left untouched here -- it's per-call (file delivery only
+    knows the packet path at invoke time), substituted by
+    `FileDeliveryAdapter._build_invocation` instead. Tokens with no
+    placeholder (flags, the bare '-'/'-p' stdin sentinel, etc) pass through
+    unchanged."""
+    def _sub(tok: str) -> str:
+        tok = tok.replace("{model}", model_pin)
+        if cli is not None:
+            tok = tok.replace("{cli}", cli)
+        return tok
+    return [_sub(tok) for tok in argv_template]
 
 
 class ClaudeAdapter(BaseAdapter):
@@ -193,10 +251,10 @@ class ClaudeAdapter(BaseAdapter):
                               "--output-format", "json"]
 
     def __init__(self, judge_id: str, model_pin: str, cli_version: str | None,
-                 argv_template: list[str] | None = None):
+                 argv_template: list[str] | None = None, cli: str | None = None):
         argv_template = argv_template or self.DEFAULT_ARGV_TEMPLATE
         super().__init__(judge_id, model_pin, cli_version,
-                          _substitute_argv(argv_template, model_pin))
+                          _substitute_argv(argv_template, model_pin, cli=cli))
 
     def _parse_stdout(self, stdout: str,
                        expected_letters: list[str]) -> tuple[dict | None, str | None]:
@@ -221,10 +279,10 @@ class CodexAdapter(BaseAdapter):
     DEFAULT_ARGV_TEMPLATE = ["codex", "exec", "--model", "{model}", "-"]
 
     def __init__(self, judge_id: str, model_pin: str, cli_version: str | None,
-                 argv_template: list[str] | None = None):
+                 argv_template: list[str] | None = None, cli: str | None = None):
         argv_template = argv_template or self.DEFAULT_ARGV_TEMPLATE
         super().__init__(judge_id, model_pin, cli_version,
-                          _substitute_argv(argv_template, model_pin))
+                          _substitute_argv(argv_template, model_pin, cli=cli))
 
 
 class GeminiAdapter(BaseAdapter):
@@ -234,10 +292,10 @@ class GeminiAdapter(BaseAdapter):
     DEFAULT_ARGV_TEMPLATE = ["gemini", "-m", "{model}", "-p"]
 
     def __init__(self, judge_id: str, model_pin: str, cli_version: str | None,
-                 argv_template: list[str] | None = None):
+                 argv_template: list[str] | None = None, cli: str | None = None):
         argv_template = argv_template or self.DEFAULT_ARGV_TEMPLATE
         super().__init__(judge_id, model_pin, cli_version,
-                          _substitute_argv(argv_template, model_pin))
+                          _substitute_argv(argv_template, model_pin, cli=cli))
 
 
 _ADAPTER_CLASSES = {
@@ -246,28 +304,60 @@ _ADAPTER_CLASSES = {
     "gemini": GeminiAdapter,
 }
 
+_file_delivery_variants: dict[type, type] = {}
+
+
+def _file_delivery_variant(adapter_cls: type) -> type:
+    """Combine `adapter_cls`'s CLI-specific `_parse_stdout` (output side)
+    with `FileDeliveryAdapter`'s file-path `_build_invocation` (input side)
+    via multiple inheritance -- MRO puts FileDeliveryAdapter's override
+    first so it wins over BaseAdapter's stdin default, while any
+    `_parse_stdout` override on `adapter_cls` (e.g. Claude's envelope
+    unwrap) is untouched since FileDeliveryAdapter doesn't define one.
+    Memoized so repeated `make_adapter` calls for the same judge_id don't
+    keep minting new types."""
+    if issubclass(adapter_cls, FileDeliveryAdapter):
+        return adapter_cls
+    cached = _file_delivery_variants.get(adapter_cls)
+    if cached is None:
+        cached = type(f"{adapter_cls.__name__}FileDelivery",
+                       (FileDeliveryAdapter, adapter_cls), {})
+        _file_delivery_variants[adapter_cls] = cached
+    return cached
+
 
 def make_adapter(judge_id: str, judges_cfg_entry: dict) -> BaseAdapter:
     """Build a concrete adapter from one config/judges.yaml entry, e.g.
-    `{model: claude-fable-5, cli: claude, cli_version: ..., invoke: 'claude -p --model {model} --output-format json'}`.
+    `{model: claude-fable-5, cli: claude, cli_version: ..., delivery: stdin,
+    invoke: 'claude -p --model {model} --output-format json'}`.
 
-    The `invoke` string is split on whitespace into an argv template (still
-    carrying the literal '{model}' placeholder token(s); a trailing '-' or
-    '-p' stdin sentinel token has no placeholder so it just passes through
-    unchanged) and handed to the judge_id-matched adapter class, which does
-    the actual substitution.
+    The `invoke` string is split on whitespace into an argv template
+    (`{model}` and `{cli}` are substituted now; a trailing '-'/'-p' stdin
+    sentinel token has no placeholder so it just passes through unchanged;
+    `{instruction}`, if present, is left for per-call substitution) and
+    handed to the judge_id-matched adapter class. The `delivery` key routes
+    between stdin (default) and file delivery -- `delivery: file` wraps the
+    judge_id's class in `FileDeliveryAdapter` via `_file_delivery_variant`.
     """
     try:
         adapter_cls = _ADAPTER_CLASSES[judge_id]
     except KeyError:
         raise ValueError(f"unknown judge_id: {judge_id!r}") from None
 
+    delivery = judges_cfg_entry.get("delivery", "stdin")
+    if delivery == "file":
+        adapter_cls = _file_delivery_variant(adapter_cls)
+    elif delivery != "stdin":
+        raise ValueError(f"unknown delivery mode for judge_id {judge_id!r}: {delivery!r}")
+
     invoke_template = judges_cfg_entry["invoke"]
     argv_template = invoke_template.split()
     model_pin = judges_cfg_entry["model"]
     cli_version = judges_cfg_entry.get("cli_version")
+    cli_path = judges_cfg_entry.get("cli")
 
-    return adapter_cls(judge_id, model_pin, cli_version, argv_template=argv_template)
+    return adapter_cls(judge_id, model_pin, cli_version, argv_template=argv_template,
+                        cli=cli_path)
 
 
 class FakeJudgeAdapter:
@@ -288,7 +378,10 @@ class FakeJudgeAdapter:
         self.scores_fn = scores_fn
 
     def invoke(self, packet_text: str, expected_letters: list[str],
-               timeout: int = 300) -> JudgeReply:
+               timeout: int = 300, packet_path: Path | str | None = None) -> JudgeReply:
+        # packet_path accepted-but-ignored for call-signature parity with
+        # BaseAdapter (the runner invokes every adapter, real or fake, the
+        # same way).
         scores = self.scores_fn(expected_letters)
         reasons = {letter: f"fake reason for {letter}" for letter in expected_letters}
         ranking = sorted(expected_letters,

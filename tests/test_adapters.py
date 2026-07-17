@@ -17,8 +17,10 @@ from llmtest.judging.adapters import (
     ClaudeAdapter,
     CodexAdapter,
     FakeJudgeAdapter,
+    FileDeliveryAdapter,
     GeminiAdapter,
     JudgeReply,
+    _substitute_argv,
     make_adapter,
     parse_reply,
 )
@@ -304,3 +306,95 @@ def test_make_adapter_gemini():
 def test_make_adapter_unknown_judge_id_raises():
     with pytest.raises(ValueError):
         make_adapter("nope", {"model": "x", "invoke": "nope {model}"})
+
+
+# --- {cli}/{instruction} substitution + delivery routing (Task 6 gemini/agy handoff) ---
+
+
+def test_substitute_argv_replaces_cli_and_model_leaves_instruction():
+    argv = _substitute_argv(["{cli}", "--model", "{model}", "{instruction}", "--flag"],
+                             "pin-x", cli="C:\\bin\\agy.exe")
+    assert argv == ["C:\\bin\\agy.exe", "--model", "pin-x", "{instruction}", "--flag"]
+
+
+def test_substitute_argv_without_cli_leaves_cli_token_untouched():
+    argv = _substitute_argv(["{cli}", "--model", "{model}"], "pin-x")
+    assert argv == ["{cli}", "--model", "pin-x"]
+
+
+def test_make_adapter_stdin_delivery_default_is_plain_adapter():
+    cfg = {"model": "claude-fable-5", "cli": "claude", "cli_version": "1.2.3",
+           "delivery": "stdin", "invoke": "claude -p --model {model} --output-format json"}
+    adapter = make_adapter("claude", cfg)
+    assert not isinstance(adapter, FileDeliveryAdapter)
+
+
+def test_make_adapter_gemini_file_delivery_routes_to_file_adapter():
+    cfg = {"model": "gemini-3-pro", "cli": "C:\\bin\\agy.exe", "cli_version": "1.1.3",
+           "delivery": "file",
+           "invoke": "{cli} --print {instruction} --model {model} --add-dir C:\\packets"}
+    adapter = make_adapter("gemini", cfg)
+    assert isinstance(adapter, GeminiAdapter)
+    assert isinstance(adapter, FileDeliveryAdapter)
+    assert adapter.argv == ["C:\\bin\\agy.exe", "--print", "{instruction}",
+                             "--model", "gemini-3-pro", "--add-dir", "C:\\packets"]
+
+
+def test_make_adapter_unknown_delivery_mode_raises():
+    cfg = {"model": "x", "cli": "x", "delivery": "carrier-pigeon", "invoke": "x {model}"}
+    with pytest.raises(ValueError):
+        make_adapter("gemini", cfg)
+
+
+def test_file_delivery_adapter_embeds_packet_path_in_instruction_no_stdin(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(argv, input, capture_output, text, encoding, timeout):
+        captured["argv"] = argv
+        captured["input"] = input
+        return _FakeCompletedProcess(returncode=0, stdout=_valid_json())
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    cfg = {"model": "gemini-3-pro", "cli": "agy", "cli_version": "1.1.3",
+           "delivery": "file", "invoke": "{cli} --print {instruction} --model {model}"}
+    adapter = make_adapter("gemini", cfg)
+
+    packet_path = tmp_path / "pkt.gemini.txt"
+    packet_path.write_text("packet body on disk", encoding="utf-8")
+
+    reply = adapter.invoke("ignored packet text", LETTERS, packet_path=packet_path)
+
+    assert reply.error is None
+    assert reply.parsed["scores"]["A"] == 7
+    assert captured["input"] is None                # nothing on stdin
+    argv = captured["argv"]
+    assert argv[0] == "agy"
+    instruction = argv[argv.index("--print") + 1]
+    assert str(packet_path) in instruction           # packet path embedded in the instruction
+    assert "Read the file at" in instruction
+    assert argv[argv.index("--model") + 1] == "gemini-3-pro"
+
+
+def test_file_delivery_adapter_requires_packet_path():
+    adapter = FileDeliveryAdapter("gemini", "pin", "v1",
+                                   argv=["agy", "--print", "{instruction}"])
+    with pytest.raises(ValueError):
+        adapter.invoke("text", LETTERS)               # no packet_path -- file delivery needs one
+
+
+def test_base_adapter_default_delivery_ignores_packet_path(monkeypatch):
+    # Stdin adapters accept the packet_path kwarg (uniform call signature
+    # for the runner) but ignore it -- argv/stdin unaffected.
+    captured = {}
+
+    def fake_run(argv, input, capture_output, text, encoding, timeout):
+        captured["argv"] = argv
+        captured["input"] = input
+        return _FakeCompletedProcess(returncode=0, stdout=_valid_json())
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    adapter = BaseAdapter("t", "pin-x", "v1", argv=["some-cli"])
+    adapter.invoke("packet body", LETTERS, packet_path="/some/path.txt")
+
+    assert captured["argv"] == ["some-cli"]
+    assert captured["input"] == "packet body"
