@@ -77,8 +77,8 @@ def test_plan_covers_11_models_excluding_quant_arm(tmp_path):
     b1 = B1Business()
     items = b1.plan(cfg, store)
 
-    # 11 models × 1 task (cybersecurity-01) × 3 runs = 33 items
-    assert len(items) == 33
+    # 11 models × 8 tasks (cybersecurity-01..08) × 3 runs = 264 items
+    assert len(items) == 264
 
     # Verify quant-arm model is excluded
     model_ids = {item.model_id for item in items}
@@ -112,7 +112,7 @@ def test_execute_produces_judging_row_with_artifact(tmp_path, monkeypatch):
         normalized_config = {}
         def chat(self, messages, **kwargs):
             return {
-                "choices": [{"message": {"content": "Enable MFA. CVE-2026-1234. $4,200."}}],
+                "choices": [{"message": {"content": "Enable MFA. CVE-2024-3400 patched. $4,200."}}],
                 "timings": {"predicted_n": 50, "predicted_per_second": 100.0}
             }
 
@@ -161,7 +161,7 @@ def test_execute_produces_judging_row_with_artifact(tmp_path, monkeypatch):
 
     # Verify metrics recorded
     assert "chars" in row["metrics"]
-    assert row["metrics"]["chars"] == len("Enable MFA. CVE-2026-1234. $4,200.")
+    assert row["metrics"]["chars"] == len("Enable MFA. CVE-2024-3400 patched. $4,200.")
 
     # Verify sampling records max_tokens (temperature omitted from request)
     assert row["sampling"].get("max_tokens") == 900  # short class max_tokens
@@ -264,7 +264,7 @@ def test_sampling_records_runtime_default_temp(tmp_path):
         normalized_config = {}
         def chat(self, messages, **kwargs):
             return {
-                "choices": [{"message": {"content": "Enable MFA. CVE-2026-1234. $4,200."}}],
+                "choices": [{"message": {"content": "Enable MFA. CVE-2024-3400 patched. $4,200."}}],
                 "timings": {}
             }
 

@@ -2,9 +2,9 @@
 
 | Unit | gpt-oss-20b |
 |---|---|
-| Overall | - |
+| Overall | 5.0 |
 | coding | - |
-| cybersecurity | - |
+| cybersecurity | 5.0 |
 | data_analytics | - |
 | finance | - |
 | helpdesk | - |
@@ -21,10 +21,10 @@
 
 ## Suite Health
 
-- Agreement (spread <=1): 0.0%
+- Agreement (spread <=1): 100.0%
 - Mean spread: 0.00
 - Kin-delta: claude=n/a, codex=n/a, gemini=n/a
-- Drift flags: 0
+- Drift flags: 2
 - Spread flags: 0
 - Incomplete panels: 0
 - Cal-fallback packets: 0
