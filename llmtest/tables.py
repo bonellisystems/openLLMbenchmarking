@@ -1,7 +1,17 @@
 """Byte-deterministic tables (TESTPLAN 7.5): pure functions of rows, stable sorts, fixed float fmt, LF newlines."""
+import hashlib
 from pathlib import Path
 
+from llmtest.judging.aggregate import AggResult, aggregate, load_maps, load_refscores
 from llmtest.store import Store
+
+
+def _fmt1(x: float) -> str:
+    return f"{x:.1f}"
+
+
+def _fmt2(x: float) -> str:
+    return f"{x:.2f}"
 
 
 def render_serving_table(rows: list[dict]) -> str:
@@ -19,12 +29,126 @@ def render_serving_table(rows: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_scorecard(agg: AggResult, units: list[str]) -> str:
+    """results/tables/scorecard.md: units (rows, sorted alpha) x models
+    (columns, sorted by overall desc then name); cell = unit mean, 1-decimal;
+    header row includes an Overall row; footer = suite-health block."""
+    units_sorted = sorted(units)
+
+    def _sort_key(model_id: str):
+        overall = agg.model_overall.get(model_id)
+        return (overall is None, -(overall if overall is not None else 0.0), model_id)
+
+    models_sorted = sorted(agg.model_roster, key=_sort_key)
+
+    lines = ["# Scorecard (Battery 1) -- table-time aggregation, computed fresh "
+             "every run, never stored", ""]
+    if not models_sorted:
+        lines.append("(no judgment data yet)")
+    else:
+        header = "| Unit | " + " | ".join(models_sorted) + " |"
+        sep = "|---|" + "---|" * len(models_sorted)
+        lines += [header, sep]
+        overall_cells = [_fmt1(agg.model_overall[m]) if m in agg.model_overall else "-"
+                          for m in models_sorted]
+        lines.append("| Overall | " + " | ".join(overall_cells) + " |")
+        for unit in units_sorted:
+            cells = []
+            for m in models_sorted:
+                stats = agg.model_unit_stats.get((m, unit))
+                cells.append(_fmt1(stats["mean"]) if stats else "-")
+            lines.append(f"| {unit} | " + " | ".join(cells) + " |")
+
+    lines += ["", "## Suite Health", ""]
+    lines.append(f"- Agreement (spread <=1): {agg.agreement_pct:.1f}%")
+    lines.append(f"- Mean spread: {agg.mean_spread:.2f}")
+    kin_parts = [
+        f"{judge_id}={_fmt2(agg.kin_delta[judge_id]) if agg.kin_delta[judge_id] is not None else 'n/a'}"
+        for judge_id in sorted(agg.kin_delta)
+    ]
+    lines.append(f"- Kin-delta: {', '.join(kin_parts) if kin_parts else 'n/a'}")
+    lines.append(f"- Drift flags: {len(agg.drift_flags)}")
+    lines.append(f"- Spread flags: {len(agg.spread_flags)}")
+    lines.append(f"- Incomplete panels: {agg.incomplete_panel_count}")
+    lines.append(f"- Cal-fallback packets: {agg.cal_fallback_count}")
+    lines.append(f"- Errored judge-packets: {agg.error_rows_count}")
+    return "\n".join(lines) + "\n"
+
+
+def render_flags(agg: AggResult) -> str:
+    """results/FLAGS.md: one row per spread>2 flag + per drift flag, stable sort."""
+    lines = ["# FLAGS -- spread>2 and calibration-drift triage "
+             "(table-time, regenerated every run)", ""]
+
+    lines += ["## Spread flags (max-min > 2)", ""]
+    if agg.spread_flags:
+        lines += ["| Task | Run | Model | Scores by judge |", "|---|---|---|---|"]
+        for f in agg.spread_flags:
+            sbj = ", ".join(f"{judge_id}={score}"
+                             for judge_id, score in sorted(f["scores_by_judge"].items()))
+            lines.append(f"| {f['task_id']} | {f['run_n']} | {f['model_id']} | {sbj} |")
+    else:
+        lines.append("(none)")
+
+    lines += ["", "## Drift flags (|median - ref| > tolerance)", ""]
+    if agg.drift_flags:
+        lines += ["| Packet | Task | Run | CAL | Median | Ref | Delta |",
+                   "|---|---|---|---|---|---|---|"]
+        for f in agg.drift_flags:
+            lines.append(f"| {f['packet_id']} | {f['task_id']} | {f['run_n']} | {f['cal_type']} "
+                          f"| {_fmt1(f['median'])} | {f['ref']} | {f['delta']:+.1f} |")
+    else:
+        lines.append("(none)")
+
+    return "\n".join(lines) + "\n"
+
+
+def _current_rubric_sha(root: Path) -> dict:
+    """{unit: rubric_sha} for every unit with a grading/anchors/<unit>.md
+    file CURRENTLY checked out (TESTPLAN 6.2: aggregation selects judgments
+    matching the checked-out rubric_sha). Mirrors packets.py's own formula
+    exactly. A unit with no anchor file is simply absent -- aggregate()
+    treats an absent unit as "don't filter" (today's reality: no anchors
+    exist yet for any unit)."""
+    judge_prompt_path = root / "grading" / "judge_prompt.md"
+    anchors_dir = root / "grading" / "anchors"
+    if not judge_prompt_path.exists() or not anchors_dir.exists():
+        return {}
+    judge_prompt_bytes = judge_prompt_path.read_bytes()
+    return {
+        anchor_path.stem: hashlib.sha256(anchor_path.read_bytes() + judge_prompt_bytes).hexdigest()
+        for anchor_path in sorted(anchors_dir.glob("*.md"))
+    }
+
+
 def run_tables(root: str | Path = ".") -> int:
     root = Path(root).resolve()
-    rows = list(Store(root / "results").iter_rows())
+    store = Store(root / "results")
+    rows = list(store.iter_rows())
     out = root / "results" / "tables"
     out.mkdir(parents=True, exist_ok=True)
     (out / "serving.md").write_text(render_serving_table(rows),
                                     encoding="utf-8", newline="\n")
-    print(f"tables: wrote serving.md from {len(rows)} rows")
+
+    from llmtest.registry import load_config
+    cfg = load_config(root)
+
+    judgments = list(store.iter_judgments())
+    maps = load_maps(root / "results" / "packets")
+    kin_map = cfg.judges.get("kin_map", {})
+    judge_ids = sorted(cfg.judges.get("judges", {}))
+    refscores_path = root / "grading" / "calibration" / "refscores.yaml"
+    refscores = load_refscores(refscores_path) if refscores_path.exists() else None
+
+    agg = aggregate(rows, judgments, maps, kin_map=kin_map, refscores=refscores,
+                     judge_ids=judge_ids, current_rubric_sha=_current_rubric_sha(root))
+
+    units = cfg.suite.get("b1", {}).get("units_tier1", [])
+    (out / "scorecard.md").write_text(render_scorecard(agg, units),
+                                       encoding="utf-8", newline="\n")
+    (root / "results" / "FLAGS.md").write_text(render_flags(agg),
+                                                encoding="utf-8", newline="\n")
+
+    print(f"tables: wrote serving.md from {len(rows)} rows; "
+          f"scorecard.md/FLAGS.md from {len(judgments)} judgments across {len(maps)} packets")
     return 0
