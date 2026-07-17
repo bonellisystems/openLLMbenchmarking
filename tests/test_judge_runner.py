@@ -155,6 +155,52 @@ def _garbage_scores(letters):
     return {letter: 7.5 for letter in letters}
 
 
+def _seed_ok_judgment(store: Store, packet_id: str, judge_id: str, letter: str,
+                       model_id: str, score: int = 7) -> None:
+    store.append_judgment({
+        "schema_version": schema.SCHEMA_VERSION,
+        "packet_id": packet_id,
+        "judge_id": judge_id,
+        "judge_model_pin": "pin-1",
+        "judge_cli_version": "v1",
+        "letter": letter,
+        "model_id": model_id,
+        "score": score,
+        "reason": "seeded ok",
+        "rank": 1,
+        "ts": "2026-07-17T00:00:00+00:00",
+        "status": "ok",
+    })
+
+
+def _seed_error_row(store: Store, packet_id: str, judge_id: str) -> None:
+    store.append_judgment({
+        "schema_version": schema.SCHEMA_VERSION,
+        "packet_id": packet_id,
+        "judge_id": judge_id,
+        "judge_model_pin": "pin-1",
+        "judge_cli_version": "v1",
+        "letter": "-",
+        "model_id": None,
+        "score": None,
+        "reason": "seeded terminal error",
+        "rank": None,
+        "ts": "2026-07-17T00:00:00+00:00",
+        "status": "error",
+    })
+
+
+def _letter_model_id(letter_map: dict, letter: str, rows: list[dict]) -> str:
+    """Mirror the runner's own identity -> model_id resolution so seeded
+    judgment rows in tests look exactly like ones the runner itself would
+    have written."""
+    identity = letter_map[letter]
+    if identity in ("CAL-strong", "CAL-weak"):
+        return identity
+    row_id_to_model_id = {r["row_id"]: r["model_id"] for r in rows}
+    return row_id_to_model_id[identity]
+
+
 def test_adapter_returning_garbage_twice_writes_one_error_row(tmp_path):
     """A judge whose replies never validate must be retried exactly once,
     then produce a SINGLE letter="-" error row per (packet, judge) -- not
@@ -184,6 +230,131 @@ def test_adapter_returning_garbage_twice_writes_one_error_row(tmp_path):
                            fake=True, fake_scores_fn=_garbage_scores, **_base_kwargs(tmp_path))
     assert result2.errors_written == 0
     assert len(list(store.iter_judgments())) == 1
+
+
+# --- mixed-state pairs: partial ok letters are pending, never stranded (Finding 1) ---
+
+
+def test_partial_ok_pair_is_pending_and_completes(tmp_path):
+    """A pair with SOME ok letters already recorded (but not the packet's
+    full letter set) must be treated as pending, not "fully judged". A
+    later successful run appends only the missing letters -- Store dedup
+    no-ops the already-present one -- and writes no "-" error row."""
+    store = Store(tmp_path / "results")
+    task_id = _write_task(tmp_path, UNIT, 1, "Draft an incident summary.")
+    for model_id in COHORT:
+        _make_row(tmp_path, store, model_id, task_id)
+    rows = list(store.iter_rows())
+    kwargs = _base_kwargs(tmp_path)
+
+    packets_result = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                                  fake=True, packets_only=True, **kwargs)
+    packet = packets_result.packets[0]
+    map_data = json.loads(Path(packet.map_path).read_text(encoding="utf-8"))
+    letter_map = map_data["letters_by_judge"]["j1"]
+    expected_letters = sorted(letter_map)
+    assert len(expected_letters) == 4                # 2 cohort + CAL-strong + CAL-weak
+
+    seed_letter = expected_letters[0]
+    seed_model_id = _letter_model_id(letter_map, seed_letter, rows)
+    _seed_ok_judgment(store, packet.packet_id, "j1", seed_letter, seed_model_id)
+
+    result = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                          fake=True, **kwargs)
+
+    assert result.judgments_written == 3             # the 3 still-missing letters
+    assert result.errors_written == 0
+    judgments = list(store.iter_judgments())
+    assert len(judgments) == 4
+    assert all(j["letter"] != "-" for j in judgments)
+    assert {j["letter"] for j in judgments} == set(expected_letters)
+
+
+def test_error_row_only_when_zero_ok_letters(tmp_path, capsys):
+    """A retry that still fails while PARTIAL ok letters already exist must
+    NOT write a "-" error row -- that would permanently strand the real
+    scores behind a terminal marker. Instead: print a loud warning naming
+    the pair and the still-missing letters, and leave the pair pending."""
+    store = Store(tmp_path / "results")
+    task_id = _write_task(tmp_path, UNIT, 1, "Draft an incident summary.")
+    for model_id in COHORT:
+        _make_row(tmp_path, store, model_id, task_id)
+    rows = list(store.iter_rows())
+    kwargs = _base_kwargs(tmp_path)
+
+    packets_result = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                                  fake=True, packets_only=True, **kwargs)
+    packet = packets_result.packets[0]
+    map_data = json.loads(Path(packet.map_path).read_text(encoding="utf-8"))
+    letter_map = map_data["letters_by_judge"]["j1"]
+    expected_letters = sorted(letter_map)
+    seed_letter = expected_letters[0]
+    seed_model_id = _letter_model_id(letter_map, seed_letter, rows)
+    _seed_ok_judgment(store, packet.packet_id, "j1", seed_letter, seed_model_id)
+
+    result = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                          fake=True, fake_scores_fn=_garbage_scores, **kwargs)
+
+    assert result.errors_written == 0
+    assert result.judgments_written == 0
+    judgments = list(store.iter_judgments())
+    assert len(judgments) == 1                        # only the pre-seeded ok row
+    assert judgments[0]["letter"] == seed_letter
+
+    captured = capsys.readouterr()
+    noise = captured.out + captured.err
+    assert "j1" in noise
+    assert packet.packet_id in noise
+    for letter in sorted(set(expected_letters) - {seed_letter}):
+        assert letter in noise
+
+    # The pair stays pending -- proven by a later run with a WORKING judge
+    # still completing it (a "-" row would have blocked re-invocation).
+    result2 = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                           fake=True, **kwargs)
+    assert result2.judgments_written == 3
+    final = list(store.iter_judgments())
+    assert len(final) == 4
+    assert all(j["letter"] != "-" for j in final)
+
+
+# --- --retry-errors: terminal error rows become pending again (Finding 2) ---
+
+
+def test_retry_errors_flag_rejudges_terminal_errors(tmp_path):
+    store = Store(tmp_path / "results")
+    task_id = _write_task(tmp_path, UNIT, 1, "Draft an incident summary.")
+    for model_id in COHORT:
+        _make_row(tmp_path, store, model_id, task_id)
+    rows = list(store.iter_rows())
+    kwargs = _base_kwargs(tmp_path)
+
+    packets_result = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                                  fake=True, packets_only=True, **kwargs)
+    packet = packets_result.packets[0]
+    map_data = json.loads(Path(packet.map_path).read_text(encoding="utf-8"))
+    expected_letters = sorted(map_data["letters_by_judge"]["j1"])
+
+    _seed_error_row(store, packet.packet_id, "j1")
+
+    without_flag = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                                fake=True, **kwargs)
+    assert without_flag.judgments_written == 0
+    assert without_flag.errors_written == 0
+    assert len(list(store.iter_judgments())) == 1     # untouched: just the seeded "-" row
+
+    with_flag = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                             fake=True, retry_errors=True, **kwargs)
+    assert with_flag.judgments_written == 4           # full letter set re-judged
+    assert with_flag.errors_written == 0
+
+    judgments = list(store.iter_judgments())
+    assert len(judgments) == 5                        # old "-" row + 4 new ok rows
+    ok_letters = {j["letter"] for j in judgments if j["status"] == "ok"}
+    assert ok_letters == set(expected_letters)
+    error_rows = [j for j in judgments if j["status"] == "error"]
+    assert len(error_rows) == 1
+    assert error_rows[0]["reason"] == "seeded terminal error"   # old row kept as history
 
 
 # --- model_id resolution (cohort row_id -> real model_id; CAL letters literal) ---

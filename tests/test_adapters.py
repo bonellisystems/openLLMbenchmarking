@@ -187,6 +187,23 @@ def test_base_adapter_invoke_timeout(monkeypatch):
     assert reply == JudgeReply(raw="", parsed=None, error="timeout")
 
 
+def test_subprocess_oserror_becomes_error_reply(tmp_path):
+    # No monkeypatch -- a genuinely nonexistent binary triggers a real
+    # OSError/FileNotFoundError from subprocess.run, which invoke() must
+    # catch and turn into a normal JudgeReply instead of letting it
+    # propagate, so the runner's retry-then-error path handles a launch
+    # failure exactly like any other bad reply instead of the whole run
+    # aborting.
+    nonexistent = tmp_path / "definitely-not-a-real-judge-binary-xyz"
+    adapter = BaseAdapter("t", "pin-x", "v1", argv=[str(nonexistent), "--flag"])
+    reply = adapter.invoke("packet body", LETTERS)
+
+    assert isinstance(reply, JudgeReply)
+    assert reply.raw == ""
+    assert reply.parsed is None
+    assert reply.error is not None and reply.error.startswith("subprocess:")
+
+
 # --- ClaudeAdapter: JSON envelope unwrap ---
 
 
@@ -349,9 +366,9 @@ def test_make_adapter_unknown_delivery_mode_raises():
 def test_file_delivery_adapter_embeds_packet_path_in_instruction_no_stdin(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run(argv, input, capture_output, text, encoding, timeout):
+    def fake_run(argv, capture_output, text, encoding, timeout, **kwargs):
         captured["argv"] = argv
-        captured["input"] = input
+        captured["kwargs"] = kwargs
         return _FakeCompletedProcess(returncode=0, stdout=_valid_json())
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -366,7 +383,11 @@ def test_file_delivery_adapter_embeds_packet_path_in_instruction_no_stdin(monkey
 
     assert reply.error is None
     assert reply.parsed["scores"]["A"] == 7
-    assert captured["input"] is None                # nothing on stdin
+    # Nothing on stdin -- and NOT just "unset" (inherited from the parent):
+    # explicit DEVNULL so a file-delivery CLI can never block reading stdin
+    # or see the harness's real stdin (Finding 5 stdin hygiene).
+    assert "input" not in captured["kwargs"]
+    assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
     argv = captured["argv"]
     assert argv[0] == "agy"
     instruction = argv[argv.index("--print") + 1]

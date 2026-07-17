@@ -37,6 +37,7 @@ def run_judge(args, root: str | Path = ".") -> int:
         judge_filter=judge_filter,
         packets_only=getattr(args, "packets_only", False),
         fake=getattr(args, "fake", False),
+        retry_errors=getattr(args, "retry_errors", False),
     )
 
     print(f"judge: {len(result.packets)} packets built, {len(result.skipped)} cohorts skipped, "

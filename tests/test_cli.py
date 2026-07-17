@@ -11,12 +11,14 @@ def test_cli_module_runs_and_reports_version():
 
 def test_judge_subcommand_parses_all_flags():
     args = build_parser().parse_args(
-        ["judge", "--pending", "--judge", "claude", "--packets-only", "--fake"])
+        ["judge", "--pending", "--judge", "claude", "--packets-only", "--fake",
+         "--retry-errors"])
     assert args.command == "judge"
     assert args.pending is True
     assert args.judge == "claude"
     assert args.packets_only is True
     assert args.fake is True
+    assert args.retry_errors is True
 
 
 def test_judge_subcommand_defaults():
@@ -25,6 +27,7 @@ def test_judge_subcommand_defaults():
     assert args.judge is None
     assert args.packets_only is False
     assert args.fake is False
+    assert args.retry_errors is False
 
 
 def test_status_judging_flag_parses():

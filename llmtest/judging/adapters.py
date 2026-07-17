@@ -163,13 +163,27 @@ class BaseAdapter:
     def invoke(self, packet_text: str, expected_letters: list[str],
                timeout: int = 300, packet_path: Path | str | None = None) -> JudgeReply:
         argv, stdin_input = self._build_invocation(packet_text, packet_path)
+        run_kwargs: dict = dict(capture_output=True, text=True, encoding="utf-8",
+                                 timeout=timeout)
+        if stdin_input is None:
+            # File delivery (and any other no-stdin caller): explicit DEVNULL
+            # rather than leaving stdin unset -- unset would inherit the
+            # harness's real stdin, letting a CLI that misbehaves (or changes
+            # behavior) block reading it or see data it has no business
+            # seeing.
+            run_kwargs["stdin"] = subprocess.DEVNULL
+        else:
+            run_kwargs["input"] = stdin_input
         try:
-            proc = subprocess.run(
-                argv, input=stdin_input, capture_output=True, text=True,
-                encoding="utf-8", timeout=timeout,
-            )
+            proc = subprocess.run(argv, **run_kwargs)
         except subprocess.TimeoutExpired:
             return JudgeReply(raw="", parsed=None, error="timeout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Nonexistent binary (FileNotFoundError), permissions, or any
+            # other launch-time subprocess failure -- contained the same way
+            # a bad reply is, so the runner's retry-then-error path handles
+            # it instead of the whole judging run aborting.
+            return JudgeReply(raw="", parsed=None, error=f"subprocess: {exc}")
 
         stdout = proc.stdout or ""
         if proc.returncode != 0:

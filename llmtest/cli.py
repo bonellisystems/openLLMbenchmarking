@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="build packets only, skip invoking judges")
     j.add_argument("--fake", action="store_true",
                     help="use FakeJudgeAdapter instead of real judge CLIs")
+    j.add_argument("--retry-errors", action="store_true",
+                    help="treat pairs whose only rows are terminal '-' errors as pending again")
     return p
 
 

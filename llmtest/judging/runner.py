@@ -17,6 +17,7 @@ INVOKED this run.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,16 +116,37 @@ def run_pending(
     fake: bool = False,
     fake_scores_fn=None,
     timeout: int = 300,
+    retry_errors: bool = False,
 ) -> RunResult:
     """Build packets for every complete needs_judging cohort, then invoke
     (packet x judge) pairs lacking a judgment set -- one judgment row per
     letter, idempotent on (packet_id, judge_id, letter); a reply that's
-    still invalid after one retry becomes a single letter="-" error row.
+    still invalid after one retry becomes a single letter="-" error row --
+    but ONLY when the pair has zero ok letters so far (see below).
 
     `judges_cfg` is `config/judges.yaml`'s `judges:` dict ({judge_id:
     {model, cli, cli_version, delivery, invoke, ...}}) -- the full panel is
     `sorted(judges_cfg)`, always used for packet-building; `judge_filter`
     (the CLI's `--judge`) only restricts which judges get INVOKED.
+
+    A (packet, judge) pair is "fully judged" (and skipped) only when its
+    existing OK letters cover the packet's FULL letter set from the map --
+    NOT merely "some row exists for this pair". A pair with partial ok
+    letters is pending: it gets re-invoked normally, and only the still-
+    missing letters get appended (Store's own (packet_id, judge_id, letter)
+    dedup makes re-writing an already-present letter a no-op). If that
+    re-invoke still fails while partial ok letters already exist, NO "-"
+    error row is written -- doing so would permanently strand the real
+    scores behind a terminal marker that blocks all future re-invocation.
+    Instead a loud warning is printed (pair stays pending for the next run).
+    A "-" error row is only ever written when the pair has ZERO ok letters.
+
+    `retry_errors` (the CLI's `--retry-errors`): a pair whose only existing
+    row is a terminal "-" error (zero ok letters) is normally skipped on
+    every subsequent run. With `retry_errors=True`, such pairs are treated
+    as pending again and re-invoked; the old "-" row is left in place as
+    append-only history (a fresh success writes new ok-letter rows, which
+    never collide with it since their letters differ).
     """
     root = Path(root)
     judge_ids = sorted(judges_cfg)
@@ -168,8 +190,14 @@ def run_pending(
             expected_letters = sorted(letter_map)
             key = (packet.packet_id, judge_id)
             existing_letters = existing_index.get(key, set())
-            if "-" in existing_letters or existing_letters.issuperset(expected_letters):
-                continue  # already fully judged (or terminally errored) -- no re-invocation
+            ok_letters = existing_letters - {"-"}
+            has_error_row = "-" in existing_letters
+
+            if ok_letters.issuperset(expected_letters):
+                continue  # fully judged: every expected letter already has an ok row
+
+            if has_error_row and not ok_letters and not retry_errors:
+                continue  # terminal error, zero real progress -- not retrying this run
 
             body_path = Path(packet.bodies[judge_id])
             packet_text = body_path.read_text(encoding="utf-8")
@@ -214,6 +242,19 @@ def run_pending(
                     if store.append_judgment(judgment_row):
                         result.judgments_written += 1
                         existing_index.setdefault(key, set()).add(letter)
+            elif ok_letters:
+                # Partial ok letters already exist for this pair -- writing a
+                # "-" error row here would permanently strand those real
+                # scores behind a terminal marker (Finding 1). Warn loudly
+                # instead and leave the pair pending for the next run.
+                missing = sorted(set(expected_letters) - ok_letters)
+                print(
+                    f"WARNING: judge {judge_id!r} failed for packet "
+                    f"{packet.packet_id!r} ({reply.error or 'invalid reply after retry'}) "
+                    f"-- {sorted(ok_letters)} already recorded ok; missing letters "
+                    f"{missing} remain PENDING, no error row written",
+                    file=sys.stderr,
+                )
             else:
                 error_row = {
                     "schema_version": schema.SCHEMA_VERSION,

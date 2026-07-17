@@ -182,6 +182,10 @@ def validate_judgment(d: dict) -> list[str]:
             errs.append(f"score must be an int 0-10 when status != 'error': {score!r}")
         elif not (0 <= score <= 10):
             errs.append(f"score out of range 0-10: {score}")
+    if d["letter"] == "-" and d["status"] != "error":
+        errs.append("letter '-' requires status == 'error'")
+    if d["status"] == "error" and d["letter"] != "-":
+        errs.append("status == 'error' requires letter == '-'")
     for f in ("packet_id", "judge_id", "letter"):
         if not isinstance(d[f], str) or not d[f]:
             errs.append(f"{f} must be a non-empty string")

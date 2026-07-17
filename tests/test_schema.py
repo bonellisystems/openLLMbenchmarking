@@ -78,3 +78,13 @@ def test_validate_judgment_bool_score_rejected():
 def test_validate_judgment_bad_status_rejected():
     bad = _judgment(status="nope")
     assert any("status" in e for e in schema.validate_judgment(bad))
+
+
+def test_validate_judgment_letter_status_invariant():
+    # letter == "-" must imply status == "error"
+    bad_ok_dash = _judgment(letter="-", status="ok", score=7)
+    assert any("-" in e for e in schema.validate_judgment(bad_ok_dash))
+
+    # status == "error" must imply letter == "-"
+    bad_error_letter = _judgment(letter="A", status="error", score=None)
+    assert any("-" in e for e in schema.validate_judgment(bad_error_letter))
