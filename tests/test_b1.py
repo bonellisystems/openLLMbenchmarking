@@ -77,9 +77,10 @@ def test_plan_covers_11_models_excluding_quant_arm(tmp_path):
     b1 = B1Business()
     items = b1.plan(cfg, store)
 
-    # 11 models × 40 tasks (cybersecurity-01..08, it_infra-01..08, helpdesk-01..08,
-    # knowledge_mgmt-01..08, coding-01..08) × 3 runs = 1320 items
-    assert len(items) == 1320
+    # 11 models × 56 tasks (cybersecurity-01..08, it_infra-01..08, helpdesk-01..08,
+    # knowledge_mgmt-01..08, coding-01..08, finance-01..08, operations-01..08) × 3 runs
+    # = 1848 items
+    assert len(items) == 1848
 
     # Verify quant-arm model is excluded
     model_ids = {item.model_id for item in items}
