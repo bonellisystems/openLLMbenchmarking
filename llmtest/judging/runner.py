@@ -294,10 +294,14 @@ def summarize_judging(store: Store, packets: list[PacketRecord],
                 continue
             expected = set(letter_map)
             got = existing.get((packet.packet_id, judge_id), set())
-            if "-" in got:
-                counts["error"] += 1
-            elif got.issuperset(expected):
+            # Ok-letter completeness is checked BEFORE the "-" presence
+            # check: a pair recovered via --retry-errors has a full ok
+            # letter set plus a kept historical "-" row (Finding 2 keeps it
+            # as append-only history), and must report "done", not "error".
+            if got.issuperset(expected):
                 counts["done"] += 1
+            elif "-" in got:
+                counts["error"] += 1
             else:
                 counts["pending"] += 1
     return counts

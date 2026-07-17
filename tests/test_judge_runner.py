@@ -481,6 +481,35 @@ def test_summarize_judging_counts_error_pair_as_error_not_pending(tmp_path):
     assert counts == {"done": 0, "pending": 0, "error": 1}
 
 
+def test_status_shows_done_after_retry_recovery(tmp_path):
+    """A pair recovered via --retry-errors (full ok letter set now recorded,
+    but the historical "-" row from before the retry is kept as append-only
+    history per Finding 2) must report "done", not "error" -- the ok-letter
+    completeness check must be evaluated BEFORE the "-"-presence check."""
+    store = Store(tmp_path / "results")
+    task_id = _write_task(tmp_path, UNIT, 1, "Draft an incident summary.")
+    for model_id in COHORT:
+        _make_row(tmp_path, store, model_id, task_id)
+    rows = list(store.iter_rows())
+    kwargs = _base_kwargs(tmp_path)
+
+    packets_result = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                                  fake=True, packets_only=True, **kwargs)
+    packet = packets_result.packets[0]
+
+    _seed_error_row(store, packet.packet_id, "j1")
+    without_flag = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                                fake=True, **kwargs)
+    assert without_flag.judgments_written == 0        # still just the "-" row, untouched
+
+    with_flag = run_pending(rows=rows, store=store, judges_cfg={"j1": JUDGES_CFG["j1"]},
+                             fake=True, retry_errors=True, **kwargs)
+    assert with_flag.judgments_written == 4            # full letter set recovered
+
+    counts = summarize_judging(store, packets_result.packets, ["j1"])
+    assert counts == {"done": 1, "pending": 0, "error": 0}
+
+
 # --- resolve_cohort_models ---
 
 
