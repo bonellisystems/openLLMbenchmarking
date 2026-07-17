@@ -1,7 +1,7 @@
 from pathlib import Path
 import pytest
 from llmtest.registry import load_config
-from llmtest.server import compose_fork_flags, normalize_config
+from llmtest.server import compose_fork_flags, normalize_config, _power_state
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,3 +44,17 @@ def test_reuse_key_includes_authority():
     k1 = m._request_key("m", "fork", None, 1, 8192, "q8_0", False)
     k2 = m._request_key("m", "fork", None, 1, 8192, "q8_0", True)
     assert k1 != k2
+
+def test_nmatch_guard_fires_from_pinned_string_too():
+    cfg = load_config(ROOT)
+    cfg.runtime_pins["standard_flags"] = cfg.runtime_pins["standard_flags"].replace(
+        "n-match 32", "n-match 8")
+    with pytest.raises(ValueError):
+        compose_fork_flags(cfg, ctx=8192, parallel=1, kv="q8_0", overlay=None)
+
+def test_power_mode_guid_matching(monkeypatch):
+    from llmtest import server
+    monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: type("R", (), {
+        "stdout": "Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (Schema de alto rendimiento)"})())
+    mode, _ = server._power_state()
+    assert mode == "performance"    # localized name, GUID still wins

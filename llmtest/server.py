@@ -129,22 +129,39 @@ def _vram_free_gb() -> float:
 
 def _power_state() -> tuple[str, str]:
     """(power_mode, ac_state). power_mode from `powercfg /getactivescheme`'s
-    active scheme name; ac_state from Win32_Battery.BatteryStatus via CIM
-    (2=ac, 1=battery, no battery instance=ac, query error=unknown). Any
-    failure anywhere in here falls back to ("unknown", "unknown") -- this must
-    never raise and abort a launch."""
+    active scheme GUID (matched first) or fallback to scheme name;
+    ac_state from Win32_Battery.BatteryStatus via CIM (2=ac, 1=battery,
+    no battery instance=ac, query error=unknown). Any failure anywhere in
+    here falls back to ("unknown", "unknown") -- this must never raise and
+    abort a launch."""
+    # Known Windows power scheme GUIDs (locale-independent)
+    GUID_MAP = {
+        "381b4222-f694-41f0-9685-ff5bb260df2e": "balanced",
+        "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c": "performance",
+        "e9a42b02-d5df-448d-aa66-ad42f0e084bd": "performance",  # Ultimate Performance
+        "a1841308-3541-4fab-bc81-f71556f20b4a": "powersaver",
+    }
+
     try:
         scheme = subprocess.run(["powercfg", "/getactivescheme"],
                                 capture_output=True, text=True, check=True).stdout
-        low = scheme.lower()
-        if "performance" in low or "ultimate" in low:
-            mode = "performance"
-        elif "balanced" in low:
-            mode = "balanced"
-        elif "power saver" in low:
-            mode = "powersaver"
-        else:
-            mode = "unknown"
+
+        # Try GUID matching first (locale-independent)
+        mode = "unknown"
+        for guid, mode_name in GUID_MAP.items():
+            if guid.lower() in scheme.lower():
+                mode = mode_name
+                break
+
+        # Fall back to substring matching on scheme name if no GUID matched
+        if mode == "unknown":
+            low = scheme.lower()
+            if "performance" in low or "ultimate" in low:
+                mode = "performance"
+            elif "balanced" in low:
+                mode = "balanced"
+            elif "power saver" in low:
+                mode = "powersaver"
 
         ac = "unknown"
         try:
