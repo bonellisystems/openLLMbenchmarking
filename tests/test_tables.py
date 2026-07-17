@@ -148,6 +148,32 @@ def test_flags_deterministic_shuffled_input():
     assert render_flags(agg1) == render_flags(agg2)
 
 
+def test_flags_spread_row_includes_packet_column():
+    """Spread flag rows must include a Packet column (first 12 hex chars of packet_id)."""
+    agg = _sample_agg()
+    out = render_flags(agg)
+    # Extract spread flags section
+    spread_section = out.split("## Drift flags")[0]
+    assert "| Packet |" in spread_section or "Packet" in spread_section
+    # Check that packet_id (or its first 12 chars) appears in the spread row
+    assert "p1" in spread_section
+
+
+def test_flags_drift_ref_formatted_with_decimal():
+    """Drift flag ref column should be formatted with 1 decimal place (e.g. '9.0', not '9')."""
+    maps = {"p1": _map("b1.finance-01", unit="finance")}
+    judgments = [
+        _j("p1", "claude", "CAL-strong", 7, 1),
+        _j("p1", "codex", "CAL-strong", 7, 1),
+        _j("p1", "gemini", "CAL-strong", 7, 1),
+    ]
+    refscores = {"strong": 9, "weak": 2, "tolerance": 1}
+    agg = aggregate([], judgments, maps, refscores=refscores)
+    out = render_flags(agg)
+    # The ref value should be formatted with 1 decimal: "9.0" not "9"
+    assert "9.0" in out
+
+
 # --- run_tables integration: real config + a tmp results tree, byte-clean twice ---
 
 

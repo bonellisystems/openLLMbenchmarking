@@ -14,6 +14,8 @@ here groups by (packet_id, model_id) -- "one packet's answer", scored by
 however many judges produced an ok row for it. This is what the plan's
 shorthand "per (packet, letter)" means once letters are resolved back to
 identities.
+
+CAL letters are deliberately included in agreement_pct/mean_spread (judge-consistency probes); drift measures accuracy separately (controller decision 2026-07-17).
 """
 from __future__ import annotations
 
@@ -108,6 +110,7 @@ def aggregate(
     refscores: dict | None = None,
     judge_ids: list | None = None,
     current_rubric_sha: dict | None = None,
+    roster_filter: set[str] | None = None,
 ) -> AggResult:
     """Compute every table-time aggregate from raw judgments.
 
@@ -133,6 +136,11 @@ def aggregate(
             unit's entry is a superseded (re-minted) packet and is excluded
             entirely. A unit absent from this dict is not filtered (today's
             reality before grading/anchors/ exists for any unit).
+        roster_filter: optional set of model_ids to allow when widening the
+            roster from `rows`. When provided, only models in this set are
+            added to the roster from result rows; models with judged scores
+            are always retained regardless (scores are real data). Used to
+            exclude models with role=quant-arm from scorecard columns.
     """
     kin_map = kin_map or {}
     refscores = refscores or {"strong": 9, "weak": 2, "tolerance": 1}
@@ -258,8 +266,12 @@ def aggregate(
 
     # --- model roster: models with aggregate data, widened by any model_id
     # present in `rows` (so a model that ran but isn't judged yet still gets
-    # a scorecard column) ---
-    model_roster = sorted(set(model_overall) | {r["model_id"] for r in rows if r.get("model_id")})
+    # a scorecard column). When roster_filter is provided, only models in the
+    # filter are widened from rows; models with judged scores always appear. ---
+    rows_models = {r["model_id"] for r in rows if r.get("model_id")}
+    if roster_filter is not None:
+        rows_models = rows_models & roster_filter
+    model_roster = sorted(set(model_overall) | rows_models)
 
     # --- pairwise majority-vote win matrix from rankings (models only) ---
     # Per packet, per model pair: each judge votes for whichever of the two

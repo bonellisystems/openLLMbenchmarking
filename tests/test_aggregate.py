@@ -424,3 +424,57 @@ def test_aggregate_deterministic_under_shuffled_input():
         )
 
     assert _snapshot(agg1) == _snapshot(agg2)
+
+
+# --- roster_filter: exclude quant-arm models from roster expansion ---
+
+
+def test_quant_arm_models_excluded_from_roster():
+    """When roster_filter is provided, only models in the filter get widened
+    into model_roster from result rows. Models with judged scores always appear
+    in model_roster regardless (scores are real data)."""
+    maps = {"p1": _map(task_id="b1.cybersecurity-01", unit="cybersecurity")}
+    judgments = [
+        # model-a has a judged score
+        _j("p1", "claude", "A", "model-a", 8, rank=1),
+        # model-b is in result rows but NOT in roster_filter (e.g., role:quant-arm)
+    ]
+    # Result rows include both model-a and model-b
+    rows = [
+        {"model_id": "model-a"},
+        {"model_id": "model-b"},
+    ]
+
+    # With roster_filter, only model-a should appear (it has a judged score)
+    roster_filter = {"model-a"}  # model-b is excluded (quant-arm)
+    agg = aggregate(rows, judgments, maps, roster_filter=roster_filter, refscores=REFSCORES)
+
+    # model-a is in roster because it has a judged score
+    assert "model-a" in agg.model_roster
+    # model-b is NOT in roster (not in filter, no judged scores)
+    assert "model-b" not in agg.model_roster
+
+
+def test_roster_filter_retains_judged_models():
+    """Models with judged scores stay in model_roster even if not in roster_filter.
+    Only the row-widening expansion is restricted by the filter."""
+    maps = {"p1": _map(task_id="b1.cybersecurity-01", unit="cybersecurity")}
+    judgments = [
+        # model-b has a judged score despite being "quant-arm"
+        _j("p1", "claude", "A", "model-b", 6, rank=1),
+        _j("p1", "codex", "B", "model-b", 7, rank=2),
+    ]
+    # Result rows try to widen the roster
+    rows = [
+        {"model_id": "model-a"},
+        {"model_id": "model-b"},
+    ]
+
+    # roster_filter excludes both models
+    roster_filter = set()
+    agg = aggregate(rows, judgments, maps, roster_filter=roster_filter, refscores=REFSCORES)
+
+    # model-a is not in roster (not in filter, no judged scores)
+    assert "model-a" not in agg.model_roster
+    # model-b IS in roster (has judged scores, regardless of filter)
+    assert "model-b" in agg.model_roster

@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 
 from llmtest.judging.aggregate import AggResult, aggregate, load_maps, load_refscores
+from llmtest.judging.runner import resolve_cohort_models
 from llmtest.store import Store
 
 
@@ -82,11 +83,12 @@ def render_flags(agg: AggResult) -> str:
 
     lines += ["## Spread flags (max-min > 2)", ""]
     if agg.spread_flags:
-        lines += ["| Task | Run | Model | Scores by judge |", "|---|---|---|---|"]
+        lines += ["| Packet | Task | Run | Model | Scores by judge |", "|---|---|---|---|---|"]
         for f in agg.spread_flags:
             sbj = ", ".join(f"{judge_id}={score}"
                              for judge_id, score in sorted(f["scores_by_judge"].items()))
-            lines.append(f"| {f['task_id']} | {f['run_n']} | {f['model_id']} | {sbj} |")
+            packet_short = f['packet_id'][:12]
+            lines.append(f"| {packet_short} | {f['task_id']} | {f['run_n']} | {f['model_id']} | {sbj} |")
     else:
         lines.append("(none)")
 
@@ -96,7 +98,7 @@ def render_flags(agg: AggResult) -> str:
                    "|---|---|---|---|---|---|---|"]
         for f in agg.drift_flags:
             lines.append(f"| {f['packet_id']} | {f['task_id']} | {f['run_n']} | {f['cal_type']} "
-                          f"| {_fmt1(f['median'])} | {f['ref']} | {f['delta']:+.1f} |")
+                          f"| {_fmt1(f['median'])} | {_fmt1(f['ref'])} | {f['delta']:+.1f} |")
     else:
         lines.append("(none)")
 
@@ -140,8 +142,13 @@ def run_tables(root: str | Path = ".") -> int:
     refscores_path = root / "grading" / "calibration" / "refscores.yaml"
     refscores = load_refscores(refscores_path) if refscores_path.exists() else None
 
+    # Compute roster_filter using same rule as runner.resolve_cohort_models():
+    # exclude models with role=quant-arm from scorecard roster expansion
+    roster_filter = set(resolve_cohort_models(cfg))
+
     agg = aggregate(rows, judgments, maps, kin_map=kin_map, refscores=refscores,
-                     judge_ids=judge_ids, current_rubric_sha=_current_rubric_sha(root))
+                     judge_ids=judge_ids, current_rubric_sha=_current_rubric_sha(root),
+                     roster_filter=roster_filter)
 
     units = cfg.suite.get("b1", {}).get("units_tier1", [])
     (out / "scorecard.md").write_text(render_scorecard(agg, units),
