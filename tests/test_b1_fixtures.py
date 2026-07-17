@@ -37,6 +37,18 @@ def test_check_signals_bad_regex_no_crash():
     assert "error" in out["regex-0"]
 
 
+def test_check_signals_normalizes_unicode_typography():
+    """Unicode hyphen/dash and fancy-quote variants in answer text must not
+    break ASCII-authored signals (e.g. a real model rendering a CVE id with
+    a non-breaking hyphen, or curly quotes around a term)."""
+    text = "Patch “MFA” immediately. Reference: CVE‑2024‑3400."
+    sig = [{"type": "contains", "value": "CVE-2024-3400"},
+           {"type": "regex", "value": r"\bMFA\b"}]
+    out = f.check_signals(text, sig)
+    assert out["contains-0"]["pass"] is True
+    assert out["regex-1"]["pass"] is True
+
+
 def test_loader_raises_on_malformed(tmp_path):
     """Malformed fixture should raise ValueError, not silently skip."""
     unit_dir = tmp_path / "suite" / "b1_business" / "cybersecurity"

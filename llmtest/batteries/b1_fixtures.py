@@ -3,11 +3,47 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+# Unicode dash/hyphen variants folded to ASCII "-" before signal matching.
+_DASH_VARIANTS = (
+    "‐"  # HYPHEN
+    "‑"  # NON-BREAKING HYPHEN
+    "‒"  # FIGURE DASH
+    "–"  # EN DASH
+    "—"  # EM DASH
+    "―"  # HORIZONTAL BAR
+    "−"  # MINUS SIGN
+)
+
+# Unicode "fancy" quote variants folded to their ASCII equivalents.
+_QUOTE_FOLD = {
+    "‘": "'",  # LEFT SINGLE QUOTATION MARK
+    "’": "'",  # RIGHT SINGLE QUOTATION MARK
+    "“": '"',  # LEFT DOUBLE QUOTATION MARK
+    "”": '"',  # RIGHT DOUBLE QUOTATION MARK
+}
+
+_DASH_TABLE = {ord(c): "-" for c in _DASH_VARIANTS}
+_QUOTE_TABLE = {ord(c): repl for c, repl in _QUOTE_FOLD.items()}
+
+
+def _normalize_typography(text: str) -> str:
+    """Normalize answer text so ASCII-authored signals tolerate typographic
+    substitution (Unicode dashes, curly quotes) that real models produce.
+
+    Applies NFKC normalization, then folds hyphen/dash variants to ASCII
+    "-" and fancy quote variants to ASCII quotes.
+    """
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(_DASH_TABLE)
+    text = text.translate(_QUOTE_TABLE)
+    return text
 
 
 @dataclass
@@ -78,6 +114,7 @@ def check_signals(text: str, signals: list[dict]) -> dict:
     Returns:
         Dict mapping signal name (e.g. "contains-0") to result dict with 'pass' key
     """
+    text = _normalize_typography(text)
     results = {}
 
     for idx, sig in enumerate(signals):
