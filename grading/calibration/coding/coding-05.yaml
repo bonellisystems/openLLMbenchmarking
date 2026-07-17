@@ -1,0 +1,36 @@
+strong: |
+  Two real issues introduced by this diff:
+
+  1. SQL injection (lines with the new `query =` and `cursor.execute(query)`): the original
+     code used a parameterized query -- `"SELECT id, name, dob FROM patients WHERE mrn = %s"`
+     passed to `cursor.execute(query, (mrn,))`, with `mrn` supplied as a separate parameter so
+     the DB driver escapes it safely. The diff replaces this with an f-string that interpolates
+     the raw, user-controlled `mrn` value directly into the SQL text (`WHERE mrn =
+     '{mrn}'`) and executes it with no parameters at all. Any `mrn` value containing a single
+     quote and additional SQL (e.g. `' OR '1'='1`) is now executed as part of the query --
+     textbook SQL injection, and a total loss of the query's ability to distinguish data from
+     code.
+
+  2. PHI over-exposure: the SELECT list gained `ssn`. This is a patient-lookup endpoint;
+     previously it never returned SSN at all. Returning SSN from a general lookup call is a
+     HIPAA minimum-necessary violation -- the endpoint should return only what its stated
+     purpose requires, and nothing in the diff's context establishes that this endpoint's
+     callers need SSN.
+
+  Secondary, lower-severity finding: the added `logging.info(f"Patient lookup request:
+  {request.args}")` logs raw, unvalidated request parameters. Depending on what ends up in
+  `request.args` over time, this risks writing identifying search terms into logs that may not
+  have the same access controls as the patient database itself -- worth flagging, though less
+  severe than the injection and SSN issues.
+
+  Corrected query-construction line:
+  ```python
+  query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+  cursor.execute(query, (mrn,))
+  ```
+  (and drop `ssn` from the SELECT list entirely, since the endpoint didn't expose it before).
+weak: |
+  The diff adds an ssn field and a logging line, and changes the query slightly. Might want to
+  double check the query still works correctly with the f-string formatting, and maybe review
+  whether logging the request args is necessary. Otherwise looks like a reasonable change to
+  add more patient info to the response.

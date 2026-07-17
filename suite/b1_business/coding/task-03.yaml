@@ -1,0 +1,45 @@
+id: coding-03
+unit: coding
+difficulty: medium
+class: standard
+industry: manufacturing_ag
+prompt: |
+  You're writing a compliance-audit query against a USDA-inspected poultry plant's
+  lot-tracking database (PostgreSQL). Schema:
+
+  - `lots(lot_id INT PRIMARY KEY, product_line VARCHAR, production_date DATE)`
+  - `scan_events(event_id INT PRIMARY KEY, lot_id INT REFERENCES lots(lot_id),
+    station VARCHAR, scanned_at TIMESTAMP)`
+  - `recalls(recall_id INT PRIMARY KEY, lot_id INT REFERENCES lots(lot_id),
+    recall_date DATE, reason VARCHAR)`
+
+  USDA rules require every lot to have at least 3 recorded scan checkpoints (intake,
+  processing, shipping). A lot with fewer than 3 scan_events rows is a documentation gap that
+  is itself a compliance finding, even if the lot was never recalled and the product shipped
+  fine.
+
+  Write a single SQL query that returns every lot produced in the last 24 months that has:
+  (a) zero matching rows in `recalls`, AND (b) fewer than 3 rows in `scan_events` -- including
+  lots with ZERO scan_events at all, which is the worst version of this gap. Return
+  `lot_id`, `product_line`, `production_date`, and the scan-event count, ordered by
+  `production_date` ascending (oldest gap first).
+signals:
+  - {type: regex, value: "(?i)\\bLEFT (OUTER )?JOIN\\b", weight: critical}
+  - {type: regex, value: "(?i)\\bHAVING\\b", weight: critical}
+  - {type: contains, value: "COUNT(", weight: evidence}
+notes: |
+  Coding Task 03 -- SQL query against a described schema (medium).
+  Industry: manufacturing_ag (USDA poultry lot-tracking compliance query).
+  Two real SQL correctness traps, both verified: (1) an INNER JOIN from `lots` to
+  `scan_events` would silently DROP any lot with zero scan_events entirely (no matching row to
+  join), which is exactly the worst compliance gap the query is supposed to surface -- the join
+  must be a LEFT JOIN so zero-scan lots survive with a NULL/0 count; (2) you cannot filter
+  `COUNT(scan_events.event_id) < 3` in a WHERE clause because aggregate functions are not valid
+  there until after GROUP BY -- it must go in a HAVING clause. The "not recalled" condition
+  needs a LEFT JOIN/IS NULL anti-join (or NOT EXISTS) against `recalls`, not an INNER JOIN,
+  since an INNER JOIN would only keep lots that already have data in whichever table is
+  INNER-joined. A correct skeleton: `SELECT l.lot_id, l.product_line, l.production_date,
+  COUNT(se.event_id) AS scan_count FROM lots l LEFT JOIN scan_events se ON se.lot_id = l.lot_id
+  LEFT JOIN recalls r ON r.lot_id = l.lot_id WHERE l.production_date >= CURRENT_DATE - INTERVAL
+  '24 months' AND r.recall_id IS NULL GROUP BY l.lot_id, l.product_line, l.production_date
+  HAVING COUNT(se.event_id) < 3 ORDER BY l.production_date ASC;`

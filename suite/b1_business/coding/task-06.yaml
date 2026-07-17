@@ -1,0 +1,75 @@
+id: coding-06
+unit: coding
+difficulty: hard
+class: long
+industry: oil_gas_energy
+prompt: |
+  This Python script summarizes SCADA pressure-sensor readings for a drilling rig's daily
+  report. It has TWO distinct bugs: one you can find by comparing the code to the spec comment
+  on line 3, and one that will not throw any error or crash, but silently corrupts output when
+  the report covers more than one well in the same run. Find both, cite the line each one is
+  on, and give the fix for each.
+
+  ```
+   1  import statistics
+   2
+   3  ALERT_THRESHOLD_PSI = 4500  # engineering spec: flag any reading >= 4500 psi
+   4
+   5
+   6  def load_readings(sensor_log):
+   7      """sensor_log: list of (well_id, psi_reading) tuples from the SCADA feed."""
+   8      readings_by_well = {}
+   9      for well_id, psi in sensor_log:
+  10          readings_by_well.setdefault(well_id, []).append(psi)
+  11      return readings_by_well
+  12
+  13
+  14  def flag_overpressure_events(readings, alerts=[]):
+  15      """Return the list of psi readings that breach the over-pressure threshold."""
+  16      for psi in readings:
+  17          if psi > ALERT_THRESHOLD_PSI:
+  18              alerts.append(psi)
+  19      return alerts
+  20
+  21
+  22  def summarize_well(well_id, readings):
+  23      events = flag_overpressure_events(readings)
+  24      avg = statistics.mean(readings)
+  25      return {
+  26          "well_id": well_id,
+  27          "avg_psi": round(avg, 1),
+  28          "overpressure_events": len(events),
+  29          "max_psi": max(readings),
+  30      }
+  31
+  32
+  33  def generate_daily_report(sensor_log):
+  34      """Called once per rig, once per day, over all wells reporting that day."""
+  35      readings_by_well = load_readings(sensor_log)
+  36      report = []
+  37      for well_id, readings in readings_by_well.items():
+  38          report.append(summarize_well(well_id, readings))
+  39      return report
+  ```
+signals:
+  - {type: contains, value: "alerts=[]", weight: critical}
+  - {type: regex, value: "(?i)\\b(mutable default|default argument)\\b", weight: critical}
+  - {type: regex, value: "(?i)\\bline 17\\b", weight: evidence}
+  - {type: regex, value: "(?i)\\bline 14\\b", weight: evidence}
+notes: |
+  Coding Task 06 -- bug hunt in a ~40-line snippet, two bugs (hard).
+  Industry: oil_gas_energy (drilling-rig SCADA pressure telemetry).
+  Bug 1 (findable, line 17): the spec comment on line 3 says to flag any reading `>= 4500`,
+  but line 17 uses `psi > ALERT_THRESHOLD_PSI` (strict greater-than), so a reading of exactly
+  4500 psi is silently NOT flagged even though the spec requires it. Fix: change `>` to `>=`.
+  Bug 2 (subtle, line 14 -- the intended "second, subtler bug"): `def
+  flag_overpressure_events(readings, alerts=[])` uses a mutable default argument. Verified
+  real CPython semantics: the default list object is created exactly once, at function-
+  definition time, and is REUSED across every call that doesn't pass `alerts` explicitly.
+  `summarize_well` (line 23) always calls it without passing `alerts`, so every well processed
+  within one `generate_daily_report` run shares and appends to the SAME list -- well 2's
+  `overpressure_events` count silently includes well 1's events too, well 3's includes wells 1
+  and 2, and so on, with no exception ever raised. This is a real, well-known Python pitfall
+  (data corruption with no crash), matching the anchors' "non-obvious correct element" bar for
+  a hard coding task. Fix: `def flag_overpressure_events(readings, alerts=None): alerts =
+  alerts if alerts is not None else []`.

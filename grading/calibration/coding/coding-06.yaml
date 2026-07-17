@@ -1,0 +1,35 @@
+strong: |
+  Bug 1 (line 17, findable against the spec): the spec comment on line 3 requires flagging any
+  reading `>= 4500` psi, but line 17 uses `if psi > ALERT_THRESHOLD_PSI:` (strict greater-than).
+  A reading of exactly 4500.0 psi silently fails to be flagged even though the spec requires it.
+  Fix: change `psi > ALERT_THRESHOLD_PSI` to `psi >= ALERT_THRESHOLD_PSI`.
+
+  Bug 2 (line 14, subtle -- silent cross-well corruption): `def
+  flag_overpressure_events(readings, alerts=[])` uses a mutable default argument. In Python,
+  default argument values are evaluated exactly ONCE, when the function is defined, and that
+  same list object is reused on every call that doesn't pass `alerts` explicitly.
+  `summarize_well` (line 23) calls `flag_overpressure_events(readings)` without ever passing
+  `alerts`, so all wells processed inside one `generate_daily_report` run share the SAME
+  underlying list across calls -- it never gets reset between wells. Concretely: well A's
+  overpressure readings get appended to the shared list; when well B is processed next, its
+  overpressure readings get appended to that SAME list (which still has well A's entries in
+  it), so `len(events)` for well B is inflated by however many events well A had, and well C's
+  count is inflated by both A's and B's. No exception is ever raised -- the report just quietly
+  contains wrong `overpressure_events` counts for every well after the first, in the same run.
+
+  Fix:
+  ```python
+  def flag_overpressure_events(readings, alerts=None):
+      if alerts is None:
+          alerts = []
+      for psi in readings:
+          if psi >= ALERT_THRESHOLD_PSI:
+              alerts.append(psi)
+      return alerts
+  ```
+  Using `None` as the default and creating a fresh list inside the function body ensures every
+  call that doesn't explicitly pass `alerts` gets its own new list.
+weak: |
+  The script looks mostly fine. One thing to check is the threshold comparison on line 17 to
+  make sure it lines up with the spec in the comment -- might want `>=` instead of `>` there.
+  Otherwise the logic for building the report per well looks correct.
