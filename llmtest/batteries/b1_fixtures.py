@@ -1,0 +1,128 @@
+"""Battery 1 — business tasks fixture loader and signal checker."""
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+@dataclass
+class Task:
+    """Fixture task representation."""
+    id: str
+    unit: str
+    difficulty: str
+    cls: str
+    prompt: str
+    signals: list[dict]
+    fixture_sha: str
+    path: Path
+
+
+def load_unit_tasks(root: Path, unit: str) -> list[Task]:
+    """Load all task fixtures for a given unit.
+
+    Args:
+        root: Repository root
+        unit: Unit name (e.g., 'cybersecurity')
+
+    Returns:
+        List of Task objects, sorted by id
+    """
+    tasks_dir = root / "suite" / "b1_business" / unit
+    if not tasks_dir.exists():
+        return []
+
+    tasks = []
+    for task_file in sorted(tasks_dir.glob("task-*.yaml")):
+        try:
+            data = yaml.safe_load(task_file.read_text(encoding="utf-8"))
+            fixture_sha = hashlib.sha256(task_file.read_bytes()).hexdigest()
+            task = Task(
+                id=data["id"],
+                unit=data["unit"],
+                difficulty=data["difficulty"],
+                cls=data["class"],
+                prompt=data["prompt"],
+                signals=data.get("signals", []),
+                fixture_sha=fixture_sha,
+                path=task_file
+            )
+            tasks.append(task)
+        except Exception:
+            # Skip malformed files
+            continue
+
+    return sorted(tasks, key=lambda t: t.id)
+
+
+def check_signals(text: str, signals: list[dict]) -> dict:
+    """Check if text passes all signal checks.
+
+    Args:
+        text: The text to check against signals
+        signals: List of signal dicts with type, value, and optional tolerance
+
+    Returns:
+        Dict mapping signal index to result dict with 'pass' key
+    """
+    results = {}
+
+    for idx, sig in enumerate(signals):
+        sig_type = sig.get("type")
+        sig_value = sig.get("value")
+
+        if sig_type == "contains":
+            results[idx] = {"pass": sig_value in text}
+        elif sig_type == "regex":
+            results[idx] = {"pass": bool(re.search(sig_value, text))}
+        elif sig_type == "numeric":
+            tolerance = sig.get("tolerance", 0.01)
+            results[idx] = {"pass": _check_numeric(text, sig_value, tolerance)}
+        else:
+            results[idx] = {"pass": False}
+
+    return results
+
+
+def _check_numeric(text: str, target: float | int, tolerance: float) -> bool:
+    """Check if text contains a number within tolerance of target.
+
+    Strips commas and dollar signs from digit groups before parsing.
+
+    Args:
+        text: The text to search for numbers
+        target: The target number
+        tolerance: The relative tolerance (0.01 = 1%)
+
+    Returns:
+        True if any number in text is within tolerance of target
+    """
+    # Strip commas and dollar signs from digit groups
+    cleaned = re.sub(r'\$([0-9,]+)', r'\1', text)  # Remove $ before numbers
+    cleaned = re.sub(r'([0-9]),([0-9])', r'\1\2', cleaned)  # Remove commas between digits
+
+    # Find all numbers in the cleaned text
+    numbers = re.findall(r'-?\d+(?:\.\d+)?', cleaned)
+
+    if not numbers:
+        return False
+
+    for num_str in numbers:
+        try:
+            num = float(num_str)
+            # Check absolute relative difference
+            if target != 0:
+                rel_diff = abs((num - target) / target)
+            else:
+                rel_diff = abs(num - target)
+            if rel_diff <= tolerance:
+                return True
+        except ValueError:
+            continue
+
+    return False
