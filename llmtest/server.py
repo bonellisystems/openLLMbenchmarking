@@ -197,7 +197,10 @@ class EndpointHandle:
     def chat(self, messages, *, max_tokens=512, temperature=0.0, tools=None,
              timeout=1200) -> dict:
         body = {"messages": messages, "max_tokens": max_tokens,
-                "temperature": temperature, "stream": False}
+                "stream": False}
+        # temperature=None omits the key from body (runtime default); temperature=0.0 includes it
+        if temperature is not None:
+            body["temperature"] = temperature
         if tools:
             body["tools"] = tools
         req = urllib.request.Request(self.base_url + "/v1/chat/completions",
