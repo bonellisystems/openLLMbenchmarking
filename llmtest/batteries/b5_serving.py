@@ -44,7 +44,7 @@ def build_sustained_prompt(paragraph: str, target_tokens: int, question: str) ->
     return body[:approx_chars] + "\n\n" + question
 
 
-def _conditions(order):
+def _conditions(order, extra_runtimes=False):
     def c(**kw):
         return schema.canonical_condition(kw, order)
     conds = [c(runtime="fork", spec="ngram32", kv="q8", cond="PEAK"),
@@ -53,6 +53,10 @@ def _conditions(order):
              c(runtime="fork", spec="off", kv="q8", cond="SUSTAINED32K")]
     conds += [c(runtime="fork", spec="ngram32", kv="q8", cond="PEAK", conc=n)
               for n in (2, 4, 8, 16)]
+    if extra_runtimes:
+        # ollama: no spec key (ngram is fork-only); no vllm arms yet.
+        conds += [c(runtime="ollama", kv="q8", cond="PEAK"),
+                  c(runtime="ollama", kv="q8", cond="SUSTAINED32K")]
     return conds
 
 
@@ -64,13 +68,14 @@ class B5Serving(Battery):
         order = cfg.suite["condition_order"]
         fx = _fixture_sha(cfg.root)
         sv = cfg.suite["suite_version"]
+        extra_runtimes = cfg.suite.get("b5_extra_runtimes", False)
         items = []
         for model_id, m in sorted(cfg.registry["models"].items()):
             if model_filter and model_id != model_filter:
                 continue
             if str(m.get("local_path", "")).startswith("TO-"):
                 continue                    # artifact not on disk yet
-            for cond in _conditions(order):
+            for cond in _conditions(order, extra_runtimes=extra_runtimes):
                 for run_n in (1,):          # serving rows: 1 run per condition (repeat via --force)
                     rid = schema.compute_row_id(
                         suite_version=sv, model_id=model_id,
@@ -87,29 +92,37 @@ class B5Serving(Battery):
     def execute(self, item: WorkItem, ctx) -> list[dict]:
         cfg = ctx.cfg
         fixture = yaml.safe_load((cfg.root / _FIXTURE).read_text(encoding="utf-8"))
-        parts = dict(kv.split("=") for kv in item.condition.split(";"))
+        parts = dict(pair.split("=") for pair in item.condition.split(";"))
         conc = int(parts.get("conc", 1))
-        overlay = {"spec": "off"} if parts["spec"] == "off" else None
+        overlay = {"spec": "off"} if parts.get("spec") == "off" else None
         ctx_len = 36864 if parts["cond"] == "SUSTAINED32K" else 8192
         mgr = ctx.server_manager()
-        handle = mgr.request_endpoint(item.model_id, runtime="fork",
+        handle = mgr.request_endpoint(item.model_id, runtime=parts.get("runtime", "fork"),
                                       flags_overlay=overlay, parallel=conc,
                                       ctx=ctx_len, kv="q8_0",
                                       timing_authoritative=True)
         if conc > 1:
-            results, lock = [], threading.Lock()
+            results, errors, lock = [], [], threading.Lock()
             def worker():
-                d = handle.chat([{"role": "user", "content": fixture["conc_prompt"]}],
-                                max_tokens=fixture["conc_max_tokens"])
+                try:
+                    d = handle.chat([{"role": "user", "content": fixture["conc_prompt"]}],
+                                    max_tokens=fixture["conc_max_tokens"])
+                except Exception as e:
+                    with lock:
+                        errors.append(e)
+                    return
                 with lock:
                     results.append(d.get("timings", {}))
             t0 = time.time()
             threads = [threading.Thread(target=worker) for _ in range(conc)]
             [t.start() for t in threads]
             [t.join() for t in threads]
+            if errors:
+                raise RuntimeError(
+                    f"{len(errors)}/{conc} concurrent streams failed: {errors[0]}")
             metrics = concurrency_metrics(results, elapsed_s=time.time() - t0)
             resp_meta = {"decode_tps": metrics["per_stream_tps_mean"],
-                         "pp_tps": 0.0, "ttft_ms": 0.0,
+                         "pp_tps": None, "ttft_ms": None,
                          "tokens_out": sum(int(r.get("predicted_n", 0)) for r in results)}
         else:
             if parts["cond"] == "SUSTAINED32K":
