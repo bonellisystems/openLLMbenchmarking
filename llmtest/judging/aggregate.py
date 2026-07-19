@@ -228,8 +228,15 @@ def aggregate(
                                    if pa.n_judges < FULL_PANEL_SIZE})
 
     # --- cal_fallback count: from the maps (packet builder used the global
-    # strong.md/weak.md fallback), not from judgments ---
-    cal_fallback_count = sum(1 for m in maps.values() if m.get("cal_fallback"))
+    # strong.md/weak.md fallback), not from judgments. B2 axis-keyed maps are
+    # excluded on principle (they don't carry cal_fallback today, but this
+    # keeps the exclusion an enforced invariant rather than an accident). ---
+    cal_fallback_count = sum(
+        1 for m in maps.values()
+        if m.get("cal_fallback") and not (
+            isinstance(m.get("dim"), str) and m.get("dim").startswith("axis")
+        )
+    )
 
     # --- kin-delta per judge: mean(score on kin models) - mean(score on
     # non-kin), real-model letters only ---
@@ -314,6 +321,11 @@ def aggregate(
     for j in judgments:
         if j.get("status") != "ok" or j["model_id"] in CAL_IDENTITIES:
             continue
+        m = maps.get(j["packet_id"])
+        dim = m.get("dim") if m else None
+        if isinstance(dim, str) and dim.startswith("axis"):
+            continue   # B2 axis-keyed packet -- never blend axis rankings into
+                       # the B1 unit-based head-to-head pairwise matrix.
         by_packet_judge.setdefault(j["packet_id"], {}).setdefault(
             j["judge_id"], {})[j["model_id"]] = j["rank"]
 
