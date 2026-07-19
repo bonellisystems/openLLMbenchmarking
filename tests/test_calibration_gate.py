@@ -110,6 +110,22 @@ def test_quarantined_when_no_cal_rows_present():
     assert status == {"axis5": "quarantined"}
 
 
+def test_quarantined_when_a_judge_has_only_cal_strong_rows_no_cal_weak():
+    """A judge with one-sided CAL coverage (only CAL-strong, no CAL-weak) can't
+    form a weak median to compare against -- can't confirm non-inverted, so
+    the ordinal invariant fails and the axis is quarantined, even though
+    every other judge has both sides and would otherwise pass cleanly."""
+    maps = {"p1": _map("axis5")}
+    judgments = [
+        _j("p1", "claude", "CAL-strong", 9), _j("p1", "claude", "CAL-weak", 2),
+        _j("p1", "codex", "CAL-strong", 9),  _j("p1", "codex", "CAL-weak", 2),
+        # gemini: CAL-strong only, no CAL-weak rows at all.
+        _j("p1", "gemini", "CAL-strong", 9),
+    ]
+    status = calibration_status(judgments, maps, refscores=REFSCORES)
+    assert status == {"axis5": "quarantined"}
+
+
 def test_quarantined_when_only_real_model_rows_present_no_cal():
     maps = {"p1": _map("axis5")}
     judgments = [

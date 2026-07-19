@@ -52,7 +52,7 @@ def calibration_status(
 
     An axis with zero ok CAL rows can't be validated and is quarantined.
     """
-    refscores = refscores or {"strong": 9, "weak": 2, "tolerance": 1}
+    refscores = {"strong": 9, "weak": 2, "tolerance": 1, **(refscores or {})}
     tolerance = refscores["tolerance"]
 
     axes: set[str] = {
