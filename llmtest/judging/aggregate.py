@@ -99,6 +99,7 @@ class AggResult:
     cal_fallback_count: int = 0
     error_rows_count: int = 0
     pairwise_wins: dict = field(default_factory=dict)       # (winner, loser) -> packet win count
+    b2_axis_scores: dict = field(default_factory=dict)      # (model_id, axis) -> float
 
 
 def aggregate(
@@ -147,7 +148,8 @@ def aggregate(
     current_rubric_sha = current_rubric_sha or {}
 
     error_rows_count = 0
-    groups: dict[tuple, dict] = {}   # (packet_id, model_id) -> {judge_id: score}
+    groups: dict[tuple, dict] = {}      # (packet_id, model_id) -> {judge_id: score} -- B1 only
+    b2_groups: dict[tuple, dict] = {}   # (packet_id, model_id) -> {judge_id: score} -- B2 only
     for j in judgments:
         if j.get("status") != "ok":
             error_rows_count += 1
@@ -156,11 +158,18 @@ def aggregate(
         m = maps.get(packet_id)
         if m is None:
             continue   # no committed map for this packet -- can't attribute unit/task, skip
+        key = (packet_id, j["model_id"])
+        dim = m.get("dim")
+        if isinstance(dim, str) and dim.startswith("axis"):
+            # B2 axis-keyed packet -- routed to b2_axis_scores below, NEVER
+            # into the B1 (model, unit) path (no `unit` key on a B2 map, and
+            # no rubric_sha supersede filtering here -- that's a B1 concept).
+            b2_groups.setdefault(key, {})[j["judge_id"]] = j["score"]
+            continue
         unit = m.get("unit")
         want_sha = current_rubric_sha.get(unit)
         if want_sha is not None and m.get("rubric_sha") != want_sha:
             continue   # superseded packet (rubric changed since this was judged)
-        key = (packet_id, j["model_id"])
         groups.setdefault(key, {})[j["judge_id"]] = j["score"]
 
     packet_answers = [
@@ -264,6 +273,30 @@ def aggregate(
     model_overall = {model_id: sum(means) / len(means)
                       for model_id, means in model_unit_means.items()}
 
+    # --- B2 per (model, axis): median-of-judges per (packet, model) answer
+    # (reusing PacketAnswer.median, same as the B1 path), fabrication-capped
+    # at 2.0 BEFORE averaging, then mean-of-medians per (model, axis) when a
+    # model appears in more than one packet for the same axis -- mirrors B1's
+    # mean-of-medians per (model, unit) above. ---
+    b2_axis_medians: dict[tuple, list] = {}
+    for (packet_id, model_id), scores in b2_groups.items():
+        pa = PacketAnswer(
+            packet_id=packet_id, model_id=model_id,
+            task_id=maps[packet_id].get("task_id", ""),
+            run_n=maps[packet_id].get("run_n", 0),
+            unit=maps[packet_id].get("dim", ""),
+            scores=dict(scores),
+        )
+        median = pa.median
+        fabrication_pass = maps[packet_id].get("fabrication_pass") or {}
+        if fabrication_pass.get(model_id) is False:
+            median = min(median, 2.0)
+        axis = maps[packet_id].get("dim")
+        b2_axis_medians.setdefault((model_id, axis), []).append(median)
+
+    b2_axis_scores = {key: sum(medians) / len(medians)
+                       for key, medians in b2_axis_medians.items()}
+
     # --- model roster: models with aggregate data, widened by any model_id
     # present in `rows` (so a model that ran but isn't judged yet still gets
     # a scorecard column). When roster_filter is provided, only models in the
@@ -316,4 +349,5 @@ def aggregate(
         cal_fallback_count=cal_fallback_count,
         error_rows_count=error_rows_count,
         pairwise_wins=pairwise_wins,
+        b2_axis_scores=b2_axis_scores,
     )
