@@ -1,0 +1,946 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Data Analytics -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+Any SQL or analysis logic is correct -- right join type, correct aggregation grain, no double-counting -- and any chart or visualization recommendation avoids deceptive framing (no truncated axes, no cherry-picked ranges). Statistical claims are appropriately hedged (correlation is not stated as causation), and every finding is traceable to the specific numbers given in the prompt rather than invented.
+Example character: a query with the correct join and grain explained, a chart recommendation with the axis explicitly kept honest, and a finding that cites the specific input numbers.
+
+## 7 -- Strong
+The core analysis is correct and the findings are usable, but there is one minor query or logic gap -- an edge case in a join, for instance -- or the chart-framing caveat is left unstated. Nothing here would silently corrupt the result.
+Example character: a correct query with a sound finding that does not explicitly address how the chart avoids visual distortion.
+
+## 5 -- Adequate
+The analysis is directionally correct but the query has a plausible bug (wrong aggregation grain causing double-counting) or the chart recommendation is not checked for distortion before being suggested.
+Example character: a query that looks reasonable but would double-count rows on a one-to-many join.
+
+## 3 -- Weak
+The SQL or logic has a clear correctness bug (wrong join type, missing GROUP BY column), correlation is stated as causation, or a trend is asserted that the given data does not support.
+Example character: a query missing a needed GROUP BY that would silently produce wrong aggregates.
+
+## 0 -- Unusable
+Presents fabricated numbers as if they were query output, or recommends a chart design that is actively deceptive (truncated axis to exaggerate a trend) as best practice. Empty or off-task.
+
+## Unit-specific red flags (deduct hard)
+- SQL or logic bug that would silently double-count or drop rows (wrong join type, missing GROUP BY column).
+- Fabricated numbers presented as if they came from the given dataset.
+- Chart design that would visually mislead (truncated y-axis, cherry-picked time window) recommended without caveat.
+- Correlation stated as causation.
+
+## Unit-specific excellence markers
+- Query or logic correct for the actual grain and join semantics needed.
+- Chart or visualization choice avoids known distortion patterns.
+- Statistical uncertainty or the correlation-versus-causation distinction called out explicitly.
+- Findings traceable to the specific numbers given in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+A city's Department of Permitting ran an A/B test on two versions of an email reminder sent
+to applicants with an incomplete permit application, measuring "completion rate" (recipient
+finishes and resubmits within 7 days of the email).
+
+Version A (control, plain-text reminder): sent to 240 recipients, 42 completed within 7 days.
+Version B (adds a countdown-to-deadline banner and a direct resume link): sent to 235
+recipients, 51 completed within 7 days.
+
+A staffer's draft summary for the department director says: "Version B lifts completion by
+24% -- let's roll it out to everyone immediately." Compute the completion rate for each
+version and the point-to-point lift. Assess whether a difference of this size, at these sample
+sizes (roughly 40-50 completions per arm), is large enough to be confident it reflects a real
+effect of the new email design rather than normal week-to-week noise in a modest sample.
+State what you would need (larger sample, longer run, formal significance test) before
+recommending a full rollout, and what you would do in the meantime given Version B costs
+nothing extra to keep running.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Here’s a complete assessment you can hand to the director:
+
+### 1. Completion Rates & Point-to-Point Lift
+| Version | Sent | Completed | Completion Rate |
+|---------|------|-----------|-----------------|
+| A (control) | 240 | 42 | **17.5%** |
+| B (treatment) | 235 | 51 | **21.7%** |
+
+- **Absolute lift:** +4.2 percentage points
+- **Relative lift:** `(21.7 − 17.5) / 17.5 ≈ 24.0%`
+
+The staffer’s “24% lift” figure is mathematically correct, but it’s the *relative* lift. Framing it as a 24% improvement makes it sound larger than the 4.2-percentage-point absolute gain. Both numbers matter for context.
+
+---
+
+### 2. Is This Enough to Be Confident It’s a Real Effect?
+**No.** At these sample sizes, the result is not statistically distinguishable from noise.
+
+- **Two-proportion z-test:**  
+  Pooled rate = 93/475 ≈ 19.6%  
+  Standard error of the difference ≈ 3.6 pp  
+  `z = 4.2 / 3.6 ≈ 1.15` → **p ≈ 0.12 (one-sided) / 0.25 (two-sided)**
+
+- **95% confidence interval for the true difference:** `−2.9 pp to +11.3 pp`  
+  This includes zero (and even a small negative effect), so we cannot rule out that Version A is actually equivalent or slightly better.
+
+- **Statistical power:** With ~240 recipients per arm and a binary outcome, this test has only **~20–25% power** to detect a true lift of this size. In plain terms: if the new email actually works, you only have a 1-in-4 chance of seeing a statistically significant result. The observed 24% lift is entirely consistent with normal week-to-week sampling variation in a modest sample.
+
+---
+
+### 3. What’s Needed Before Recommending a Full Rollout
+- **Larger sample:** To achieve 80% power at α=0.05 for a lift of this magnitude, you need roughly **1,400–1,800 recipients per arm** (~3,000–3,600 total). That’s ~6× the current size.
+- **Longer run:** The test should span multiple weeks to absorb normal variation in application volume, applicant demographics, seasonal patterns, and staff workload fluctuations.
+- **Pre-registered analysis plan:** Set the significance threshold and sample size *before* running, and avoid peeking or stopping early based on interim numbers (which inflates false-positive risk).
+- **Formal significance test with declared α:** Only proceed to rollout when the p-value crosses your pre-set threshold (typically 0.05) and the confidence interval excludes zero.
+
+---
+
+### 4. What to Do in the Meantime
+Since Version B costs nothing extra to keep running and shows a positive directional signal:
+
+1. **Switch all new applicants to Version B now** instead of reverting to A. This is a “no-regrets” move: if the effect is real, you capture gains immediately; if it’s noise, you lose nothing additional.
+2. **Continue collecting data** until the test reaches the powered sample size and the effect clears statistical significance.
+3. **Track the metric weekly** to confirm the lift holds over time rather than being a one-week fluke.
+4. **Frame the message to leadership clearly:**  
+   > *“Version B shows a promising +4.2 pp lift (24% relative), but at our current sample size we can’t yet rule out normal variation. We’re keeping B live for all new applicants at no extra cost while we run a properly powered validation. Once the confidence interval excludes zero, we’ll confirm the rollout formally.”*
+
+This approach captures upside quickly, avoids premature commitment on unproven results, and stays consistent with evidence-based public-sector decision-making.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Here is the calculation of the metrics, the statistical assessment, and a recommendation for next steps.
+
+### 1. The Numbers
+
+First, we calculate the actual completion rates and the lift to verify the staffer’s math.
+
+*   **Version A (Control):**
+    *   $42 \text{ completions} / 240 \text{ recipients} = \mathbf{17.5\%}$
+*   **Version B (Treatment):**
+    *   $51 \text{ completions} / 235 \text{ recipients} \approx \mathbf{21.7\%}$
+
+**Point-to-Point Lift:**
+*   **Absolute Lift:** $21.7\% - 17.5\% = \mathbf{4.2 \text{ percentage points}}$
+*   **Relative Lift:** $(21.7\% - 17.5\%) / 17.5\% \approx \mathbf{24.0\%}$
+
+**Verdict on the Draft:** The staffer is mathematically correct regarding the point estimate (the 24% figure is accurate). However, the draft treats this point estimate as a guaranteed outcome, which is statistically premature.
+
+***
+
+### 2. Statistical Assessment: Noise vs. Signal
+
+To determine if this difference is a real effect or just normal week-to-week noise, we perform a hypothesis test for two proportions.
+
+*   **Null Hypothesis ($H_0$):** There is no difference in completion rates ($p_A = p_B$).
+*   **Test Statistic (Z-score):** $\approx 1.15$
+*   **P-value:** $\approx 0.125$ (12.5%)
+
+**Interpretation:**
+In standard scientific and business testing, we require a **p-value < 0.05** (5%) to claim a result is "statistically significant." With a p-value of ~12.5%, there is roughly a **1-in-8 chance** that this difference occurred purely by random luck, even if Version B were identical to Version A.
+
+Furthermore, the 95% Confidence Interval for the difference between the two versions is approximately **$[-2.9\%, +11.3\%]$**. Because this interval includes zero (meaning no change), we cannot confidently rule out that Version A and Version B are actually the same.
+
+**Conclusion:** The sample size (roughly 240 per arm) is too small to support the claim that Version B is definitively better. The observed 24% lift is not yet large enough to be confident it is a real effect rather than noise.
+
+***
+
+### 3. Requirements Before Full Rollout
+
+Before recommending a full rollout to the entire department, the following conditions must be met:
+
+1.  **Formal Significance Test:** A final analysis must show a p-value $\le 0.05$ (or a 95% confidence interval that does not cross zero).
+2.  **Increased Sample Size:** We need to run the test longer to gather more data.
+    *   *Rough Estimate:* To detect a lift of this magnitude with 80% power and a 5% significance level, we would likely need roughly **double the sample size** (approx. 500–600 recipients per arm, or roughly 1,000–1,200 total).
+3.  **Time Duration:** The test should run for multiple weeks to smooth out "week-to-week noise" (e.g., if the test ran entirely during a holiday week or a week with high application volume, results may be skewed).
+
+***
+
+### 4. Interim Recommendation (Cost is Zero)
+
+Since Version B costs nothing extra to keep running, there is no financial penalty in maintaining the experiment.
+
+**Action Plan:**
+1.  **Do NOT switch to Version B immediately.** Making a full switch now commits the department to a decision based on statistically weak evidence. If Version B is actually a false positive, you risk permanently lowering completion rates for the next cohort.
+2.  **Continue the A/B Test.** Keep Version A and Version B running in parallel for at least another few weeks to accumulate a larger sample size.
+3.  **Reframe the Summary.** Advise the staffer to revise their summary to read: *"Preliminary data shows a 24% relative lift in completion rate with Version B (21.7% vs 17.5%). However, the sample size is currently too small to rule out random noise. We will extend the test to confirm statistical significance before a full rollout."*
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Version A completion rate: 42/240 = 17.5%. Version B completion rate: 51/235 = 21.7%. Point
+lift: 21.7 - 17.5 = 4.2 percentage points (the 24% figure in the staffer's draft is the
+RELATIVE lift, 4.2/17.5 ~ 24% -- correctly computed, but presented in a way that implies more
+certainty than this sample supports).
+
+With only ~42 and ~51 completions on bases of 240 and 235, this is a fairly small sample for
+each arm. A rough standard-error estimate for the difference in two proportions this size comes
+out to a few percentage points, which puts the observed 4.2-point gap only around one standard
+error away from zero -- well short of what's conventionally needed to call a result
+statistically significant. In plain terms: a difference this size, at this sample size, is
+quite plausibly noise rather than a real effect of the new email design.
+
+Before recommending a full rollout, I'd want a larger sample (either a longer test window or
+a bigger population) or a formal significance test / confidence interval on the difference.
+Since Version B costs nothing extra to keep running, the right interim move is to keep both
+arms live a while longer rather than declaring a winner now -- not to roll out to everyone
+immediately, and not to kill Version B either.
+
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Here’s a complete, data-driven assessment you can use directly or adapt for the director.
+
+### 1. Completion Rates & Point-to-Point Lift
+- **Version A (control):** 42 / 240 = **17.5%**
+- **Version B (variant):** 51 / 235 ≈ **21.7%**
+- **Absolute lift:** 21.7% − 17.5% = **4.2 percentage points**
+- **Relative lift:** (4.2 / 17.5) ≈ **24.0%**
+
+The staffer’s math is correct: Version B shows a 24% relative lift.
+
+---
+
+### 2. Statistical Assessment
+To determine if this difference is likely real or just random noise, we run a two-proportion z-test:
+
+- **Pooled completion rate:** (42 + 51) / (240 + 235) = 93 / 475 ≈ 19.6%
+- **Standard error (under null):** ≈ 3.64 percentage points
+- **Observed difference:** 4.2 percentage points
+- **z-statistic:** 0.042 / 0.0364 ≈ **1.15**
+- **Two-sided p-value:** ≈ **0.25** (25% chance of seeing this or a larger difference if there’s truly no effect)
+- **95% Confidence Interval for the difference:** −2.9 pp to +11.3 pp
+
+**Interpretation:** The result is **not statistically significant** at the conventional 95% confidence level (α = 0.05). The observed lift falls well within the range of normal sampling variability. We cannot confidently conclude Version B is better.
+
+---
+
+### 3. Sample Size & Confidence Evaluation
+With ~40–50 completions per arm, the test has low statistical power. To detect a meaningful absolute lift of 4–5 percentage points with 80% power at 95% confidence, you’d need roughly **1,000–1,200 recipients per arm** (≈2,000–2,400 total). 
+
+Additionally, stopping an A/B test as soon as it "looks good" (early peeking) inflates the false-positive rate. At these sample sizes, the 24% relative lift is statistically indistinguishable from week-to-week or day-to-day noise in applicant behavior.
+
+---
+
+### 4. What’s Needed Before a Full Rollout
+Before scaling Version B, the department should:
+1. **Run a formal significance test** (already outlined above) and wait for p < 0.05 (or pre-agreed threshold).
+2. **Reach adequate sample size/power:** Aim for ~1,000+ completions per variant, or ~2,000–2,500 total recipients depending on baseline rates.
+3. **Extend the run:** Cover at least 2–3 full business/permit cycles to smooth out day-of-week effects, seasonal application surges, or staffing variations.
+4. **Check experimental integrity:** Confirm random assignment, no overlap between arms, consistent email delivery timing, and no external confounders (e.g., policy changes, website outages).
+5. **Predefine stopping rules:** Avoid "peeking." Use a sequential testing framework or fixed sample size to preserve statistical validity.
+
+---
+
+### 5. Interim Recommendation (Since B Costs Nothing Extra)
+Given that Version B incurs no additional cost and shows a positive (though unconfirmed) trend:
+- **Keep running Version B** to continue collecting data. There’s no downside to letting the experiment run its course.
+- **Do not declare a winner or roll out department-wide yet.** The current evidence is inconclusive.
+- **Monitor continuously but formally:** Set a minimum sample threshold (e.g., 1,000 per arm) before drawing conclusions. If results remain positive, proceed with rollout. If they drift back toward the control, pause and reassess.
+- **Document the process:** For next time, define your minimum detectable effect, required sample size, and analysis plan *before* launching. This prevents premature decisions and aligns stakeholders.
+
+---
+
+### Bottom Line for the Director
+> *"Version B shows a 24% relative lift (4.2 pp absolute), but at these sample sizes the result is statistically indistinguishable from random noise (p ≈ 0.25). While it’s free to keep running, we should not scale it yet. Let’s continue with Version B to reach ~2,000+ total recipients, run the test for 2–3 full cycles, and apply a formal significance test before committing to a citywide rollout."*
+
+This approach balances caution with action, respects statistical rigor, and aligns with public-sector best practices for evidence-based policy.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+**Step‑by‑step calculation**
+
+| Version | # emails sent | # completions | Completion rate |
+|---------|--------------|---------------|-----------------|
+| A (control) | 240 | 42 | \( \displaystyle \frac{42}{240}=0.175 = 17.5\% \) |
+| B (new design) | 235 | 51 | \( \displaystyle \frac{51}{235}=0.2170\approx 21.7\% \) |
+
+**Point‑to‑point lift**
+
+\[
+\text{Lift} = \frac{21.7\% - 17.5\%}{17.5\%}
+            = \frac{0.2170-0.1750}{0.1750}
+            = 0.24 \; \text{or} \; 24\%
+\]
+
+So the draft summary’s “24 % lift” is numerically correct (rounded).
+
+---
+
+### Is a 24 % lift statistically reliable?
+
+To judge whether this difference is larger than what random variation would produce, we need a **formal significance test** (e.g., a two‑proportion z‑test) and a **confidence interval** for the lift.
+
+#### 1. Two‑proportion z‑test (α = 0.05)
+
+- \(p_A = 0.175,\; n_A = 240\)  
+- \(p_B = 0.217,\; n_B = 235\)
+
+Pooled proportion  
+
+\[
+\hat p = \frac{42+51}{240+235}= \frac{93}{475}=0.1958
+\]
+
+Standard error  
+
+\[
+SE = \sqrt{\hat p(1-\hat p)\Bigl(\frac{1}{n_A}+\frac{1}{n_B}\Bigr)}
+    = \sqrt{0.1958\times0.8042\Bigl(\frac{1}{240}+\frac{1}{235}\Bigr)}
+    \approx 0.0303
+\]
+
+Observed difference  
+
+\[
+\Delta = p_B - p_A = 0.2170 - 0.1750 = 0.0420
+\]
+
+z‑statistic  
+
+\[
+z = \frac{\Delta}{SE} = \frac{0.0420}{0.0303} \approx 1.38
+\]
+
+Two‑tailed p‑value ≈ 0.17.  
+**Result:** At the conventional 5 % significance level the difference is **not statistically significant** (p > 0.05). The 95 % confidence interval for the true lift is roughly:
+
+\[
+\Delta \pm 1.96\,SE = 0.0420 \pm 1.96(0.0303) \approx 0.0420 \pm 0.059 \;
+\Rightarrow\; [-0.017,\; 0.101]
+\]
+
+In percentage terms: **–1.7 % to +10.1 %**. The observed 24 % lift sits at the upper edge of the interval but is not “point‑estimated” with confidence.
+
+#### 2. Sample‑size perspective
+
+With about 40–50 conversions per arm, the **standard error** is relatively large (≈3 % absolute). A lift of 4–5 percentage points (24 % relative) is borderline; to achieve a statistically significant result (p < 0.05) we would typically need **roughly 2–3 times more observations** (i.e., ~500–600 recipients per version) or a larger absolute difference.
+
+---
+
+### What is needed before a full rollout?
+
+| Requirement | Why it matters |
+|-------------|----------------|
+| **Larger sample** (e.g., double the current size) | Reduces standard error, narrows confidence intervals, makes modest lifts detectable. |
+| **Longer run** (more weeks of data) | A/B tests can suffer from day‑of‑week or week‑to‑week traffic patterns; extending the experiment smooths those out. |
+| **Formal significance testing** (two‑proportion z‑test, chi‑square, or Bayesian posterior) | Provides a quantitative p‑value or credible interval to assess whether the lift is likely real. |
+| **Pre‑registered analysis plan** (alpha level, power calculation) | Ensures the study is powered to detect the effect size the organization cares about (e.g., a 5 % absolute lift). |
+| **Monitoring of secondary metrics** (e.g., open‑rate, unsubscribe, spam complaints) | Guarantees the new design doesn’t harm other parts of the user journey. |
+
+**Bottom line:** With the current data we cannot claim the 24 % lift is statistically reliable. A larger experiment (or a longer observation window) is required to confirm the effect.
+
+---
+
+### What to do in the meantime, given Version B costs nothing extra
+
+1. **Continue the A/B test** at the same allocation (≈50 % A, 50 % B) until the sample size reaches the pre‑specified power target (e.g., 500 ± 50 per arm). Because the banner and link add no marginal cost, extending the test is essentially free.
+
+2. **Implement a “monitor‑and‑adjust” routine**:  
+   - Track weekly conversion rates for each version.  
+   - If the cumulative difference widens (e.g., > 8 % absolute with a p‑value < 0.10) and the trend is consistent across weeks, you may consider an early rollout.  
+   - Conversely, if the difference shrinks toward zero, the cost‑free experiment can be stopped without loss.
+
+3. **Run a secondary “quick‑check”**: If the department has historical weekly completion rates for the control email (plain‑text reminder), compare the current 17.5 % to that baseline. If the control itself is unusually low (perhaps due to seasonality), the observed lift may be partly a regression‑to‑the‑mean effect, further justifying a longer test.
+
+4. **Document assumptions** (e.g., randomization integrity, no crossover between arms) so that any post‑hoc analysis remains credible.
+
+---
+
+### TL;DR for the director
+
+- **Completion rates:** 17.5 % (A) vs. 21.7 % (B) → **24 % relative lift** (≈4.2 % absolute).  
+- **Statistical confidence:** With ~240 and 235 recipients, the 95 % CI for the lift is roughly –1.7 % to +10.1 %; the p‑value ≈ 0.17. **Not statistically significant** at the usual 5 % level.  
+- **What’s needed:** Larger sample (≈500+ per arm) or longer run, plus a formal significance test and power analysis before committing to a full rollout.  
+- **Immediate action:** Keep Version B running (no extra cost) and extend the experiment until the required sample size is reached, while monitoring trends.  
+
+Only after a statistically robust signal (e.g., p < 0.05 and a clinically meaningful lift) should the department replace the plain‑text reminder city‑wide.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | FAIL |
+| regex-3 | PASS |
+
+### 1. Calculations
+
+First, we calculate the completion rates and the relative lift.
+
+*   **Completion Rate Version A ($P_A$):**
+    $$P_A = \frac{42}{240} = 0.175 \text{ (or 17.5\%)}$$
+
+*   **Completion Rate Version B ($P_B$):**
+    $$P_B = \frac{51}{235} \approx 0.217 \text{ (or 21.7\%)}$$
+
+*   **Point-to-Point Lift:**
+    $$\text{Lift} = \frac{P_B - P_A}{P_A} = \frac{0.217 - 0.175}{0.175} = \frac{0.042}{0.175} = 0.24 \text{ (or 24\%)}$$
+
+**The staffer's math is correct:** Version B does indeed show a 24% relative lift in completion rates based on this sample.
+
+---
+
+### 2. Assessment of Confidence
+
+While the 24% lift is mathematically accurate, it is **not yet large enough to be confident** that it reflects a true effect of the design rather than random noise.
+
+In statistics, when sample sizes are modest (roughly 40–50 successes per arm), the "margin of error" is quite high. If we perform a formal two-proportion z-test on these numbers:
+*   The calculated **p-value is approximately 0.25** (for a two-tailed test).
+*   In professional testing, we typically look for a p-value of **less than 0.05** to claim "statistical significance."
+
+A p-value of 0.25 means there is a **25% chance** that we would see a difference this large (or larger) even if Version B was actually no better than Version A. In the world of data science, a 1-in-4 chance of being wrong is far too risky to justify a "full rollout" based on a single metric. The current result is a "promising signal," but it is not "proof."
+
+---
+
+### 3. Recommendations
+
+Before recommending a full, permanent rollout, I would recommend the following:
+
+**What is needed:**
+1.  **A Larger Sample Size:** We need to continue the test until the cumulative number of recipients is large enough to drive the p-value below the 0.05 threshold. This will narrow the confidence interval and ensure the 24% lift isn't just a temporary fluctuation.
+2.  **A Formal Significance Test:** We must establish a pre-determined threshold for success (alpha) before the test concludes to avoid "p-hacking" (stopping the test only when the numbers look good).
+3.  **A Longer Run:** We should ensure the test runs through a full business cycle (e.g., a full week or two) to account for "day-of-the-week" effects (e.g., people might respond differently to emails on Monday vs. Friday).
+
+**What to do in the meantime:**
+Since Version B **costs nothing extra to keep running**, we should **continue the A/B test as is.** 
+
+We should not roll it out to *everyone* yet, but we should not revert to Version A either. We should let the experiment run (keeping both groups active) to collect more data. This allows us to gather the necessary statistical power without losing the potential gains we are currently observing in Version B.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Here’s a step-by-step breakdown for the director, including the math, statistical assessment, and actionable recommendations.
+
+### 1. Completion Rates & Lift
+| Version | Sent | Completed | Completion Rate |
+|---------|------|-----------|-----------------|
+| A (Control) | 240 | 42 | **17.5%** (42/240) |
+| B (Treatment) | 235 | 51 | **21.7%** (51/235) |
+
+- **Absolute lift:** 21.7% − 17.5% = **+4.2 percentage points**
+- **Relative lift:** (4.2 / 17.5) × 100 = **+24%**  
+*(The staffer’s “24%” refers to relative lift. Both figures are worth tracking, but absolute lift drives operational impact.)*
+
+### 2. Statistical Assessment: Is This a Real Effect?
+With ~40–50 completions per arm, the observed difference is **not large enough to rule out random noise**.
+
+- **Standard error of the difference:** ~3.6 percentage points
+- **95% confidence interval for the lift:** −2.9 pp to +11.3 pp
+- **Two-sided p-value:** ~0.25 (well above the standard 0.05 threshold)
+
+**What this means:**  
+The true effect could plausibly be anywhere from Version B being slightly *worse* than A to being ~11 pp better. A 4.2 pp difference with these sample sizes falls comfortably within normal week-to-week variation. We cannot yet be confident the new design is driving the improvement.
+
+### 3. What’s Needed Before Recommending Full Rollout
+To move from “promising signal” to “confident decision,” the department should:
+1. **Run a formal significance test** with a pre-specified α (typically 0.05) and stop rule.
+2. **Increase sample size.** To detect a 4–5 pp absolute lift with 80% statistical power at a ~18% baseline, you’d need roughly **1,300–1,500 recipients per arm** (≈2,600–3,000 total), not ~240.
+3. **Control for confounders:** Ensure both groups received emails at similar times, contained similar permit types, and weren’t affected by external events (e.g., holiday weekends, system outages).
+4. **Pre-register analysis plan** (or at least document it) to avoid “peeking” and p-hacking as the test runs longer.
+
+### 4. Interim Recommendations (Given Zero Marginal Cost for B)
+Since Version B costs nothing extra to maintain and carries no known downside:
+- **Keep the A/B test running** at roughly 50/50 until the confidence interval excludes 0 (or until you hit the target sample size). Do not roll out to everyone yet.
+- **Track secondary metrics:** spam complaints, support ticket volume, and time-to-completion. A higher completion rate is only valuable if it doesn’t degrade user experience or create downstream bottlenecks.
+- **Prepare a staged rollout plan:** Once statistical significance is reached (or Bayesian posterior probability crosses a high threshold, e.g., >95%), shift traffic gradually (e.g., 70% B → 100% B) while monitoring for drift.
+- **Communicate transparently to leadership:** Frame the current result as a “strong directional signal worth continuing,” not a proven winner. Provide a timeline based on expected email volume (e.g., “At current send rates, we’ll reach decisive sample size in X weeks”).
+
+**Bottom line:** The 24% relative lift is encouraging, but statistically it’s still within the noise floor of a modest sample. Keep Version B running alongside A, collect more data, and roll out only when the evidence crosses a pre-defined confidence threshold.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+## Completion Rates and Lift
+
+**Version A (Control):** 42/240 = **17.5%** completion rate
+**Version B (Treatment):** 51/235 = **21.7%** completion rate
+
+**Point-to-point lift:** 21.7% - 17.5% = **4.2 percentage points**
+
+The staffer's claim of "24% lift" is calculated as (51-42)/(42) = 21.4% - this is a relative percentage increase, not the absolute difference.
+
+## Statistical Significance Assessment
+
+With ~40-50 completions per group, this is a **modest sample size** that's prone to random variation. The absolute lift of 4.2 percentage points may not be statistically significant given the sample size.
+
+**Key concerns:**
+- Small sample sizes increase the chance of Type I error (false positive)
+- The variation could be due to random fluctuation rather than the design change
+- With ~40-50 completions per arm, we're looking at about 15-20% variability in completion rates
+
+## What's Needed for Confidence
+
+To confidently recommend rollout, I'd want:
+- **Larger sample size:** Likely 200-300 completions per group for 80% power
+- **Formal significance test:** Chi-square test or z-test for two proportions
+- **Longer run time:** More data points to reduce weekly variation
+
+## Recommendation
+
+**Continue running both versions** for the time being. Even though Version B shows better results, the modest sample size means the difference isn't statistically robust yet. Version B costs nothing extra, so there's no downside to continuing the test while gathering more data.
+
+**Next steps:** 
+- Continue monitoring both versions
+- Consider extending the test duration to gather more data
+- If the trend continues, conduct a formal statistical test
+- The business case for Version B is reasonable, but implementation should wait for statistical confidence
+
+The current evidence is promising but not definitive.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+**1.  Compute the observed completion rates**
+
+| Version | Recipients (n) | Completed within 7 days | Completion rate |
+|---------|----------------|------------------------|-----------------|
+| **A** (plain‑text) | 240 | 42 | \( \hat p_A = \dfrac{42}{240}=0.175 \; \text{or } 17.5\% \) |
+| **B** (countdown + resume link) | 235 | 51 | \( \hat p_B = \dfrac{51}{235}=0.217 \; \text{or } 21.7\% \) |
+
+**2.  Point‑to‑point (absolute) lift**
+
+\[
+\Delta = \hat p_B-\hat p_A = 0.217-0.175 = 0.042\; \text{(4.2 percentage points)}
+\]
+
+**3.  Relative lift (often quoted as “24 %”)**
+
+\[
+\text{Relative lift} = \frac{\Delta}{\hat p_A}= \frac{0.042}{0.175}\approx 0.24 \; \text{or } 24\%
+\]
+
+---
+
+## 4.  Is a 4‑percentage‑point lift significant with these sample sizes?
+
+The two groups are roughly comparable (≈ 240 vs 235 observations) and each yields about 40–50 completions.  
+To see whether the observed difference could be due to random sampling variation we can perform a **large‑sample (Z) test for the difference in two proportions**.
+
+### 4.1.  Test statistic  
+
+\[
+\text{SE}(\Delta)=\sqrt{\frac{\hat p_A(1-\hat p_A)}{n_A}+\frac{\hat p_B(1-\hat p_B)}{n_B}}
+\]
+
+\[
+\begin{aligned}
+\frac{\hat p_A(1-\hat p_A)}{n_A} &= \frac{0.175\times0.825}{240}=0.000602,\\[4pt]
+\frac{\hat p_B(1-\hat p_B)}{n_B} &= \frac{0.217\times0.783}{235}=0.000723,\\[4pt]
+\text{SE}(\Delta) &=\sqrt{0.000602+0.000723}= \sqrt{0.001325}=0.0364.
+\end{aligned}
+\]
+
+\[
+Z = \frac{\Delta}{\text{SE}(\Delta)} = \frac{0.042}{0.0364}\approx 1.15.
+\]
+
+### 4.2.  Decision  
+
+*Two‑sided* 5 % critical value → ±1.96.  
+Our Z = 1.15 is well inside that range, giving a **p‑value ≈ 0.25**.
+
+**Conclusion:** At the conventional 5 % (or even 10 %) significance level we **cannot reject the null hypothesis** that the true completion rates are equal. The observed 4‑point lift is compatible with random week‑to‑week fluctuation given the sample sizes.
+
+---
+
+## 5.  What would we need before recommending a full rollout?
+
+| Requirement | Why it matters | Rough target |
+|-------------|----------------|--------------|
+| **Larger sample / longer run** | Reduces the standard error, increasing power to detect a genuine effect. | Roughly 4–5× more observations per arm (≈ 1 000 completions each) would give >80 % power to detect a 2‑point absolute lift (≈ 11 % relative). |
+| **Formal significance test / confidence interval** | Provides a statistically rigorous statement about the lift (e.g., “the 95 % CI for the lift is 1.5–7.0 pp”). | Compute a two‑sided 95 % CI: \(\Delta \pm 1.96\times\text{SE}\). With current data it is \(0.042 \pm 0.071\) → (−0.029, 0.111). A CI that excludes 0 would be needed for confidence. |
+| **Check for randomisation / week effects** | If the two arms were sent on different weeks, calendar effects (e.g., holidays) could confound the lift. | Randomly intermix the two versions across weeks or stratify by week before concluding. |
+| **Re‑estimate the effect after more data** | Early estimates can over‑state lifts (winner’s curse). | After accumulating a larger dataset, re‑calculate the lift and its confidence interval. |
+
+---
+
+## 6.  Practical next steps – “keep testing” without a costly rollout
+
+1. **Continue to run Version B** – it costs no extra money, and the extra completions will naturally increase the sample size.  
+2. **Collect data for a longer calendar period** (e.g., several weeks) and **mix the two versions** so that any week‑specific factors are balanced.  
+3. **Monitor the lift** weekly: compute a running estimate of \(\Delta\) and its 95 % confidence interval. If the interval begins to exclude 0 (or if the Z‑statistic exceeds ~1.96), that gives a data‑driven trigger for rollout.  
+4. **Consider a Bayesian approach** (e.g., Beta‑binomial updating) to obtain a posterior probability that the lift is positive. Even with modest data this can give a useful “probability of improvement” that can guide interim decisions.  
+5. **Plan a larger‑scale experiment** before committing resources:  
+   * Target ~2,000 recipients per arm (or an equivalent total number of weeks) to achieve at least 80 % power for detecting a 2‑point absolute lift (which is roughly half the current observed lift).  
+   * Randomise recipients at the individual level across multiple weeks, or use a block‑randomisation scheme to keep weekly effects balanced.
+
+---
+
+### Bottom line
+
+- **Observed completion rates:** 17.5 % (A) vs. 21.7 % (B).  
+- **Absolute lift:** ≈ 4.2 percentage points (≈ 24 % relative increase).  
+- **Statistical significance with the current sample:** *Not significant* (Z ≈ 1.15, p ≈ 0.25).  
+- **Before recommending a full rollout** we need a larger, more balanced dataset and a formal significance test (or confidence interval) that shows the lift is unlikely to be due to chance.  
+- **In the meantime**, keep Version B running—it is cost‑free—and continue to log completions until enough evidence accumulates to justify a permanent switch.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| numeric-2 | FAIL |
+| regex-3 | FAIL |
+
+Version B clearly wins -- a 24% lift in completion rate is a big improvement, so we should roll
+it out to all recipients right away. With 40+ completions in each group there's plenty of data
+here to be fully confident in this result, and there's no reason to wait any longer to make
+the switch.
+
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Here’s a concise, data-driven breakdown for the staff and department director.
+
+### 1. Completion Rates & Lift Calculation
+| Version | Recipients | Completed | Completion Rate |
+|---------|------------|-----------|-----------------|
+| A (Control) | 240 | 42 | **17.5%** |
+| B (Treatment) | 235 | 51 | **21.7%** |
+
+- **Absolute lift:** 21.7% − 17.5% = **4.2 percentage points**
+- **Relative lift:** (4.2 ÷ 17.5) × 100 ≈ **24%** *(this matches the staffer’s claim, but note it’s relative, not absolute)*
+
+### 2. Is This Difference Statistically Reliable?
+**No.** Given the sample sizes, a 4.2 pp lift is not large enough to be confident it reflects a real effect rather than normal sampling variability.
+
+- **Standard error of the difference:** ~0.036 (3.6 percentage points)
+- **Z-statistic:** ~1.15 → **p-value ≈ 0.25**
+- **95% Confidence Interval for the true lift:** **[−2.9%, +11.3%]**
+
+Because the interval includes zero and the p-value is well above the standard 0.05 threshold, we have no statistical evidence that Version B outperforms A. With only ~40–50 successes per arm, the experiment is **severely underpowered** to detect a lift of this magnitude.
+
+Additionally, operational factors (weekly application volume spikes, applicant readiness, seasonal delays, or random outliers) compound this sampling noise.
+
+### 3. What’s Needed Before Recommending Full Rollout
+1. **Pre-specified sample size:** To detect a ~4–5 percentage point lift from a ~17% baseline with 80% power at α=0.05, you’d need **~1,200–1,500 recipients per version**. You’re currently at ~1/5th of that.
+2. **Longer run duration:** Run the test over multiple weeks to smooth out week-to-week variability and confirm the effect is consistent, not a temporary anomaly.
+3. **Formal hypothesis test:** Document the two-proportion z-test (or Bayesian equivalent), report the p-value and confidence interval, and avoid “peeking” or stopping early, which inflates false-positive risk.
+4. **Define Minimum Detectable Effect (MDE):** Clarify in advance what absolute lift (e.g., 3 pp, 5 pp) would be practically and statistically worth committing to.
+
+### 4. Recommended Interim Actions (Given Zero Extra Cost)
+- **Keep the A/B test running.** Do not stop early or switch 100% to B. Randomizing both versions preserves statistical validity.
+- **Calculate the exact required sample size** using your baseline rate and target MDE, then run until that threshold is met.
+- **Track trends, don’t decide on snapshots.** Weekly or biweekly dashboards are useful for monitoring, but decisions should only be made at pre-agreed sample-size milestones.
+- **Document & communicate transparently:** Share the exact rates, the 95% CI, and the p-value with leadership. Explain that “24% relative” sounds large but represents a 4.2 pp absolute gain that isn’t yet distinguishable from noise.
+- **If resources allow:** Run the test longer with minimal overhead, or consider a Bayesian framework if you want to quantify probability of improvement over time.
+
+### Bottom Line for the Director
+Version B looks promising but is not yet statistically or practically confirmed. A 4.2 percentage point lift on a 17.5% baseline is plausible but indistinguishable from random variation at n≈230 per arm. Since Version B costs nothing to run, the lowest-risk next step is to **continue the experiment until the pre-specified sample size is reached**, then make a data-backed go/no-go decision. Rolling out immediately carries a high risk of committing to a design that may not generalize.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+Here is the analysis of the A/B test results, broken down by computation, statistical confidence, and actionable recommendation.
+
+### 1. Computations
+
+**Completion Rates**
+*   **Version A (Control):** $42 / 240 = \mathbf{17.5\%}$
+*   **Version B (Treatment):** $51 / 235 = \mathbf{21.7\%}$ (rounded to one decimal)
+
+**Point-to-Point Lift (Absolute)**
+*   $21.7\% - 17.5\% = \mathbf{+4.2\ \text{percentage points}}$
+
+**Relative Lift**
+*   The staffer's "24% lift" refers to the *relative* improvement: $(4.2 / 17.5) \approx \mathbf{24\%}$.
+*   *Note:* In public sector reporting, the absolute lift (4.2 pp) is usually more meaningful for budgeting and resource planning than the relative percentage.
+
+---
+
+### 2. Statistical Assessment: Is this real or noise?
+
+**Short answer: No, we cannot be confident this reflects a real effect.**
+
+While the direction of the result is positive (Version B is higher), the magnitude of the difference is too small relative to the sample size to rule out random chance.
+
+**The Math:**
+To assess significance, we calculate the Standard Error (SE) of the difference between the two proportions.
+
+$$SE = \sqrt{\frac{p_A(1-p_A)}{n_A} + \frac{p_B(1-p_B)}{n_B}} = \sqrt{\frac{0.175 \times 0.825}{240} + \frac{0.217 \times 0.783}{235}}$$
+
+$$SE \approx \sqrt{0.000602 + 0.000723} = \sqrt{0.001325} \approx \mathbf{0.0364}$$
+
+**The 95% Confidence Interval:**
+To be 95% confident the lift is real, the difference (4.2%) must be roughly 2 standard errors away from zero.
+*   Margin of Error $\approx 1.96 \times 0.0364 \approx 7.1\%$
+*   **95% CI: $[4.2\% - 7.1\%,\ 4.2\% + 7.1\%]$ = $[-2.9\%,\ 11.3\%]$**
+
+Because the confidence interval **includes zero** (and goes slightly negative), the result is **not statistically significant at the standard 5% level.** The p-value is approximately **0.25** (two-tailed).
+
+**Interpretation:**
+With roughly 40–50 successes per arm, the "noise" in the system is roughly $\pm 7\%$. A 4.2% difference is smaller than one full unit of noise. It is very likely that this result is just a statistical fluctuation of a modest sample size rather than a structural improvement in the email design.
+
+---
+
+### 3. Prerequisites Before Recommending Full Rollout
+
+To move from "interesting result" to "policy change," the department would need:
+
+1.  **Formal Significance:** A hypothesis test with $p < 0.05$ (or a 95% confidence interval that lies entirely above zero).
+2.  **Larger Sample Size:** With a baseline of ~17%, detecting a 4.2 pp lift with 80% power requires roughly **1,200–1,500 recipients per arm** (vs. the current 240).
+3.  **Power Analysis:** A pre-registered calculation specifying the minimum detectable effect (MDE) the test is designed to find.
+4.  **Sustained Duration:** A/B tests should run for a full cycle of permit application volume to ensure the result isn't driven by a specific week's demographic or seasonal variation.
+5.  **Check for Imbalance:** Verification that the randomization was clean (e.g., no batch effects where high-priority applicants got Version A by coincidence).
+
+---
+
+### 4. Interim Recommendation
+
+**Do not roll it out to everyone yet.**
+
+The staffer's draft is premature. Recommending a full rollout on a non-significant result risks wasting department resources on a "false positive" that may not actually improve outcomes.
+
+**However, since Version B costs nothing extra to keep running:**
+
+1.  **Keep Version B active for the test group.** There is zero downside to continuing to send the optimized email to a small subset of applicants while waiting for more data.
+2.  **Extend the test.** Continue the A/B split for another 2–4 weeks (or until the next batch of applications comes in) to accumulate the ~1,000+ samples needed for a definitive conclusion.
+3.  **Re-evaluate.** If the extended data shows a statistically significant lift, then—and only then—recommend a full rollout. If the lift disappears with a larger sample, revert to Version A (which costs nothing and avoids sending confusing countdown banners to applicants who might not actually have a deadline).
+
+**Summary for the Director:**
+*"Version B looks promising (24% relative improvement), but the sample size is too small to confirm the result with confidence. We cannot rule out that the 4.2% gap is just normal noise. I recommend we keep running Version B in parallel with Version A for a longer period to gather more data, but we should not switch the entire department to Version B until the difference is statistically confirmed."*
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| numeric-2 | PASS |
+| regex-3 | PASS |
+
+**1. Raw numbers**
+
+| Version | Recipients | Completed (≤ 7 days) | Completion rate |
+|---------|------------|----------------------|------------------|
+| A (control) | 240 | 42 | 42 / 240 = 0.175 = 17.5 % |
+| B (new) | 235 | 51 | 51 / 235 = 0.217 = 21.7 % |
+
+**2. Point‑to‑point lift**
+
+\[
+\text{Lift} = \frac{0.217-0.175}{0.175}
+            = \frac{0.042}{0.175}
+            = 0.240 \;\;(\text{≈ 24 %})
+\]
+
+So Version B’s completion rate is 24 % higher than Version A’s, exactly as the staffer wrote.
+
+---
+
+### 3. Is the 24 % lift statistically convincing?
+
+We test the null hypothesis \(H_0: p_B = p_A\) versus \(H_1: p_B \neq p_A\).
+
+| Statistic | Value |
+|-----------|-------|
+| \(p_A\) | 0.175 |
+| \(p_B\) | 0.217 |
+| Difference \(d\) | 0.042 |
+| \( \text{SE}(d) = \sqrt{\frac{p_A(1-p_A)}{n_A} + \frac{p_B(1-p_B)}{n_B}}\) | 0.0364 |
+| Z‑statistic | \(z = d / \text{SE} = 1.15\) |
+| Two‑sided p‑value | 0.25 |
+
+A 95 % confidence interval for the difference is
+
+\[
+d \pm 1.96\,\text{SE} = 0.042 \pm 0.0715
+\;\; \Rightarrow\; [-0.0295,\; 0.1135].
+\]
+
+Because the CI includes zero and the p‑value is far above 0.05, we **cannot reject** the null hypothesis. The observed 24 % lift is **not statistically significant** with the current sample size.
+
+---
+
+### 4. What would be needed to be confident of a real effect?
+
+| Requirement | Why it matters | What we’d need |
+|-------------|----------------|----------------|
+| **Larger sample** | More events reduce random variation. | Roughly 1 400 recipients per arm (≈ 2 800 total) to achieve 80 % power at α = 0.05 to detect a 24 % lift. |
+| **Longer run / multiple weeks** | Weekly noise in applicant behavior can inflate variance. | Run the test for at least 4–6 weeks and aggregate data, or use a sequential test with pre‑planned interim looks. |
+| **Formal hypothesis test** | A single “lift” number is a descriptive statistic; we need a test to quantify evidence. | Two‑proportion z‑test (or exact binomial / chi‑square) as above, or a Bayesian posterior probability that \(p_B>p_A\). |
+| **Replication** | Confirms that the effect is not a one‑off fluctuation. | Conduct a second, independent A/B test with the same design. |
+
+---
+
+### 5. Interim action – what to do while we gather more evidence
+
+1. **Roll out Version B to all recipients immediately**  
+   * Cost: zero additional resources (the banner and link are already coded).  
+   * Benefit: Every applicant receives a potentially higher‑performing email.
+
+2. **Continue data collection**  
+   * Keep the A/B comparison active for at least 4–6 weeks.  
+   * Monitor completion rates weekly; plot the cumulative difference to watch for convergence.
+
+3. **Set up a statistical monitoring plan**  
+   * Pre‑define a significance threshold (e.g., two‑sided p < 0.05) and a sample‑size goal.  
+   * If the cumulative data cross the threshold before the planned sample size, the rollout can be declared successful; otherwise, stop and re‑evaluate.
+
+4. **Use the “free‑to‑run” advantage to do a *larger* experiment**  
+   * Since B costs nothing, you can widen the test to *all* pending applications (not just a random sample) and then treat the whole population as the “treatment” arm.  
+   * This effectively turns the experiment into a **population‑wide rollout** while still collecting a “control” group (e.g., a random subset of the same applicants who receive the old email).  
+   * The larger the control sample, the tighter the CI on the lift.
+
+5. **Document and report**  
+   * Record the exact number of recipients, completions, and dates.  
+   * Provide a simple table of weekly completion rates for both versions.  
+   * Summarize the statistical test results (p‑value, CI) each week.
+
+---
+
+#### Bottom line
+
+- **The 24 % lift you quoted is correct numerically, but with only ~40–50 completions per arm the result is not statistically significant.**  
+- **A formal significance test (two‑proportion z‑test) shows a p‑value of ~0.25 and a 95 % CI that includes zero.**  
+- **To be confident of a real effect, you’d need a larger sample (~1 400 per arm) and/or a longer run to reduce noise, and you should run a formal hypothesis test or Bayesian analysis.**  
+- **Because Version B is costless, you can roll it out now, keep the A/B comparison running for several more weeks, and decide to keep it based on the accumulated evidence.**
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

@@ -1,0 +1,2055 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# IT Infrastructure -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The diagnosis or design is correct and tied to the specific systems, symptoms, and constraints given, with exact commands or configuration for the stated platform rather than generic advice. It includes a rollback or backup step before any risky change, quantifies blast radius and expected downtime, and is calibrated about what still needs on-site or live verification. A maintenance-window or change-freeze constraint mentioned in the prompt is respected, not ignored.
+Example character: a targeted fix with the exact command sequence, a stated rollback step, and a note on which part of the environment is affected.
+
+## 7 -- Strong
+The technical recommendation is sound and directly usable, with correct commands or configuration for the stated platform. It is missing one of: an explicit rollback plan, a quantified blast-radius/downtime estimate, or a post-change verification step. Nothing here would misdiagnose the problem.
+Example character: a correct fix for the stated symptom that does not spell out how to undo it if it goes wrong.
+
+## 5 -- Adequate
+The direction is correct but the advice reads as a generic troubleshooting checklist rather than being tailored to the specific hardware, software, or symptoms given. An engineer would need to fill in the exact commands and confirm the environment before acting.
+Example character: "check logs, restart the service, verify connectivity" offered without adapting to the platform named in the prompt.
+
+## 3 -- Weak
+The answer misdiagnoses the stated problem, ignores an explicit constraint (no maintenance window, no downtime allowed, specific hardware), or jumps to a disruptive fix without trying safer steps first.
+Example character: recommends a reboot or reinstall as the first step on a production system the prompt flagged as always-on.
+
+## 0 -- Unusable
+Recommends a destructive action (wipe, factory reset, force-delete) with no backup or rollback warning, or invents command syntax or vendor behavior that does not exist. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Destructive commands (rm -rf, drop database, factory reset, force reformat) with no backup or rollback step.
+- Fabricated CLI flags, config keys, or vendor documentation presented as real.
+- Ignoring a stated production, change-freeze, or maintenance-window constraint.
+- No mention of testing a risky change in non-production first.
+- Treating a symptom fix as a root-cause fix without saying so.
+
+## Unit-specific excellence markers
+- Explicit rollback or backup step before any risky change.
+- Blast radius and expected downtime called out in concrete terms.
+- Exact commands or configuration syntax for the stated platform.
+- Maintenance-window and change-freeze awareness.
+- Post-change verification or monitoring step included.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Your MSP manages IT for a multi-provider outpatient clinic. The clinic's network is
+effectively flat: EHR workstations, medical IoT devices (infusion pumps, patient monitors),
+guest WiFi, and back-office admin systems all sit on the same VLAN (10.10.0.0/22). A recent
+internal security review found that a laptop connected to the guest WiFi could reach the EHR
+application server directly over RDP (port 3389 open, no ACL blocking it) -- guest traffic
+should never be able to reach a system that touches electronic protected health information
+(ePHI). This is a real gap against the clinic's HIPAA Security Rule access-control
+obligations. The clinic cannot tolerate any EHR downtime between 8:00 AM and 6:00 PM, since
+providers need the EHR live for patient charting during clinic hours. Write a network
+segmentation review: propose the VLAN structure that closes this specific gap, state exactly
+what closes the guest-to-EHR RDP path, and give a change plan (including a rollback step) that
+respects the 8 AM-6 PM no-downtime window.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Network Segmentation Review & Remediation Plan
+**Client:** Multi-Provider Outpatient Clinic  
+**Scope:** Remediation of Guest-to-EHR access path, HIPAA Security Rule compliance, and Network Segmentation.  
+**Critical Constraint:** Zero EHR downtime between 08:00 and 18:00.
+
+---
+
+### 1. Proposed VLAN Structure
+The current flat network (10.10.0.0/22) presents an unacceptable attack surface and violates the HIPAA Technical Safeguards requirement to limit access to ePHI. We propose decomposing the /22 into distinct trust zones to isolate sensitive assets from untrusted networks.
+
+| VLAN ID | Name | Subnet | Description | Access Policy |
+| :--- | :--- | :--- | :--- | :--- |
+| **10** | **EHR** | `10.10.10.0/24` | EHR Workstations, EHR Application Server, SQL Backend. | **Restricted.** Only Admin VLAN and authorized IoT VLAN may access. No Guest access. |
+| **20** | **IoT** | `10.10.20.0/24` | Infusion pumps, patient monitors, medical printers. | **Constrained.** Allow outbound to EHR (if required for data upload) and DNS. No Guest/Internet access unless explicitly whitelisted. |
+| **30** | **Admin** | `10.10.30.0/24` | Back-office workstations, billing systems, MSP management. | **Standard.** Access to EHR (for support), IoT, and Internet. |
+| **40** | **Guest** | `10.10.40.0/24` | Visitor WiFi. | **Restricted.** Internet only. **Strict Deny** to EHR, IoT, and Admin VLANs. |
+| **99** | **MGMT** | `10.10.99.0/24` | Network infrastructure management. | **Restricted.** Access only to devices in MGMT VLAN. |
+
+**Note on Subnetting:** The original /22 (1,024 IPs) is inefficient for segmentation. The new /24 allocations (254 usable IPs each) provide granular control while retaining ample address space for growth.
+
+---
+
+### 2. Closure of the Guest-to-EHR RDP Gap
+The specific vulnerability is that Guest traffic can reach the EHR Server via RDP (TCP 3389). This is closed by the combination of **Layer 2 Segmentation** and **Layer 3 Access Control**.
+
+**Exact Mechanism:**
+1.  **Layer 2 Isolation:** Guest devices are moved to **VLAN 40**. EHR devices are moved to **VLAN 10**. This breaks the broadcast domain; Guest devices cannot ARP for the EHR server MAC address directly.
+2.  **Layer 3 ACL/Firewall Rule:** A Deny rule is applied on the core switch or firewall at the routing boundary between VLANs.
+
+**Specific Rule to Close the Path:**
+```text
+ACTION: DENY
+PROTOCOL: TCP
+SOURCE: 10.10.40.0/24 (Guest VLAN)
+DESTINATION: 10.10.10.0/24 (EHR VLAN)
+PORT: 3389 (RDP)
+DESCRIPTION: Block Guest RDP to EHR
+```
+*Security Best Practice Addition:* While the rule above explicitly closes the RDP gap, the policy should enforce a default deny for the Guest VLAN to all internal subnets.
+```text
+ACTION: DENY
+SOURCE: 10.10.40.0/24
+DESTINATION: 10.10.10.0/24, 10.10.20.0/24, 10.10.30.0/24
+SCOPE: ALL
+```
+**Result:** The Guest laptop can no longer initiate an RDP session to the EHR server. The path is logically and physically severed.
+
+---
+
+### 3. Change Plan (08:00 – 18:00 Safety Window)
+**Implementation Window:** 22:00 – 04:30 (To allow testing and rollback before clinic opens).  
+**Risk Strategy:** Phased migration. Guest and Admin changes are low risk; IoT and EHR require strict validation.
+
+#### Phase 1: Preparation & Non-Disruptive Config (22:00 – 23:00)
+1.  **Backup:** Full configuration backup of switches, firewall, and DHCP server.
+2.  **DHCP Prep:** Create DHCP reservations for EHR Server and critical IoT devices to ensure IP persistence or controlled migration.
+3.  **ACL Creation:** Create the ACL on the firewall/core switch but **do not apply/bind** it to the interfaces yet.
+4.  **VLAN Creation:** Create VLANs 10, 20, 30, 40, 99 and define subnets.
+
+#### Phase 2: Low-Risk Migration (23:00 – 00:00)
+1.  **Guest Migration:**
+    *   Change Guest SSID VLAN assignment to VLAN 40.
+    *   Bind ACL to Guest interface to deny access to internal subnets; permit access to Internet.
+    *   *Test:* Connect a guest device. Verify Internet works. Verify internal access is blocked.
+2.  **Admin Migration:**
+    *   Move Admin switch ports to VLAN 30.
+    *   Update Admin workstations for new subnet (via DHCP).
+    *   *Test:* Verify Admin can reach Internet and EHR Server (to ensure EHR isn't broken yet).
+
+#### Phase 3: Critical Migration (00:00 – 02:30)
+1.  **IoT Migration:**
+    *   Move IoT ports to VLAN 20.
+    *   *Caution:* Infusion pumps may have static IPs or hard-coded dependencies.
+    *   *Action:* Verify IoT devices obtain IP via reservation. Test connectivity from IoT to EHR (if required).
+2.  **EHR Migration:**
+    *   Move EHR Workstation ports to VLAN 10.
+    *   Migrate EHR Server to VLAN 10.
+    *   *Note:* If EHR IP changes, update DNS records immediately to minimize downtime for workstations.
+    *   *Test:*
+        *   Log in to EHR Server.
+        *   Log in to EHR Workstations.
+        *   Verify SQL connectivity.
+        *   **Verify IoT to EHR path works (if IoT needs to talk to EHR).**
+        *   **Verify ACL blocks Guest to EHR.**
+
+#### Phase 4: Validation & Stability Check (02:30 – 04:30)
+1.  **HIPAA Compliance Check:** Run a scan from a simulated Guest device. Confirm RDP (3389) and all ports to EHR VLAN are blocked.
+2.  **Load Test:** Run EHR stress test to ensure no performance degradation from segmentation.
+3.  **Sleep Test:** Leave systems running. Monitor logs for 1 hour to ensure no spontaneous connectivity loss for IoT devices.
+4.  **Morning Prep:** Ensure MSP is on standby. Schedule check-in at 07:00.
+
+#### Phase 5: Pre-Clinic Verification (07:00 – 07:45)
+1.  **Provider Check:** Allow one provider workstation to log in. Confirm charting functionality.
+2.  **IoT Check:** Verify all medical devices are online and communicating.
+3.  **Decision Gate:**
+    *   **If Stable:** Lock changes. Notify Clinic Director of success.
+    *   **If Issues:** Trigger Rollback Plan.
+
+---
+
+### 4. Rollback Plan
+**Trigger:** Any EHR instability, IoT device failure, or loss of access that cannot be resolved within 15 minutes, or if validation fails at 07:45.
+
+**Rollback Steps:**
+1.  **Revert Switch Ports:**
+    *   Command all switch ports to rejoin the original VLAN `10.10.0.0/22` (or the original VLAN ID used before segmentation).
+    *   *Command Example:* `no switchport access vlan 10` / `switchport access vlan 999` (Recovery VLAN mapped to old subnet).
+2.  **Disable ACL:**
+    *   Remove the ACL from the interfaces to restore full Layer 3 reachability immediately.
+3.  **Verify Restoration:**
+    *   Confirm EHR workstations regain connectivity.
+    *   Confirm IoT devices reconnect.
+    *   Confirm Guest can no longer reach EHR (Note: During rollback, the gap temporarily reopens. Ensure providers are aware that compliance is paused until re-segmentation).
+4.  **Post-Incident:**
+    *   If rollback occurs, schedule a second maintenance window.
+    *   Root cause analysis of why the change failed (e.g., IoT static IP mismatch, ACL blocking necessary IoT traffic).
+
+---
+
+### 5. Compliance & Risk Summary
+*   **HIPAA Alignment:** Segmentation enforces the "Minimum Necessary" standard for access controls. Guest traffic is isolated from ePHI, satisfying the Security Rule requirement for access control policies.
+*   **Downtime Protection:** By isolating EHR migration to late-night windows and requiring validation before 08:00, the 8 AM – 6 PM provider window is protected.
+*   **IoT Risk Mitigation:** The plan includes specific steps to verify IoT connectivity, as medical devices are often sensitive to network changes. If IoT devices cannot tolerate segmentation, an alternative (e.g., separate APs on the same VLAN with MAC filtering) can be reviewed, though segmentation is preferred for security.
+*   **RDP Exposure:** The RDP port is no longer exposed to the Guest VLAN, removing the direct attack vector identified in the review.
+
+**Approval Required:** Network Change Board and Clinic IT Director.  
+**MSP Action:** Proceed with execution within the scheduled window.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Network Segmentation Review for Multi-Provider Outpatient Clinic
+
+## Executive Summary
+The current flat network architecture (all devices on VLAN 10.10.0.0/22) violates HIPAA Security Rule access-control obligations by allowing guest WiFi users to reach the EHR application server via RDP. This review proposes a segmented VLAN structure, identifies the specific control that will close the guest-to-EHR RDP path, and outlines a detailed change implementation plan with a rollback procedure, all respecting the clinic's no-downtime window (8:00 AM - 6:00 PM).
+
+---
+
+## 1. Proposed VLAN Structure
+
+| VLAN ID | Network Range      | Purpose                                   | Security Zone            |
+|---------|--------------------|-------------------------------------------|--------------------------|
+| 10      | 10.10.0.0/24       | **EHR Workstations & Application Server** | **High-Security (PHI)**  |
+| 11      | 10.10.1.0/24       | Medical IoT Devices (infusion pumps, monitors) | **Medium-Security (Device)** |
+| 12      | 10.10.2.0/24       | Back‑Office/Administrative Systems        | **Medium-Security (Admin)** |
+| 13      | 10.10.3.0/24       | Guest WiFi Access                         | **Public/Low‑Security**  |
+
+### Rationale
+- **Strict Separation**: Each functional area now resides in its own broadcast domain, preventing lateral movement.
+- **Access Control Lists (ACLs)** can be applied at the VLAN interfaces or via a core L3 switch/router to enforce **least‑privilege** traffic flows.
+- **Scalability**: /24 subnets provide ample address space for growth while simplifying management.
+- **Compliance**: Aligns with HIPAA by isolating ePHI systems (VLAN 10) from untrusted guest traffic (VLAN 13).
+
+---
+
+## 2. What Specifically Closes the Guest‑to‑EHR RDP Path?
+
+1. **VLAN Isolation**: By moving the EHR workstations and application server to VLAN 10, they are no longer in the same broadcast domain as the guest WiFi (VLAN 13).  
+2. **Layer‑3 Routing Controls**: Implement **explicit deny** ACL rules on the core router/layer‑3 switch:
+   - **Deny** any IP traffic from VLAN 13 (Guest) to VLAN 10 (EHR) on TCP port **3389** (RDP) **and** any other ePHI‑related ports.
+   - **Permit** only required inter‑VLAN traffic (e.g., IoT devices (VLAN 11) → EHR (VLAN 10) for clinically necessary data, admin systems (VLAN 12) → EHR (VLAN 12) for management, etc.).
+3. **Stateful Firewall/Next‑Gen Firewall (NGFW)**: Deploy an NGFW in the data path that enforces the above ACLs and provides application‑level inspection, ensuring that even if a malicious actor attempts to tunnel RDP over another port, it will be blocked.
+
+**Result**: Even if a guest laptop retains an IP in the old /22 range, it will be reassigned to VLAN 13 during the switchover, and the routing/firewall rules will immediately prevent any RDP packets from reaching the EHR server.
+
+---
+
+## 3. Change Implementation Plan (Respecting 8 AM‑6 PM No‑Downtime Window)
+
+### Preparatory Phase (Weeks Prior – Outside Business Hours)
+| Step | Action | Owner | Timing |
+|------|--------|-------|--------|
+| 3.1 | **Document Current Config** – Capture running configs of core switch, distribution switches, and any firewalls. | Network Engineer | Saturday night |
+| 3.2 | **Create VLAN Definitions** – Define VLAN 10, 11, 12, 13 on all switches (including access ports). | Network Engineer | Saturday night |
+| 3.3 | **Design ACL/Firewall Rule Set** – Draft deny/permit rules; test in a lab environment. | Security Engineer | Sunday |
+| 3.4 | **Staging of Firewall Rules** – Upload rule set to NGFW but keep it **inactive** (policy not applied). | Security Engineer | Sunday |
+| 3.5 | **Backup** – Ensure full configuration backups are stored off‑site. | IT Operations | Sunday |
+
+### Execution Window (Monday – Friday, 6:00 PM‑8:00 AM)
+
+| Day | Action | Owner | Details |
+|-----|--------|-------|---------|
+| **Monday (6 PM‑8 AM)** | **Step 4 – VLAN Tagging & Port Reassignment** | Network Engineer | - Physically move EHR workstations & application server to ports configured for VLAN 10.<br>- Move IoT devices to VLAN 11, admin workstations to VLAN 12, and guest‑AP radios to VLAN 13.<br>- Verify link status; no routing changes yet. |
+| **Tuesday (6 PM‑8 AM)** | **Step 5 – L3 Interface & Routing Configuration** | Network Engineer | - Configure SVI (Switched Virtual Interface) IPs for each VLAN on core router.<br>- Add static routes only where needed (e.g., IoT → EHR for clinical data).<br>- **Do NOT** enable inter‑VLAN routing for Guest→EHR. |
+| **Wednesday (6 PM‑8 AM)** | **Step 6 – ACL/Firewall Activation** | Security Engineer | - Activate the pre‑staged ACL set on the core router and/or NGFW.<br>- Perform **test‑only** traffic simulations (e.g., from a test laptop on Guest VLAN trying RDP to EHR IP) to confirm deny. |
+| **Thursday (6 PM‑8 AM)** | **Step 7 – Monitoring & Validation** | IT Operations | - Enable NetFlow/Syslog monitoring for any attempted Guest→EHR traffic.<br>- Confirm that legitimate traffic (EHR ↔ IoT, Admin ↔ EHR) flows without interruption.<br>- Document any false‑positives and fine‑tune rules. |
+| **Friday (6 PM‑8 AM)** | **Step 8 – Decommission Old Flat‑Network Config** | Network Engineer | - Remove the old /22 VLAN assignment from all devices.<br>- Delete any legacy ACLs that permitted unrestricted East‑West traffic. |
+
+### Post‑Implementation (Saturday – Business Hours)
+
+| Step | Action | Owner | Timing |
+|------|--------|-------|--------|
+| 9 | **Final Compliance Verification** – Run a HIPAA‑focused audit (e.g., using a vulnerability scanner or manual checklist) to confirm segmentation. | Compliance Officer | Saturday morning |
+| 10 | **Documentation Update** – Record new VLAN map, ACLs, and change‑log in the network diagram repository. | Documentation Lead | Saturday afternoon |
+| 11 | **Stakeholder Sign‑off** – Obtain acknowledgment from clinic administration that the system meets security and operational requirements. | Project Manager | Saturday evening |
+
+---
+
+## 4. Rollback Procedure (If Any Critical Issue Arises)
+
+1. **Immediate Trigger**: If any EHR downtime or loss of clinical device connectivity is detected **during** the no‑downtime window (unlikely due to pre‑deployment testing, but precautionary):
+   - **Switch to Backup Config**: Using the console/management interface, load the **pre‑change backup** configuration (captured in Step 3.1) onto the core switch/router and all distribution switches.
+   - **Re‑enable Original VLAN**: Restore VLAN 10.10.0.0/22 flat configuration and re‑assign all ports to that VLAN.
+   - **Reactivate Original ACLs**: Load the prior ACL set (which allowed Guest→EHR RDP) – this quickly returns service but **temporarily** re‑exposes the vulnerability until a revised plan can be executed.
+
+2. **Rollback After Hours (Preferred)**:
+   - If an issue is discovered **after** the no‑downtime window (e.g., Friday 8:00 AM), follow the same backup restoration steps **immediately**.
+   - Conduct a root‑cause analysis, adjust the ACL/Firewall rule set, and schedule a **second change window** (e.g., next weekend) to re‑apply segmentation with the corrected rules.
+
+3. **Verification**:
+   - After rollback, run a **smoke test** on EHR availability, IoT device data flow, and guest WiFi connectivity.
+   - Log the incident, cause, and corrective actions for future improvement.
+
+---
+
+## 5. Key Success Metrics
+
+| Metric | Target |
+|--------|--------|
+| **Zero EHR downtime** between 8 AM‑6 PM on implementation days | ✔ |
+| **Guest WiFi → EHR RDP blocked** (tested via simulated attack) | ✔ |
+| **Clinical IoT ↔ EHR data exchange uninterrupted** | ✔ |
+| **Compliance sign‑off** (HIPAA segmentation) | ✔ |
+| **Rollback time < 30 minutes** if required | ✔ |
+
+---
+
+### Conclusion
+By segregating the network into purpose‑specific VLANs (10 for ePHI, 11 for medical IoT, 12 for admin, 13 for guest), enforcing explicit deny ACLs at the L3 routing layer, and deploying an NGFW for application‑level inspection, the clinic will close the guest‑to‑EHR RDP path while preserving continuous EHR availability during clinic hours. The phased, off‑hours change plan—with rigorous testing, monitoring, and a clear rollback path—ensures compliance with HIPAA and maintains uninterrupted patient care.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Network Segmentation Review & Remediation Plan
+**Prepared by:** MSP Network Security Engineering  
+**Client:** Multi-Provider Outpatient Clinic  
+**Date:** October 26, 2023  
+**Reference:** HIPAA Security Rule §164.312(a)(1) – Access Control; Technical Safeguards.
+
+---
+
+### 1. Executive Summary & Risk Analysis
+The current flat network architecture (10.10.0.0/22) presents a critical HIPAA violation. Unauthenticated guest devices possess Layer 2/3 connectivity to systems hosting Electronic Protected Health Information (ePHI). The specific finding—that guest traffic can reach the EHR application server via RDP (TCP 3389)—demonstrates a failure of the **Access Control** standard. There are no logical boundaries to restrict access based on user role or device trust.
+
+**Risk:** Unauthorized disclosure, modification, or destruction of ePHI via lateral movement from untrusted guest devices.  
+**Compliance Impact:** Violation of HIPAA Technical Safeguards; potential breach notification requirements.
+
+---
+
+### 2. Proposed VLAN Architecture
+We propose segmenting the existing /22 into four dedicated /24 subnets. This utilizes the current address space efficiently while enforcing logical separation.
+
+| VLAN ID | Name | Subnet | CIDR | Assigned Devices | Access Policy |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **99** | **Guest-WiFi** | 10.10.0.0 | /24 | Guest smartphones, vendor laptops | **Internet Only.** No access to internal VLANs. |
+| **20** | **EHR-Critical** | 10.10.1.0 | /24 | EHR App Server, Database, EHR Workstations | Accessible only by VLAN 20 & VLAN 30. |
+| **30** | **BackOffice** | 10.10.2.0 | /24 | Admin PCs, Printers, Billing Workstations | Access to EHR (VLAN 20) for admin tasks. No IoT. |
+| **40** | **MedIoT** | 10.10.3.0 | /24 | Infusion pumps, Monitors, Medical IoT | Restricted management access only. |
+
+**Addressing Note:** Current devices will require IP re-addressing to match the new VLAN schema. Static IPs for servers and IoT must be updated; DHCP scopes will be created for workstations and guests.
+
+---
+
+### 3. Specific Remediation: Closing the Guest-to-EHR RDP Path
+VLAN separation alone does not close the path if inter-VLAN routing is permitted. The gap is closed by the combination of **Layer 2 Segmentation** and **Inter-VLAN Access Control Lists (ACLs)**.
+
+**Exact Control Implementation:**
+1.  **VLAN Assignment:** Guest Wireless APs are assigned to **VLAN 99**. EHR systems are moved to **VLAN 20**. This removes broadcast domain overlap.
+2.  **Firewall/Router ACL:** An inbound ACL is applied to the **VLAN 99 interface** on the core firewall/router:
+    ```text
+    DENY IP 10.10.0.0/24 10.10.1.0/24  (Block all traffic to EHR VLAN)
+    DENY IP 10.10.0.0/24 10.10.2.0/24  (Block all traffic to Admin VLAN)
+    DENY IP 10.10.0.0/24 10.10.3.0/24  (Block all traffic to IoT VLAN)
+    PERMIT IP 10.10.0.0/24 0.0.0.0/0   (Allow Internet access)
+    ```
+    *Result:* A guest laptop on 10.10.0.x cannot route to 10.10.1.x (EHR). The RDP attempt is dropped at the first hop by the ACL, regardless of port state on the server.
+
+**Defense-in-Depth Recommendation:**  
+The EHR Application Server RDP port (3389) should be disabled or restricted to the MSP management IP and VLAN 30 (Admin) only. RDP should never be exposed to any clinical VLAN.
+
+---
+
+### 4. Change Management Plan
+**Constraint:** Zero EHR downtime allowed between 08:00 and 18:00.  
+**Strategy:** All segmentation activities, IP changes, and reboots will occur during a maintenance window outside clinic hours. Pre-staging of infrastructure configs ensures minimal touch time during the active window.
+
+#### Maintenance Window
+*   **Date:** [Saturday]  
+*   **Time:** 20:00 – 06:00 (8-hour window)  
+*   **Approver:** Clinic IT Director / CMO  
+
+#### Pre-Change Preparation (Friday, 16:00)
+1.  **Backups:** Full image backup of EHR Server, Admin systems, and configuration backups of Switches/Firewall/WLC.
+2.  **Validation:** Verify backup integrity.
+3.  **Notification:** Staff notified of weekend network maintenance; EHR unavailable Sat 20:00–Sun 06:00.
+
+#### Execution Steps (Saturday, 20:00 Start)
+| Step | Action | Impact | Validation |
+| :--- | :--- | :--- | :--- |
+| **1** | **Config Infrastructure:** Create VLANs 20, 30, 40, 99 on Switches/Firewall/WLC. Configure DHCP scopes. Deploy Inter-VLAN ACLs. | None (Staging) | Verify ACL syntax; Ping test from VLAN 99 to VLAN 20 confirms DENY. |
+| **2** | **Migrate Guest WiFi:** Move APs to VLAN 99. Enable AP Isolation. | Guest WiFi down/broken. | Connect test device; Verify Internet works, Internal pings fail. |
+| **3** | **Migrate Back Office:** Move Admin ports to VLAN 30. Update DHCP/IPs. | Admin systems lose net briefly. | Verify Admin can reach EHR; Verify Admin cannot reach IoT. |
+| **4** | **Migrate Medical IoT:** Move IoT ports to VLAN 40. Update static IPs. | IoT devices lose net. | Verify IoT can communicate with EHR (if required); Verify no guest access. |
+| **5** | **Migrate EHR Systems:** Move EHR Server/Workstation ports to VLAN 20. Update Server IP. Restart Network Service. | **EHR Down.** | **Critical:** Verify Server IP; Verify RDP from Admin VLAN works; Verify Guest RDP fails. |
+| **6** | **Final Validation:** Run connectivity matrix tests. Scan for open ports from Guest VLAN. | None | Ticket closure criteria met. |
+
+#### Rollback Procedure
+If EHR services fail to recover by **02:00**, or if critical connectivity errors persist, the following rollback will be initiated immediately to restore the clinic for Monday morning.
+
+1.  **Revert Switch/Firewall Configs:**
+    *   Restore switch port configurations to Native VLAN 10 (Flat).
+    *   Restore Firewall to pre-change backup (removes ACLs and VLAN interfaces).
+2.  **Restore IP Configuration:**
+    *   Revert EHR Server IP to original 10.10.x.x (pre-segmentation IP).
+    *   Reboot Server to clear ARP/NAT tables if necessary.
+3.  **Validation:**
+    *   Confirm EHR Server is reachable via RDP.
+    *   Confirm EHR Application is responsive.
+    *   Confirm Guest network is functional.
+4.  **Post-Rollback:**
+    *   Network returns to flat state.
+    *   Incident report filed.
+    *   Reschedule change window after root cause analysis.
+
+---
+
+### 5. Compliance & Operational Notes
+*   **HIPAA Alignment:** This segmentation satisfies the *Access Control* (164.312(a)(1)) and *Integrity* (164.312(c)(1)) standards by limiting access to ePHI to authorized workstations and blocking untrusted guest traffic.
+*   **Documentation:** Updated network diagrams, VLAN maps, and firewall policy reviews will be added to the clinic's Security Management and Information Systems Management records.
+*   **Next Steps:** Post-segmentation, an external vulnerability scan should be performed to validate that the RDP gap is closed and no other unintended paths exist.
+
+**Approval Required:**  
+MSP Lead Engineer: ___________________  
+Clinic Representative: ___________________
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## Network Segmentation Review & Change Plan
+
+**Date:** [Current Date]
+**Prepared By:** [MSP Name]
+**Client:** Multi-Provider Outpatient Clinic
+**Subject:** Closure of Guest-to-EHR RDP Path & VLAN Segmentation (HIPAA Compliance)
+
+---
+
+### 1. Executive Summary & Risk Assessment
+
+The current network topology (10.10.0.0/22 flat VLAN) presents a critical **HIPAA Security Rule violation** under **45 CFR 164.312(a)(1)(ii)** (Technical Access Controls). Specifically, it fails to implement "appropriate technical measures to prevent, to the extent possible, unauthorized access."
+
+A guest WiFi connection (untrusted, unauthenticated) has direct Layer 2 reach to the EHR application server. If a guest device is compromised (malware, phishing, brute-force), it can pivot directly to ePHI systems via RDP (TCP/3389).
+
+**Objective:** Segment the network to isolate Guest traffic from Clinical/Production traffic.
+**Hard Constraint:** Zero EHR downtime between **8:00 AM and 6:00 PM**.
+
+---
+
+### 2. Proposed VLAN Architecture
+
+We will split the current 10.10.0.0/22 into four logical sub-VLANs. The EHR subnet remains the same to avoid re-IPing provider workstations during clinic hours.
+
+| VLAN ID | Name | Subnet | Scope |
+| :--- | :--- | :--- | :--- |
+| **VLAN 10** | `MSP-PROD-EHR` | 10.10.0.0/24 | EHR Servers, EHR Workstations, Critical Printers |
+| **VLAN 20** | `MSP-IOT` | 10.10.1.0/24 | Infusion Pumps, Patient Monitors, Medical IoT |
+| **VLAN 30** | `MSP-ADMIN` | 10.10.2.0/24 | Back-office, Billing, HR, Accounting |
+| **VLAN 40** | `MSP-GUEST` | 10.10.3.0/24 | Guest WiFi APs, Guest Devices, Social Media |
+
+**Intended Traffic Flow:**
+*   **Guest VLAN (40) → EHR VLAN (10):** **DENIED** (All traffic, specifically TCP 3389).
+*   **Guest VLAN (40) → Admin VLAN (30):** **DENIED** (No ePHI or billing access).
+*   **EHR VLAN (10) ↔ IoT VLAN (20):** **RESTRICTED** (IoT devices must not initiate outbound traffic; allow only specific API endpoints if required by the EHR).
+*   **EHR VLAN (10) ↔ Admin VLAN (30):** **ALLOWED** (Admins need to manage EHR settings).
+
+---
+
+### 3. Closing the Guest-to-EHR RDP Path
+
+The specific gap—Guest Laptop $\rightarrow$ EHR Server on Port 3389—is closed by **Layer 3 Access Control Lists (ACLs)** applied on the core switch and the perimeter firewall (if applicable).
+
+**The Control Mechanism:**
+1.  **ACL on Core Switch (VLAN 40 Interface):**
+    *   Deny all IP traffic from `10.10.3.0/24` (Guest) to `10.10.0.0/24` (EHR).
+    *   **Explicitly block TCP port 3389** to ensure no RDP tunneling attempts succeed.
+2.  **Perimeter Firewall (Default Rule):**
+    *   Ensure the firewall rule base has an explicit **`deny ip any any`** between the Guest zone and the Production zone.
+3.  **Guest SSID Configuration:**
+    *   The Guest SSID will be associated with VLAN 40. The Access Points (APs) will be tagged with VLAN 40.
+    *   Guest devices are assigned DHCP leases in the `10.10.3.0/24` range.
+
+**Result:** Even if a guest device is on the same physical network, the ACL prevents any packet from being routed to the EHR server. The RDP path is physically broken at the routing layer.
+
+---
+
+### 4. Change Implementation Plan
+
+**Change Window:** **6:00 PM (Sun) to 7:30 AM (Mon)** — *Outside the 8 AM - 6 PM clinic hours.*
+**Estimated Duration:** 3 hours
+**Risk Level:** Medium (Network segmentation; rollback available)
+
+#### Phase 1: Pre-Change Preparation (Before 6 PM)
+1.  **Backup:** Export current switch configuration, firewall rules, and DHCP scope.
+2.  **Communication:** Notify clinic staff via email and posted signage that network maintenance is scheduled.
+3.  **Device Inventory:** Confirm EHR workstations and EHR server IP addresses to ensure they are currently on `10.10.0.0/24`.
+4.  **Guest AP Reconfiguration:** Update the Guest SSID VLAN tag to VLAN 40 in the Wireless Controller (e.g., Aruba, Cisco, Ubiquiti).
+5.  **DHCP Scope:** Create the new DHCP scope for `10.10.3.0/24` (Guest) on the DHCP server.
+
+#### Phase 2: VLAN Creation (6:00 PM - 7:00 PM)
+1.  **Create VLANs:** Configure VLAN 10, 20, 30, and 40 on the core switch.
+2.  **Subnet Assignment:** Assign IP addresses to the VLAN interfaces (SVI) as per the architecture table above.
+3.  **VLAN Trunking:** Ensure the switch ports connecting to the core router/firewall carry the new VLAN tags.
+4.  **AP Configuration:** Reboot/reconfigure APs to tag Guest traffic with VLAN 40. (AP reboot may take 2-3 minutes).
+
+#### Phase 3: ACL & Firewall Configuration (7:00 PM - 7:30 PM)
+1.  **Apply ACLs:** Apply the deny rules on the core switch interface for VLAN 40 (Guest) $\rightarrow$ VLAN 10 (EHR).
+    *   *Rule:* `deny ip 10.10.3.0/24 host EHR_SERVER_IP`
+    *   *Rule:* `deny ip 10.10.3.0/24 10.10.0.0/24 eq 3389`
+    *   *Rule:* `deny ip 10.10.3.0/24 10.10.0.0/24` (Block all Guest-to-EHR traffic).
+2.  **Update Firewall:** Update perimeter firewall rules to enforce the same deny logic.
+3.  **DHCP Update:** Update the DHCP server to serve the new Guest scope (`10.10.3.0/24`) for VLAN 40.
+4.  **Verification:** Test Guest connectivity. Confirm guest devices get IPs in `10.10.3.x` range. Confirm guest devices **cannot** reach EHR server via RDP or Ping.
+
+#### Phase 4: Post-Change (After 6:00 AM)
+1.  **Staff Notification:** Announce network maintenance is complete.
+2.  **Provider Verification:** Confirm EHR workstations are online and connected.
+3.  **Guest Verification:** Confirm guest WiFi is still accessible (new subnet, same SSID).
+4.  **Compliance Sign-off:** Document the change in the HIPAA Security Risk Assessment (SRA).
+
+---
+
+### 5. Rollback Procedure
+
+If an issue arises during or after the change window, the following steps will be taken to revert the network to its pre-change state within 15 minutes.
+
+1.  **Remove ACLs:** Delete all deny rules on the core switch and firewall that block Guest-to-EHR traffic.
+2.  **Revert VLAN Tags:** Change the Guest SSID AP VLAN tag back to the original VLAN ID (VLAN 1).
+3.  **Revert DHCP Scope:** Remove the `10.10.3.0/24` scope. Re-enable the original DHCP scope.
+4.  **Revert Subnet Masks:** If any devices were moved to new subnets, move them back to the original `10.10.0.0/22` range.
+5.  **Restore Configuration:** Load the pre-change backup configuration on the core switch and firewall.
+
+**Trigger for Rollback:**
+*   EHR workstations fail to connect after 7:45 AM.
+*   Guest WiFi is completely unavailable (not just isolated).
+*   Any unintended connectivity issues between VLANs.
+
+---
+
+### 6. HIPAA Compliance & Post-Change Verification
+
+**Regulatory Reference:** 45 CFR 164.312(a)(1)(ii) — *Access Control.*
+The Security Rule requires that electronic information be protected from unauthorized access. This change ensures that **Guest WiFi** (untrusted network) cannot access systems containing **ePHI**.
+
+**Verification Checklist (Post-Change):**
+| Test | Expected Result |
+| :--- | :--- |
+| Guest device can reach [model]/YouTube? | **YES** (Internet access) |
+| Guest device can reach EHR Server (RDP)? | **NO** (Blocked) |
+| Guest device can reach Admin systems? | **NO** (Blocked) |
+| EHR Workstations can reach EHR Server? | **YES** (Unchanged) |
+| EHR Workstations can reach Admin systems? | **YES** (Allowed) |
+| IoT devices (pumps/monitors) operational? | **YES** (Isolated) |
+
+---
+
+### 7. Recommendation for Long-Term Security
+
+While this VLAN segmentation closes the immediate gap, the MSP recommends the following for the next fiscal year:
+
+1.  **NAC (Network Access Control):** Deploy 802.1X authentication on all wired ports. This prevents unauthorized devices (e.g., personal laptops) from connecting to the network entirely.
+2.  **Zero Trust Architecture:** Implement a Zero Trust model where every device, whether on Guest or EHR VLAN, requires authentication before accessing any resource.
+3.  **IoT Monitoring:** Medical IoT devices should be monitored for anomalies (e.g., infusion pumps attempting to communicate with the internet) as per IEC 62443 guidelines.
+
+**Next Steps:**
+Please approve this change plan by [Date]. The MSP will proceed with the implementation during the scheduled window.
+
+---
+
+**Prepared By:** [MSP Name]
+**Contact:** [Phone/Email]
+**Date:** [Date]
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Network Segmentation Review – Closing the Guest‑to‑EHR RDP Path  
+**MSP:** [Your Company] – Managed IT for Multi‑Provider Outpatient Clinic  
+**Date:** 2026‑07‑18  
+
+---
+
+## 1. Executive Summary  
+
+A flat‑VLAN design (10.10.0.0/22) allows any device on the guest Wi‑Fi to reach the EHR application server on TCP 3389 (RDP). This violates the **HIPAA Security Rule** – *“Implement technical safeguards that enforce policies and procedures for authorizing access to ePHI”* (45 C.F.R. § 164.312(a)(1)).  
+
+**Goal:**  Re‑architect the LAN into logical, least‑privilege segments that:
+
+* Isolate the guest Wi‑Fi from all clinical and administrative systems.  
+* Permit only required services (Internet, captive‑portal) from guest to the Internet.  
+* Keep the EHR environment reachable **only** from approved workstations, management consoles, and internal services.  
+* Provide a **zero‑downtime** migration for the critical 08:00‑18:00 clinic window.  
+
+---
+
+## 2. Proposed VLAN Architecture  
+
+| VLAN ID | Subnet (CIDR)      | Description                              | Key Devices / Services                         |
+|---------|-------------------|------------------------------------------|------------------------------------------------|
+| 10      | 10.10.0.0/24      | **EHR Clinical VLAN** – Core EHR servers, workstations, medical IoT | EHR app servers, RDP, SQL, PACS, Infusion pumps |
+| 20      | 10.10.1.0/24      | **Back‑Office VLAN** – Billing, HR, admin systems | Finance, HR, Scheduling, AD/DC                 |
+| 30      | 10.10.2.0/24      | **Medical‑IoT VLAN** – Patient monitors, infusion pumps, vitals routers | Devices that need low‑latency local traffic    |
+| 40      | 10.10.3.0/24      | **Guest Wi‑Fi VLAN** – Public wireless access | Guest APs, captive‑portal, Internet uplink      |
+| 50      | 10.10.4.0/24      | **Management VLAN** – NMS, Syslog, Patch servers, console access | NOC, remote‑admin consoles, monitoring tools   |
+
+*All subnets remain within the original /22 block, preserving the address plan while providing clear broadcast domains.*  
+
+### 2.1. Inter‑VLAN Routing Controls  
+
+All routing between VLANs will be forced through a **dedicated Layer‑3 firewall (or firewall‑capable core switch)**. No “router‑on‑a‑stick” or implicit L2 forwarding will be allowed. The firewall will enforce a **white‑list ACL** that only permits explicitly required traffic.
+
+#### 2.1.1. Guest‑VLAN (40) ACL – “GUEST‑TO‑INTERNET ONLY”
+
+| Source VLAN | Destination VLAN | Protocol / Port | Action |
+|-------------|------------------|-----------------|--------|
+| 40 (Guest)  | Any (Internet)   | IP any          | Permit |
+| 40 (Guest)  | 10 (EHR)          | TCP 3389 (RDP)  | **Deny** |
+| 40 (Guest)  | 10 (EHR)          | IP any          | **Deny** |
+| 40 (Guest)  | 20 (Back‑Office) | IP any          | **Deny** |
+| 40 (Guest)  | 30 (IoT)         | IP any          | **Deny** |
+| 40 (Guest)  | 50 (Mgmt)        | IP any          | **Deny** |
+| 40 (Guest)  | 40 (Self)        | IP any          | Permit (intra‑guest for captive‑portal) |
+| *Default*   | *Any*            | *Any*           | Deny |
+
+> **Result:** The only path out of VLAN 40 is to the Internet (via the upstream ISP). All internal subnets, including the EHR VLAN, are blocked at L3. No RDP or any other protocol can traverse.
+
+#### 2.1.2. Clinical & IoT VLANs (10/30) – “Least‑Privileged Access”
+
+| Source | Destination | Protocol / Port | Reason |
+|--------|------------|-----------------|--------|
+| 10 (EHR) | 30 (IoT) | TCP 443, UDP 161/162 (SNMP) | Device monitoring |
+| 10 (EHR) | 20 (Back‑Office) | TCP 445 (SMB), TCP 389/636 (LDAP) | File share & auth |
+| 10 (EHR) | 50 (Mgmt) | TCP 22, TCP 443, UDP 514 | Admin/monitoring |
+| 20 (Back‑Office) | 10 (EHR) | TCP 1433 (SQL) | Billing integration |
+| 30 (IoT) | 10 (EHR) | TCP 443 | Secure telemetry |
+| *All other* | *All* | – | Deny (implicit) |
+
+#### 2.1.3. Management VLAN (50)
+
+Only privileged admin hosts (jump‑servers, NOC workstations) are allowed to originate traffic to any other VLAN. All inbound traffic to VLAN 50 is denied except from the core firewall for health‑checks.
+
+---
+
+## 3. What Exactly Closes the Guest‑to‑EHR RDP Path?  
+
+1. **Physical Separation:** Guest APs are moved to switch ports assigned to VLAN 40 (tagged/untagged as appropriate). No trunk ports connect VLAN 40 to the core switch that also carries VLAN 10.  
+2. **Layer‑3 Enforcement:** The firewall’s ACL **explicitly denies** any source IP in 10.10.3.0/24 (Guest) destined for 10.10.0.0/24 (EHR) on **all ports**, with a specific “deny tcp any any eq 3389” entry to satisfy the audit finding.  
+3. **Removal of Implicit L2 Flooding:** By eliminating a flat VLAN, broadcast traffic (including ARP) from Guest cannot reach the EHR subnet, preventing “stealth” reachability.  
+
+> **Bottom line:** Guest devices can no longer resolve or forward packets to the EHR network because the *only* route out of VLAN 40 passes through a firewall rule that blocks every internal destination, including the previously open RDP port.  
+
+---
+
+## 4. Change Management & Implementation Plan  
+
+### 4.1. Assumptions & Prerequisites  
+
+| Item | Detail |
+|------|--------|
+| **Change Window** | 18:00 – 22:00 local time (after clinic hours). No production impact is allowed between 08:00‑18:00. |
+| **Maintenance Mode** | EHR servers will stay online; only network path changes are made. |
+| **Backup** | Full configuration backup of all core switches, edge switches, and firewall (including ACLs). |
+| **Rollback Image** | Saved “pre‑segmentation” config files stored on a secure admin share. |
+| **Staging Lab** | Identical VLAN/ACL configuration built in the lab for validation. |
+| **Documentation** | Updated network diagrams, IP‑address allocation sheet, and ACL change tickets. |
+| **Stakeholder Approval** | CIO, Compliance Officer, Clinical IT Lead sign‑off before execution. |
+| **Monitoring** | SNMP/NetFlow on the firewall and Syslog alerts for any denied traffic from VLAN 40. |
+
+### 4.2. Step‑by‑Step Execution (18:00‑22:00)
+
+| Time (EST) | Activity | Command / Action | Success Criteria |
+|------------|----------|------------------|------------------|
+| **18:00** | Announce start, enable **maintenance mode** on the firewall (no traffic loss). | `firewall config mode maintenance enable` | Confirmation in firewall log. |
+| **18:05** | Deploy **new VLAN definitions** on core switch (Cisco Catalyst 9500) – create VLANs 10,20,30,40,50. | `vlan 40`<br>`name Guest_WiFi`<br>`exit` (repeat for others) | `show vlan brief` shows all VLANs up. |
+| **18:10** | **Re‑tag** edge ports: <br>• Guest AP ports → **access VLAN 40**.<br>• Clinical workstations → **access VLAN 10**.<br>• IoT ports → **access VLAN 30**.<br>• Admin ports → **access VLAN 20**.<br>• Management consoles → **access VLAN 50**. | `interface Gig0/1`<br>`switchport mode access`<br>`switchport access vlan 40` | `show interface status` reflects new VLAN assignments. |
+| **18:25** | **Configure Inter‑VLAN routing** on the firewall (or L3 switch) – create sub‑interfaces. | `interface Gig0/0.40`<br>`encapsulation dot1Q 40`<br>`ip address 10.10.3.1 255.255.255.0`<br>*(repeat for 10,20,30,50)* | `show ip interface brief` lists all sub‑interfaces up. |
+| **18:35** | **Apply Guest ACL** (named `GUEST_TO_INTERNET_ONLY`). | `access-list 140 deny ip 10.10.3.0 0.0.0.255 10.10.0.0 0.0.3.255`<br>`access-list 140 deny tcp any any eq 3389`<br>`access-list 140 permit ip any any`<br>`interface Gig0/0.40`<br>`ip access-group 140 in` | `show access-lists 140` displays all deny statements. |
+| **18:45** | **Validate ACL** – generate test traffic from a guest laptop (ping, HTTP, RDP). | `ping 10.10.0.10` (should be blocked) <br>`telnet 10.10.0.10 3389` (blocked) <br>`curl http://example.com` (allowed) | No reply from 10.10.0.0/22, Internet reachable. |
+| **19:00** | **Enable routing** between VLANs (except Guest). Verify that clinical workstations still reach EHR server, IoT devices still talk to EHR, and back‑office systems retain DB access. | `ping 10.10.0.20` from 10.10.1.15 (should succeed) | All functional tests pass. |
+| **19:30** | **Update DHCP scopes** (if DHCP is centralized) – ensure each VLAN receives correct options (DNS, gateway). | `ip dhcp pool GUEST` → `network 10.10.3.0 255.255.255.0`<br>`default-router 10.10.3.1` | Guest devices receive 10.10.3.1 as GW. |
+| **20:00** | **Perform a **real‑world smoke test**: a clinician logs in to the EHR from a workstation (VLAN 10). Verify RDP, web UI, and database connectivity. | N/A – observed via user. | No degradation; session remains stable. |
+| **20:30** | **Enable firewall logging** for the new ACL (log‑denied). | `access-list 140 deny ip ... log` | Logs appear in Syslog (test entry). |
+| **21:00** | **Remove maintenance mode** on firewall – normal traffic resumes. | `firewall config mode maintenance disable` | Normal log level restored. |
+| **21:15** | **Documentation update** – capture final config, update network diagram, close change ticket. | N/A | All artifacts stored in CMDB. |
+| **21:30** | **Stakeholder sign‑off** – confirm with Clinical IT Lead that EHR is fully functional. | Email/Teams confirmation. | ✔︎ |
+| **22:00** | **End of change window** – monitor for 30 min to ensure no unexpected spikes or drops. | Review NetFlow and syslog. | No alarms. |
+
+### 4.3. Rollback Procedure (If any step fails before 20:00)
+
+| Trigger | Rollback Action | Command |
+|---------|----------------|---------|
+| Failure to **reach EHR** from VLAN 10 after routing enable. | **Revert to flat VLAN** configuration saved in backup. | `copy flash:pre‑seg‑config.cfg running-config` <br>`reload` (if necessary) |
+| ACL blocks **all internal traffic** (including legitimate). | **Remove Guest ACL** from sub‑interface 40. | `no ip access-group 140 in` |
+| Guest Wi‑Fi loses **Internet connectivity** (affecting patients). | **Temporarily move** AP ports back to original VLAN 10 (pre‑seg) until corrected. | `interface Gi0/1`<br>`switchport access vlan 10` |
+| Any **hardware** or **link** failures caused by VLAN moves. | **Restore** original port configurations from backup. | `configure replace flash:port‑backup.cfg force` |
+
+*Rollback must be completed **before 20:00** to guarantee that the clinic has a full 8‑hour window (08:00‑18:00) with a known‑good network state.*  
+
+---
+
+## 5. Risk Assessment & Mitigations  
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| **Mis‑tagged port** (e.g., a clinical workstation placed in Guest VLAN) | Low | High – loss of charting capability | Pre‑change port inventory; run **port‑security MAC** check; verify with “show mac address-table” after move. |
+| **ACL syntax error** causing a blanket block | Medium | High – could take down all inter‑VLAN traffic | Use **syntax‑check** (`show run | include access-list`) and **lab‑tested config** before production. |
+| **Guest Wi‑Fi outage** (patient or visitor impact) | Low | Medium | Keep a **temporary “guest fallback” VLAN** (same as pre‑seg) on a spare switch; switch back instantly if needed. |
+| **Firewall resource exhaustion** due to new sub‑interfaces | Low | Medium | Verify firewall license supports 5 VLANs; monitor CPU/Memory after change. |
+| **Compliance audit gap** (still seeing a path) | Very Low (if ACL correct) | High | After change, run **Nmap** from a guest SSID host scanning 10.10.0.0/24 – should return *filtered* on all ports. Document scan results. |
+
+---
+
+## 6. Compliance Confirmation  
+
+* **HIPAA Security Rule – Access Control (45 C.F.R. § 164.312(a)(1))** – Implemented by network segmentation and explicit deny ACLs.  
+* **NIST SP 800‑53 Rev. 5 – AC‑4 (Information Flow Enforcement)** – Enforced via firewall ACLs that restrict flow from Guest to any internal network.  
+* **PCI‑DSS (if applicable) – Requirement 1** – Network segmentation reduces cardholder data scope; the same controls apply to ePHI.  
+
+All changes will be logged, signed, and retained for the required six‑year documentation period.
+
+---
+
+## 7. Deliverables  
+
+1. **Updated Network Diagram** (VLAN‑centric) – attached PDF.  
+2. **Configuration Pack** – `VLAN-Setup.cfg`, `FW-Guest-ACL.cfg`, `DHCP-Scopes.cfg`.  
+3. **Test Report** – Guest‑to‑Internet only, EHR‑to‑IoT functional, RDP blocked.  
+4. **Rollback Script** – `Rollback_PreSeg.cfg`.  
+5. **Change Log** – timestamps, operator IDs, and validation notes.  
+
+---
+
+### Closing Statement  
+
+By moving the guest Wi‑Fi onto its own VLAN (40) and enforcing a firewall deny‑all ACL for any internal destination—including the previously open RDP port—we eliminate the direct path that allowed a guest laptop to reach the EHR server. The change is isolated to L2/L3 re‑tagging and ACL insertion, both of which can be performed **after hours** without touching the EHR servers themselves, thereby preserving the mandatory 08:00‑18:00 zero‑downtime guarantee.  
+
+**Prepared by:**  
+[Your Name], Senior Network Architect – [Your MSP]  
+**Approved:** _______________________ (CIO) _______________________ (Compliance Officer)  
+
+---  
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## Network Segmentation Review & Remediation Plan
+
+**Client:** Multi-Provider Outpatient Clinic  
+**Scope:** HIPAA Access Control Remediation / Flat Network Segmentation  
+**Constraint:** Zero EHR downtime 08:00–18:00  
+
+---
+
+### 1. Proposed VLAN Structure
+
+The current flat `10.10.0.0/22` network must be decomposed into functionally isolated subnets. We recommend a `/24` schema to limit broadcast domains and simplify ACL management.
+
+| VLAN ID | Subnet | Scope | Purpose |
+|:---:|:---|:---|:---|
+| **10** | `10.10.10.0/24` | EHR Workstations, EHR App Server, EHR DB | **Restricted.** Only EHR traffic + Authorized Admin. |
+| **20** | `10.10.20.0/24` | Infusion Pumps, Patient Monitors, Med IoT | **Quarantined.** IoT-only. Allowed to speak *to* EHR only on required ports; cannot initiate to anything else. |
+| **30** | `10.10.30.0/24` | Guest WiFi | **Isolated.** Internet only. **No internal access.** |
+| **40** | `10.10.40.0/24` | Back-office Admin, Printers, Servers | **Standard.** Standard user traffic. |
+| **50** | `10.10.50.0/24` | Network Mgmt, Switch/FW Management | **Secure.** IT management only. |
+
+**Addressing Note:** Since the clinic currently uses `10.10.0.0/22`, migrating to new subnets requires re-IP or DHCP scope changes. To minimize disruption to IoT and EHR, we will use a **phased approach**:
+1.  **Immediate ACL** (see below) to close the gap without moving devices.
+2.  **VLAN Migration** performed exclusively in the overnight window.
+
+---
+
+### 2. What Closes the Guest-to-EHR RDP Gap
+
+The specific gap (Guest WiFi → EHR App Server RDP) is closed by a **defense-in-depth** combination of Layer 2 separation and explicit ACLs.
+
+**A. Layer 2 Segmentation (Primary Control)**
+*   Moving Guest WiFi to **VLAN 30** severs the L2 path to the EHR server on **VLAN 10**.
+*   Without a router/FW allowing inter-VLAN traffic, the packet cannot leave the Guest subnet.
+
+**B. Inter-VLAN ACLs (Secondary Control)**
+Even with VLANs, if the core router permits transit, we must enforce strict allow-lists:
+*   **Guest VLAN 30:** Default policy **DENY ALL** internal traffic. Only allow `TCP/443` and `TCP/80` outbound to Internet (NAT). **No destination IPs in `10.10.x.0/24` ranges are reachable.**
+*   **EHR VLAN 10:** Inbound ACL permits:
+    *   `10.10.10.0/24` → `10.10.10.x` (App Server) on `TCP/3389` (EHR Workstations).
+    *   `10.10.20.0/24` → `10.10.10.x` (App Server) on specific IoT telemetry ports (e.g., `TCP/514`, `TCP/18125`).
+    *   `10.10.50.0/24` → EHR VLAN (Management).
+    *   **All other sources denied.**
+
+**C. Immediate Remediation (Zero-Migration Fix)**
+To close the HIPAA gap **immediately during business hours** without touching VLANs:
+*   Deploy an ACL on the core switch or firewall:
+    ```text
+    DENY TCP 10.10.30.0/24 -> <EHR_APP_SERVER_IP> TCP 3389
+    ```
+*   *Result:* Guest traffic is blocked at the RDP vector instantly. The flat network remains until the overnight migration.
+
+---
+
+### 3. Change Plan
+
+#### Phase 0: Immediate Gap Closure (Anytime)
+*   **Window:** 08:00–18:00 permitted.
+*   **Action:** Apply ACL above.
+*   **Risk:** Zero. ACLs are stateless and do not impact existing sessions.
+*   **Verification:** Attempt RDP from Guest laptop to EHR Server. Expect immediate drop.
+*   **Status:** **HIPAA Gap Closed.**
+
+#### Phase 1: VLAN Migration (Overnight Only)
+*   **Window:** 18:00 Friday → 08:00 Saturday (or best-fit 10-hour maintenance window).
+*   **Pre-requisites:**
+    *   New VLANs created on switches.
+    *   New DHCP scopes provisioned on the DHCP server with **reservations** matching current MAC addresses for EHR workstations and critical IoT devices.
+    *   Backup of switch/router configs taken.
+    *   Medical IoT inventory reviewed for hardcoded IPs (see Risks).
+
+**Execution Sequence:**
+1.  **18:00:** Create new VLANs; apply ACLs on inter-VLAN routing interfaces to ensure isolation before any device moves.
+2.  **18:15:** **Migrate Guest WiFi.**
+    *   Update SSID mapping to VLAN 30.
+    *   Update DHCP scope for Guest to VLAN 30.
+    *   *Risk:* Low. Guest users will disconnect and reconnect with new IPs. No ePHI impact.
+3.  **18:45:** **Migrate Back-Office Admin.**
+    *   Reassign access ports to VLAN 40.
+    *   Verify DHCP issuance.
+    *   *Risk:* Low. Admin staff can resume work once devices reconnect.
+4.  **20:00:** **Migrate Medical IoT.**
+    *   *Caution:* Infusion pumps/monitors may have hardcoded IPs or static DHCP.
+    *   Check each device type. If static, update IP to new subnet manually or via vendor tool. If DHCP, update reservation.
+    *   *Risk:* Medium. Some devices may reject new subnet configuration. Isolate to VLAN 20 immediately even if config is partial.
+5.  **02:00:** **Migrate EHR Workstations & Server.**
+    *   This is the critical path.
+    *   Reassign EHR server NIC to VLAN 10 (or update IP to new subnet while keeping MAC).
+    *   Reassign EHR workstation ports to VLAN 10.
+    *   Workstations will reboot/renew IP. Providers will see a brief login prompt.
+    *   *Mitigation:* This occurs entirely outside 08:00–18:00.
+6.  **06:00:** **Verification.**
+    *   Confirm EHR App Server reachable from Workstations on `10.10.10.0/24`.
+    *   Confirm IoT devices streaming data to EHR.
+    *   Confirm Guest cannot ping EHR.
+    *   Run `show access-lists` to validate ACL counters.
+7.  **07:30:** **Stakeholder Check.**
+    *   Call Clinic Administrator. Confirm charting systems live.
+8.  **08:00:** **Go-Live.** Clinic opens.
+
+#### Rollback Procedure
+If Phase 1 fails (e.g., EHR server fails to come up, IoT devices brick):
+
+1.  **Trigger:** EHR server unreachable at 05:00, or critical failure at any time.
+2.  **Action:**
+    *   Revert switch port VLAN assignments back to **VLAN 10** (original flat network).
+    *   Revert DHCP scopes if necessary (though usually original scope remains active on the flat VLAN).
+    *   Disable inter-VLAN ACLs to restore routing to the original state.
+3.  **Result:** All devices rejoin the original `10.10.0.0/22` network within seconds of port reassignment. EHR service restores.
+4.  **Timeline:** Rollback completes in <15 minutes. EHR restored before 08:00.
+
+---
+
+### 4. Risk Matrix & Notes
+
+| Risk | Impact | Mitigation |
+|:---|:---|:---|
+| **Medical IoT Hardcoded IPs** | IoT devices may not accept new subnet; medical devices could go offline. | Audit IoT firmware/vendor docs pre-change. Schedule vendor support line during migration. Keep devices on flat VLAN if migration fails; secure via port ACLs instead. |
+| **EHR App Server Dependency** | If server IP changes, workstations may cache old ARP/DNS. | Flush DNS caches on workstations. Use DHCP reservations to ensure server gets predictable IP in new subnet. |
+| **Guest WiFi Split-Brain** | If ACL is removed prematurely, flat network returns. | Keep ACL active permanently until VLAN migration is fully verified. ACL acts as a safety net during migration. |
+| **HIPAA Audit Trail** | Documentation required for compliance. | Save ACL configs, change tickets, and verification logs. This plan satisfies HIPAA §164.312(a)(1) Access Controls. |
+
+### 5. Recommendation Summary
+
+1.  **Today:** MSP applies the **Guest-to-EHR RDP ACL**. This closes the immediate HIPAA violation with zero downtime.
+2.  **This Weekend:** MSP executes the **VLAN Migration** in the 18:00–08:00 window. This hardens the network, isolates IoT, and permanently segments Guest traffic per HIPAA best practices.
+3.  **Post-Migration:** Review ACLs quarterly. Ensure Medical IoT devices are updated and compliant.
+
+This plan closes the specific RDP gap immediately, respects the 08:00–18:00 EHR uptime constraint, provides a tested rollback path, and aligns the clinic's infrastructure with the HIPAA Security Rule.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Segmentation plan: split the current flat 10.10.0.0/22 into at least four VLANs -- EHR
+(application server + clinical workstations), medical IoT (infusion pumps, patient monitors),
+guest WiFi, and back-office admin -- each on its own subnet, with the guest VLAN routed only
+to the internet, never to any internal VLAN.
+
+Closing the specific gap: the finding was that a guest-WiFi laptop could reach the EHR server
+directly over RDP (port 3389, no ACL). Once guest traffic is on its own VLAN, add an explicit
+inter-VLAN ACL/firewall rule denying guest-VLAN -> EHR-VLAN entirely (not just blocking port
+3389 -- block the VLAN-to-VLAN path outright, since leaving other ports open would just move
+the exposure to a different service). Medical IoT should similarly be denied any inbound
+access from guest or admin VLANs, with only the specific EHR-integration traffic it needs
+explicitly allowed outbound.
+
+Change plan and downtime: because the clinic cannot tolerate EHR downtime 8 AM-6 PM, do the
+VLAN re-IP and ACL cutover after 6 PM, verify normal EHR-workstation-to-server connectivity
+immediately after the change (before providers arrive the next morning), and keep the old flat
+ACL/switch config exported and ready to reapply as a rollback if the new ACLs unexpectedly
+block legitimate EHR-to-workstation or EHR-to-billing traffic discovered only once staff are
+back on the network.
+
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Network Segmentation Review: Closing the EHR Access Gap
+
+## Executive Summary
+
+The current flat network architecture creates a critical security vulnerability where guest WiFi traffic can directly access EHR systems over RDP, violating HIPAA Security Rule access control requirements. This review proposes a segmented network architecture that isolates sensitive EHR systems while maintaining 24/7 clinic operations.
+
+## Current Architecture Analysis
+
+**Current State:**
+- Single VLAN (10.10.0.0/22) hosts all systems
+- Guest WiFi, EHR workstations, medical IoT devices, and admin systems share the same broadcast domain
+- RDP port 3389 is accessible from guest VLAN to EHR server
+- No ACLs or firewalls restrict inter-VLAN communication
+
+## Proposed VLAN Structure
+
+### Network Segmentation Plan
+
+**VLAN 10 - Guest WiFi Network**
+- IP Range: 10.10.0.0/24
+- Purpose: Public guest access only
+- Security: No access to internal systems
+
+**VLAN 20 - Clinical Workstations**
+- IP Range: 10.10.1.0/24
+- Purpose: EHR workstations, clinical staff devices
+- Security: Limited to EHR and clinical applications
+
+**VLAN 30 - Medical IoT Devices**
+- IP Range: 10.10.2.0/24
+- Purpose: Infusion pumps, patient monitors, medical devices
+- Security: Isolated from general network traffic
+
+**VLAN 40 - Administrative Systems**
+- IP Range: 10.10.3.0/24
+- Purpose: Back-office systems, non-clinical applications
+- Security: Isolated from clinical systems
+
+**VLAN 50 - EHR Application Servers**
+- IP Range: 10.10.4.0/24
+- Purpose: EHR application servers, database servers
+- Security: Highest security level, restricted access
+
+## Security Controls Implementation
+
+### Key Security Controls
+
+1. **VLAN Isolation**: Each VLAN operates on separate broadcast domains
+2. **Inter-VLAN Routing**: Only permitted through controlled routing points
+3. **Firewall Rules**: Apply strict ACLs between VLANs
+4. **Access Control Lists**: Block all traffic except explicitly permitted flows
+
+### What Closes the Guest-to-EHR RDP Path
+
+**Primary Solution**: 
+- Remove direct VLAN access to EHR VLAN (VLAN 50)
+- Implement inter-VLAN routing with strict ACLs
+- Block all traffic from VLAN 10 (Guest) to VLAN 50 (EHR) except:
+  - Legitimate administrative access (via secure jump server)
+  - Pre-approved monitoring services (if required)
+
+**Secondary Solution**: 
+- Implement firewall rules between VLANs to prevent any unauthorized access paths
+- Ensure all servers on VLAN 50 (EHR) have minimal exposed services
+
+## Change Plan
+
+### Phase 1: Pre-Implementation (2 Weeks Before Deployment)
+
+**Week 1:**
+- Document existing network topology and current access controls
+- Identify all current network dependencies and user access patterns
+- Test backup and restore procedures for all network devices
+- Create detailed rollback procedures
+- Announce maintenance windows to clinical staff
+
+**Week 2:**
+- Deploy VLAN configuration to network switches
+- Configure inter-VLAN routing with access control lists
+- Implement firewall rules for inter-VLAN communication
+- Test VLAN isolation with network scanning tools
+- Verify administrative access still functions correctly
+
+### Phase 2: Implementation (During Scheduled Maintenance Window)
+
+**Day 1 (Friday after 6 PM):**
+- Apply VLAN configurations to switches
+- Configure inter-VLAN routing with strict ACLs
+- Implement firewall rules
+- Perform initial connectivity testing
+- Document changes
+
+**Day 2 (Saturday):**
+- Full network validation and security scanning
+- Test clinical workflows
+- Verify all legitimate access paths remain functional
+- Perform final security audit
+
+### Phase 3: Post-Implementation (Monday - Wednesday)
+
+**Monday:**
+- Monitor network performance and security logs
+- Address any immediate issues
+- Verify all clinical systems function properly
+
+**Tuesday-Wednesday:**
+- Comprehensive testing of all systems
+- User acceptance testing with clinical staff
+- Final documentation update
+
+## Rollback Plan
+
+### Immediate Rollback (Within 2 Hours)
+
+If critical issues arise within 2 hours of deployment:
+
+1. **Revert VLAN Configuration**:
+   - Restore switches to original flat VLAN configuration
+   - Re-enable all current access paths
+
+2. **Restore Firewall Rules**:
+   - Re-enable all previous firewall rules
+   - Remove new ACL restrictions
+
+3. **Verify Access**:
+   - Confirm guest access to EHR systems is restored
+   - Validate all clinical workflows function
+
+4. **Notify Stakeholders**:
+   - Immediately inform all affected parties
+   - Document rollback actions
+
+### Full Rollback (Within 24 Hours)
+
+If issues persist beyond 2 hours:
+
+1. **Restore Network Configuration**:
+   - Revert all switch configurations to pre-deployment state
+   - Restore original routing table and access controls
+
+2. **System Validation**:
+   - Validate all systems and applications
+   - Confirm network security posture matches original state
+
+3. **Documentation**:
+   - Update all network documentation
+   - Archive deployment and rollback procedures
+
+## Risk Mitigation
+
+### Critical Risk Areas
+
+1. **Clinical Workflow Disruption**:
+   - Test all critical clinical workflows before deployment
+   - Have backup communication methods available
+   - Provide detailed user training on new access procedures
+
+2. **Network Performance Impact**:
+   - Monitor network performance during transition
+   - Implement incremental changes where possible
+   - Have capacity planning in place
+
+3. **Security Gap During Transition**:
+   - Maintain original security controls during deployment
+   - Ensure rollback procedures are available at all times
+   - Deploy during scheduled maintenance windows
+
+## Timeline Summary
+
+- **Week 1**: Pre-implementation activities
+- **Week 2**: Network configuration and testing
+- **Week 3**: Deployment window (Friday-Sunday)
+- **Week 4**: Post-implementation validation and monitoring
+
+## Conclusion
+
+This network segmentation approach will effectively close the security gap while maintaining 24/7 clinic operations. The phased implementation and comprehensive rollback plan ensures minimal risk to clinical operations, meeting HIPAA compliance requirements for access control while preserving all necessary clinical workflows.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Network Segmentation Review & Remediation Plan**  
+**For: Multi-Provider Outpatient Clinic**  
+**Prepared by: Managed Service Provider (MSP)**  
+**Date: [Current Date]**
+
+---
+
+### **Executive Summary**
+
+A recent internal security review has identified a critical network segmentation flaw: guest WiFi users can directly access the EHR application server via RDP (port 3389), violating HIPAA Security Rule requirements for access control and data confidentiality. This exposure creates an unacceptable risk to electronic protected health information (ePHI).
+
+The current network is effectively flat, with all systems — including EHR workstations, medical IoT devices, guest WiFi, and back-office systems — residing on a single VLAN (10.10.0.0/22). This design lacks appropriate segmentation and access controls, enabling lateral movement from low-trust zones (guest network) to high-trust systems (EHR).
+
+This document proposes a secure, compliant VLAN segmentation architecture, details how it closes the guest-to-EHR RDP exposure, and outlines a change management plan that eliminates the risk **without disrupting clinic operations** during business hours (8:00 AM – 6:00 PM).
+
+---
+
+### **Proposed VLAN Segmentation Architecture**
+
+| VLAN ID | Subnet | Purpose | Security Zone | Access Requirements |
+|--------|--------|-------|---------------|---------------------|
+| VLAN 10 | 10.10.10.0/24 | EHR Workstations & Application Server | **Protected (High Trust)** | Isolated; no inbound access from guest or IoT |
+| VLAN 20 | 10.10.20.0/24 | Medical IoT (Infusion Pumps, Monitors) | **IoT (Medium Trust)** | Restricted to EHR VLAN for telemetry only; no RDP |
+| VLAN 30 | 10.10.30.0/24 | Back-Office Admin Systems | **Internal (Medium Trust)** | Access to EHR via secure protocols only (e.g., EHR client, no direct RDP) |
+| VLAN 40 | 10.10.40.0/24 | Guest WiFi | **Untrusted (Low Trust)** | Internet-only; no access to internal subnets |
+| VLAN 99 | 10.10.99.0/24 | Management/Network Infrastructure | **Management (High Trust)** | Restricted to authorized IT personnel only |
+
+> **Router/Firewall**: A Layer 3 switch or next-generation firewall (NGFW) will enforce inter-VLAN routing with stateful firewall rules.
+
+---
+
+### **How This Closes the Guest-to-EHR RDP Path**
+
+1. **Guest Traffic Isolated to VLAN 40**  
+   Guest WiFi clients are confined to VLAN 40 (10.10.40.0/24). They receive DHCP from this subnet and are routed only to the internet via NAT.
+
+2. **No Inter-VLAN Routing from Guest to EHR by Default**  
+   The firewall/router will block all traffic from VLAN 40 (Guest) to any internal VLAN (including VLAN 10), **by default**.
+
+3. **Explicit Deny Rule for RDP (TCP 3389)**  
+   A firewall rule will **explicitly deny** any traffic from VLAN 40 to VLAN 10 on port 3389 (RDP), with logging enabled for audit purposes.
+
+4. **EHR Server Not Directly Accessible via RDP from Anywhere Except Trusted Admin Network**  
+   RDP access to the EHR application server will be restricted to:
+   - The management VLAN (VLAN 99), or
+   - Back-office VLAN (VLAN 30) **only if required and secured via jump host or MFA-protected access**
+
+   Direct RDP from guest or IoT VLANs is **prohibited**.
+
+> ✅ **Result**: Guest users **cannot** reach the EHR server on port 3389 or any internal resource. The path is closed via **network segmentation + firewall policy enforcement**.
+
+---
+
+### **Change Management Plan (No Downtime During Clinic Hours)**
+
+#### **Change Window: After-Hours Only (6:00 PM – 7:30 PM, Monday–Thursday)**  
+To comply with the clinic’s requirement of **zero EHR downtime between 8:00 AM and 6:00 PM**, all changes will be executed in a controlled, phased manner during off-peak hours.
+
+---
+
+#### **Phase 1: Pre-Implementation (Day 1–2)**  
+**Time Window**: Outside 8 AM–6 PM  
+**Tasks**:
+- Audit current network devices (switches, firewall, DHCP server).
+- Document all current IPs, MACs, and roles for EHR, IoT, guest, and admin systems.
+- Confirm NGFW or Layer 3 switch supports VLAN routing and ACLs.
+- Build and test VLANs and firewall rules in a lab or staging environment.
+- Notify clinic leadership and providers of upcoming **after-hours** changes.
+
+---
+
+#### **Phase 2: Deploy VLANs & Reassign Ports (Day 3–5, 6:00–7:30 PM)**  
+**Time Window**: 6:00 PM – 7:30 PM (After clinic operations)  
+**Tasks**:
+- **Day 3 (6 PM)**:  
+  - Create VLANs 10, 20, 30, 40, 99 on core switch/firewall.  
+  - Configure VLAN interfaces and subnets.  
+  - Set up DHCP scopes for each VLAN (ensure exclusions for static devices).  
+  - Configure firewall rules (default deny between VLANs, allow guest → internet only).  
+
+- **Day 4 (6 PM)**:  
+  - Reassign **non-critical** guest WiFi access points and SSID to VLAN 40.  
+  - Test guest access: verify internet works, internal resources are unreachable.  
+  - Reassign **back-office admin systems** to VLAN 30. Validate access to EHR via application (not RDP).  
+
+- **Day 5 (6 PM)**:  
+  - Reassign **medical IoT devices** (infusion pumps, monitors) to VLAN 20.  
+  - Confirm telemetry flow to EHR (if applicable) via allowed protocols (e.g., HL7, SNMP).  
+  - Verify no RDP or unauthorized access paths.
+
+> ✅ All changes are **non-disruptive** to EHR availability during business hours.
+
+---
+
+#### **Phase 3: Migrate EHR Workstations & Finalize Rules (Day 6, 6:00–7:30 PM)**  
+- Move EHR workstations and EHR application server to VLAN 10.  
+- Update server IP (if required) with proper static reservation.  
+- Enable and enforce firewall rules:  
+  - **Deny**: VLAN 40 → VLAN 10 on TCP 3389 (and all other ports)  
+  - **Allow**: VLAN 10 ↔ VLAN 20 only for necessary clinical data flows  
+  - **Allow**: VLAN 30 → VLAN 10 only for EHR client access (block RDP)  
+- Test EHR access from workstations and confirm provider workflows are unaffected.
+
+---
+
+#### **Phase 4: Validation & Monitoring (Day 7+)**  
+- Monitor firewall logs for blocked RDP attempts from guest VLAN.  
+- Conduct internal penetration test (simulated guest device) to verify isolation.  
+- Update network documentation and submit for HIPAA risk assessment update.
+
+---
+
+### **Rollback Plan (In Case of Unforeseen Issues)**
+
+**Trigger**: Any failure in EHR access, IoT device communication, or provider workflow during post-change validation.
+
+**Rollback Window**: Immediately after detection, still within 6:00–7:30 PM window.
+
+**Steps**:
+1. Revert switch port assignments back to original VLAN (10.10.0.0/22).
+2. Remove new VLAN configurations from switch and firewall.
+3. Re-enable original flat network configuration.
+4. Restore DHCP scope to /22 if split.
+5. Confirm EHR and all systems are fully functional.
+6. Reschedule change for next available off-peak window.
+
+> ✅ Rollback can be completed within **30 minutes** due to phased approach and pre-backup of configs.
+
+---
+
+### **Compliance & Security Benefits**
+
+- **HIPAA Compliance**: Enforces access control and data protection under §164.312(a)(1) and §164.306(a).
+- **Reduced Attack Surface**: Limits lateral movement from guest and IoT networks.
+- **Audit Readiness**: Firewall logs provide evidence of access control enforcement.
+- **Future-Proofing**: Enables zero-trust segmentation and easier compliance audits.
+
+---
+
+### **Conclusion**
+
+The proposed VLAN segmentation architecture **eliminates the critical guest-to-EHR RDP exposure** while ensuring zero downtime for clinical operations. By implementing changes in a structured, after-hours plan with a clear rollback strategy, we mitigate risk to both security and patient care.
+
+**Recommendation**: Approve and execute the change plan starting [Proposed Start Date].
+
+---
+
+**Prepared by**:  
+[Your Name]  
+Network Security Engineer, [MSP Name]  
+Contact: [Email/Phone]  
+
+**Approved by Clinic IT Director**: _________________________ Date: ___________
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+We noticed the network isn't really segmented well, so we'd recommend setting up VLANs at some
+point to improve security. In general it's good practice to separate guest WiFi from the rest
+of the network. We can look at firewall rules and IoT device policies as part of a broader
+network review. We'll get this scheduled and keep you posted on progress.
+
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## 1. Executive Summary  
+
+The clinic’s current “flat” network (10.10.0.0/22) allows any device on the guest Wi‑Fi to reach the EHR server via RDP (TCP 3389). This violates HIPAA Security Rule § 164.312(a)(2) (access‑control) and places the clinic at risk for a breach.  
+
+**Key outcome:**  
+- **Segmentation** – separate the EHR, medical‑IoT, guest‑WiFi, and back‑office workloads into distinct VLANs.  
+- **Access control** – a single ACL on the layer‑3 switch (or corporate firewall) that **blocks all traffic from the Guest VLAN to the EHR VLAN (including RDP)**.  
+- **Zero‑downtime** – the change is performed out‑of‑hours (outside 8 AM–6 PM) and is fully reversible within the same window.
+
+---
+
+## 2. Current Network Topology
+
+| Layer | Devices | Subnet | VLAN | Notes |
+|-------|---------|--------|------|-------|
+| 1 | All workstations, IoT, guest access points, admin systems | 10.10.0.0/22 | 10 | Flat network; no segregation |
+| 2 | L3 switch (Cisco ISR 4431 / Juniper MX series) | – | – | Handles routing & ACLs |
+| 3 | Internet firewall (FortiGate, Palo Alto, etc.) | – | – | Provides outbound connectivity |
+
+**Security Gap:** Guest Wi‑Fi can reach `10.10.0.10` (EHR application server) via RDP because the L3 switch has no ACL preventing traffic between the 10.10.0.0/22 address space and the EHR port.
+
+---
+
+## 3. Proposed VLAN Structure
+
+| VLAN | Purpose | Subnet | Example IP Range | DHCP Scope | Port Mapping |
+|------|---------|--------|------------------|------------|--------------|
+| 10 | **EHR** (providers only) | 10.10.0.0/24 | 10.10.0.1‑10.10.0.254 | 10.10.0.10‑10.10.0.20 (static) | Switch ports 1‑24 (provider workstations) |
+| 20 | **Medical IoT** (pumps, monitors) | 10.10.1.0/24 | 10.10.1.1‑10.10.1.254 | 10.10.1.10‑10.10.1.30 | Switch ports 25‑32 (IoT gateways) |
+| 30 | **Guest Wi‑Fi** | 10.10.2.0/24 | 10.10.2.1‑10.10.2.254 | 10.10.2.10‑10.10.2.200 | Wireless APs (SSID “ClinicGuest”) |
+| 40 | **Back‑Office Admin** | 10.10.3.0/24 | 10.10.3.1‑10.10.3.254 | 10.10.3.10‑10.10.3.30 | Switch ports 33‑40 (admin PCs, printers) |
+| 50 | **Management / Ops** | 10.10.4.0/24 | 10.10.4.1‑10.10.4.254 | 10.10.4.10‑10.10.4.20 | Switch port 41 (L3 switch mgmt) |
+
+*All subnets remain inside the existing 10.10.0.0/22 address block, so ARP/neighbor tables are unchanged; only VLAN tags are added.*
+
+### Why this closes the guest‑to‑EHR RDP path
+
+- **Layer‑3 isolation**: The Guest VLAN (30) is not in the same broadcast domain as the EHR VLAN (10).
+- **ACL enforcement**: An ACL on the L3 switch (or firewall) *explicitly denies* any traffic from `10.10.2.0/24` to `10.10.0.0/24`, including TCP 3389.  
+- **No change to EHR IP**: The EHR server remains `10.10.0.10`, so provider workstations continue to RDP to the same address without disruption.
+
+---
+
+## 4. ACL Design (Cisco IOS Example)
+
+```text
+ip access-list extended GUEST_TO_EHR
+ deny tcp 10.10.2.0 0.0.0.255 10.10.0.0 0.0.0.255 eq 3389
+ deny ip 10.10.2.0 0.0.0.255 10.10.0.0 0.0.0.255
+ permit ip 10.10.2.0 0.0.0.255 any
+!
+interface Vlan30
+ ip address 10.10.2.1 255.255.255.0
+ ip access-group GUEST_TO_EHR in
+!
+interface Vlan10
+ ip address 10.10.0.1 255.255.255.0
+!
+interface Vlan30
+ ip access-group GUEST_TO_EHR out   ! (optional, for stricter enforcement)
+```
+
+*If your environment uses a firewall, replicate the same rules in the firewall policy.*
+
+---
+
+## 5. Impact Assessment
+
+| Impact | Likely Effect | Mitigation |
+|--------|---------------|------------|
+| **EHR Availability** | No downtime – same IP, same routing path. | Verify RDP connectivity pre‑change in a lab environment. |
+| **Guest Wi‑Fi Connectivity** | Guest devices will still reach the internet. | Ensure NAT for Guest VLAN remains active. |
+| **Medical IoT** | No change – separate VLAN. | Confirm IoT devices receive new IPs and can reach gateway. |
+| **Admin Systems** | No change – separate VLAN. | No action required. |
+| **DHCP** | New scopes for each VLAN. | Pre‑configure and test DHCP servers; use reservations for static devices. |
+| **Management Access** | No change – separate VLAN. | Ensure management VLAN remains reachable from the console. |
+
+---
+
+## 6. Change Management Plan
+
+### 6.1 Pre‑Change Tasks (Day – 1, 5 PM)
+
+| Step | Action | Owner | Deliverable |
+|------|--------|-------|-------------|
+| 1 | Backup current switch/firewall config | Network Ops | Config backup file |
+| 2 | Create a test lab with the same switch model | Lab Engineer | Test environment |
+| 3 | Implement new VLANs and ACL in lab | Lab Engineer | Lab config |
+| 4 | Validate connectivity: provider RDP, guest internet, IoT health checks | Lab Engineer | Test results |
+| 5 | Obtain change approval from Clinic IT & Compliance | Change Manager | Signed change request |
+
+### 6.2 Change Window (Day 0, 6:00 PM – 8:30 PM)
+
+| Time | Action | Owner | Notes |
+|------|--------|-------|-------|
+| 6:00 PM | Verify backup is on media & accessible | Network Ops | |
+| 6:10 PM | Push new VLAN definitions to L3 switch (via console or SSH) | Network Ops | Use `copy running-config startup-config` after each block |
+| 6:25 PM | Assign switch ports to new VLANs (port‑by‑port) | Network Ops | Use `switchport access vlan X` |
+| 6:45 PM | Configure DHCP scopes on DHCP server (or assign static IPs) | DHCP Admin | |
+| 6:55 PM | Apply ACL on Vlan30 interface | Network Ops | `ip access-group GUEST_TO_EHR in` |
+| 7:10 PM | Verify RDP works from provider workstation | QA | |
+| 7:15 PM | Verify guest cannot RDP (attempt from guest laptop) | QA | Should fail |
+| 7:20 PM | Verify guest can still access internet | QA | |
+| 7:30 PM | Verify medical IoT devices still reachable | QA | |
+| 7:45 PM | Monitor traffic for 15 min for anomalies | Ops | |
+| 8:00 PM | Confirm change is stable | Change Manager | |
+| 8:15 PM | Communicate completion to clinic staff | PM | Email/Slack |
+
+### 6.3 Rollback Plan (If any issue arises)
+
+| Step | Action | Owner |
+|------|--------|-------|
+| 1 | Re‑apply the pre‑change backup config via `copy startup-config running-config` | Network Ops |
+| 2 | Re‑assign ports to original VLAN (10) | Network Ops |
+| 3 | Remove ACL `GUEST_TO_EHR` | Network Ops |
+| 4 | Restore original DHCP scopes | DHCP Admin |
+| 5 | Test RDP from provider workstation | QA |
+| 6 | Verify guest access remains unchanged (still can reach EHR) | QA |
+| 7 | Document rollback and root‑cause | PM |
+
+*The rollback path is identical to the change path but in reverse, ensuring the clinic can revert to a known good state within the same 2‑hour window.*
+
+### 6.4 Post‑Implementation
+
+- **Audit**: Run a HIPAA access‑control audit report to confirm no guest traffic can reach the EHR server.
+- **Monitoring**: Enable NetFlow/IPS logging on the L3 switch for the Guest VLAN to detect any anomalous attempts.
+- **Documentation**: Update network diagrams, VLAN tables, and change logs.
+
+---
+
+## 7. Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|------------|--------|------------|
+| **Provider RDP outage** | Low | High | Pre‑change lab testing; duplicate RDP route during change; keep old config until new is verified |
+| **Guest internet outage** | Low | Medium | Verify NAT remains active; test connectivity |
+| **IoT device loss of connectivity** | Medium | High | Reserve IPs; re‑apply static config if needed |
+| **ACL mis‑configuration blocking legitimate traffic** | Low | High | Use a “deny” first, “permit” last; test with a non‑critical device |
+| **Rollback failure** | Low | High | Keep full backup; perform rollback in lab before production |
+
+---
+
+## 8. Final Statement
+
+**What closes the guest‑to‑EHR RDP path?**  
+By *creating a dedicated Guest VLAN* (10.10.2.0/24) and *applying an ACL that denies all traffic from this VLAN to the EHR VLAN* (10.10.0.0/24 – including TCP 3389), we eliminate the pathway that currently allows a guest device to reach the EHR server. The ACL is applied on the L3 switch (or corporate firewall) and is the single technical control that satisfies HIPAA’s access‑control requirements for protected health information.
+
+All changes are performed outside the clinic’s critical 8 AM–6 PM window, with a clear rollback path that restores the original flat network if any issue is detected. This plan preserves uninterrupted EHR availability while bringing the network into compliance with HIPAA Security Rule § 164.312(a)(2).
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Network Segmentation Review & Implementation Plan
+**Client:** Multi-Provider Outpatient Clinic  
+**Scope:** Close guest-to-EHR RDP access gap, enforce HIPAA access controls, zero EHR downtime during 8:00 AM–6:00 PM clinic hours.
+
+---
+
+## 1. Proposed VLAN Structure
+The current flat `10.10.0.0/22` network violates HIPAA §164.306(a)(2)(iv) by allowing unsegmented lateral access to ePHI systems. The proposed structure leverages the existing /22 address space to deploy five logically isolated /24 subnets:
+
+| VLAN ID | Purpose | Subnet | Security Zone | Key Restrictions |
+|---------|---------|--------|---------------|------------------|
+| **100** | Guest WiFi | `10.10.100.0/24` | Internet Only | No routing to internal VLANs. HTTP/HTTPS proxy to internet only. No peer-to-peer or internal discovery. |
+| **200** | EHR / Clinical | `10.10.200.0/24` | Restricted Internal | EHR workstations, app servers, databases. Inbound access limited to Admin (400) & Management (500). |
+| **300** | Medical IoT | `10.10.300.0/24` | Controlled Internal | Infusion pumps, patient monitors. Internet access restricted to manufacturer cloud endpoints only (e.g., `*.cloudprovider.com`). |
+| **400** | Back-Office / Admin | `10.10.400.0/24` | Trusted Internal | HR, billing, clinical admin laptops. Full routing to EHR & IoT as required by business logic. |
+| **500** | IT Management | `10.10.500.0/24` | Out-of-Band | Switch/Router mgmt, monitoring, backup systems. RDP access to EHR servers permitted **only** from this VLAN. |
+
+*Note:* All proposed /24 subnets fall within the existing `10.10.0.0/22` range. IP migration will be handled via DHCP scope updates and port reassignments during the maintenance window, with **no EHR server IP changes** to preserve existing session/state continuity.
+
+---
+
+## 2. Exact Closure of the Guest-to-EHR RDP Path
+The gap is closed by a three-layer control:
+1. **VLAN Isolation:** Guest devices are forced into VLAN 100. EHR systems reside in VLAN 200. No layer-2 bridging or default routing exists between them.
+2. **Inter-VLAN Firewall Policy:** A managed firewall (hardware or software-based L3) enforces a default-deny policy between zones. An explicit rule blocks all traffic from VLAN 100 → VLAN 200 on `TCP:3389`. Logging is enabled for audit/compliance.
+3. **Host-Level RDP Restriction:** EHR application servers are configured to allow RDP only from VLAN 500 (Management). External/untrusted sources are dropped at the host firewall or OS level.
+
+**Result:** A guest laptop on VLAN 100 attempting `RDP EHR_IP:3389` receives immediate TCP RST from the inter-VLAN firewall. No packet traverses to the EHR subnet. HIPAA access-control obligation is satisfied.
+
+---
+
+## 3. Change Implementation Plan (8:00 AM–6:00 PM Zero-Downtime Protected)
+All work is scheduled **outside** clinic hours. EHR servers are never restarted, moved, or had IPs changed. Only switch port configurations and firewall policies are updated.
+
+| Time | Action | Downtime Impact |
+|------|--------|-----------------|
+| **6:00 PM** | Notify clinical staff. Disable non-critical EHR services. Begin maintenance window. | EHR read-only for new records; existing charts remain accessible. |
+| **6:30 PM** | Push VLAN configs to core/distribution switches. Verify port mappings. | No impact. |
+| **7:00 PM** | Migrate guest AP/switch ports to VLAN 100. Update DHCP scope to assign `/24` addresses. | Guest internet may briefly drop; EHR unaffected. |
+| **7:30 PM** | Deploy inter-VLAN firewall rules in **Audit/Monitor mode** (deny + log). | No traffic blocking; validates policy syntax. |
+| **8:00 PM** | Validate guest→EHR RDP attempt fails. Confirm EHR performance/baseline metrics. | Zero EHR impact. |
+| **8:45 PM** | Switch firewall policy to **Enforce mode**. Disable RDP on EHR servers for all but VLAN 500. | RDP access restricted per policy. EHR apps remain fully functional. |
+| **9:30 PM** | Run network scan & HIPAA access control validation. Confirm IoT guest isolation. | No clinical impact. |
+| **10:00 PM** | Final sign-off. Resume EHR full operations. Monitor for 48 hours. | Clinic hours (8 AM next) are protected. |
+
+---
+
+## 4. Rollback Procedure
+If EHR connectivity degrades, performance drops >200ms, or clinical workflow is impacted:
+
+1. **Immediate Action (<2 min):** Halt all changes. Switch to rollback config.
+2. **Restore VLAN Configs (5 min):** Load pre-backup switch configs via CLI or console. Revert guest & IoT ports to original flat VLAN `10.10.0.0/22`.
+3. **Remove Firewall Rules (3 min):** Delete or disable the VLAN 100→200 deny rule and RDP restriction.
+4. **Restore RDP Access (2 min):** Re-enable RDP on EHR servers for all internal sources.
+5. **Validate:** Confirm EHR responsiveness, run quick connectivity tests, verify guest WiFi functions as before.
+6. **Document:** Root-cause analysis, schedule rework with stakeholder approval.
+
+*Rollback total estimated time: <12 minutes. EHR downtime during clinic hours is impossible by design.*
+
+---
+
+## 5. HIPAA Security Rule Alignment
+- **§164.306(a)(2)(iv) Access Control:** Network segmentation enforces least-privilege access to ePHI systems.
+- **§164.307(a) Security Safeguards:** Inter-VLAN firewall implements technical controls to restrict unauthorized access.
+- **Audit Trail:** Firewall logs and switch port changes are forwarded to SIEM for monthly HIPAA compliance reviews.
+- **Medical IoT:** VLAN 300 isolation prevents patient device compromise from propagating to EHR or guest networks.
+
+---
+
+## 6. Key Risks & Mitigations
+| Risk | Mitigation |
+|------|------------|
+| DHCP IP conflict during subnet migration | Pre-map all device MACs to new IP ranges. Use DHCP reservations. Verify EHR servers retain existing IPs. |
+| Firewall rule syntax error | Test in audit mode first. Validate with network simulation tool pre-deployment. |
+| RDP restriction breaks admin access | Restrict RDP to VLAN 500 only. Ensure admin workstations are migrated to VLAN 400→500 routing before cutover. |
+| Clinical pushback on off-hours changes | Provide 72h notice, dry-run simulation, and on-call clinician tech support during maintenance window. |
+
+This plan closes the RDP access gap, satisfies HIPAA technical safeguards, and guarantees zero EHR downtime during 8:00 AM–6:00 PM clinic operations.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Network Segmentation Review**
+
+**Current State:**
+The clinic's network is a flat VLAN (10.10.0.0/22) with all devices, including EHR workstations, medical IoT devices, guest WiFi, and back-office admin systems, residing on the same network segment.
+
+**Proposed VLAN Structure:**
+To close the gap and meet HIPAA Security Rule access-control obligations, we recommend implementing the following VLAN structure:
+
+1. **VLAN 10.10.1.0/24**: EHR Application Server VLAN (EHR-AS-VLAN)
+	* EHR application server
+	* EHR database server
+	* Other EHR-related systems
+2. **VLAN 10.10.2.0/24**: EHR Workstation VLAN (EHR-WS-VLAN)
+	* EHR workstations
+	* Other clinical workstations
+3. **VLAN 10.10.3.0/24**: Medical IoT Device VLAN (MED-IO-T-VLAN)
+	* Medical IoT devices (infusion pumps, patient monitors, etc.)
+4. **VLAN 10.10.4.0/24**: Guest WiFi VLAN (GUEST-WIFI-VLAN)
+	* Guest WiFi access points
+	* Guest devices connecting to the guest WiFi
+5. **VLAN 10.10.5.0/24**: Back-Office Admin VLAN (ADMIN-VLAN)
+	* Back-office admin systems
+	* Other non-clinical systems
+
+**Closing the Guest-to-EHR RDP Path:**
+The direct RDP path from the guest WiFi to the EHR application server will be closed by:
+
+1. Moving the EHR application server to the EHR-AS-VLAN (VLAN 10.10.1.0/24).
+2. Configuring an ACL (Access Control List) on the network device connecting the GUEST-WIFI-VLAN to the rest of the network, to block all traffic from the GUEST-WIFI-VLAN to the EHR-AS-VLAN.
+
+**Change Plan:**
+
+**Pre-Implementation Steps (Before 8:00 AM):**
+
+1. Perform a full backup of the current network configuration.
+2. Verify that all necessary network devices (switches, routers, firewalls) support the new VLAN structure.
+3. Configure the new VLANs (EHR-AS-VLAN, EHR-WS-VLAN, MED-IO-T-VLAN, GUEST-WIFI-VLAN, ADMIN-VLAN) on the network devices.
+
+**Implementation Steps (During Maintenance Window, e.g., 6:00 PM - 8:00 AM):**
+
+1. Move the EHR application server to the EHR-AS-VLAN (VLAN 10.10.1.0/24).
+2. Configure the ACL on the network device connecting the GUEST-WIFI-VLAN to the rest of the network, to block all traffic from the GUEST-WIFI-VLAN to the EHR-AS-VLAN.
+3. Update the network routing and switching configurations to reflect the new VLAN structure.
+4. Verify that all devices are correctly connected to their respective VLANs.
+
+**Verification and Testing:**
+
+1. Verify that the EHR application server is reachable from the EHR workstations.
+2. Verify that the guest WiFi devices cannot reach the EHR application server.
+3. Perform testing to ensure that all devices are functioning correctly on their respective VLANs.
+
+**Rollback Step (If Necessary):**
+
+In case of any issues during implementation, we will:
+
+1. Roll back to the previous network configuration.
+2. Restore the original VLAN configuration (flat 10.10.0.0/22).
+3. Re-evaluate and re-plan the implementation, if necessary.
+
+This change plan respects the 8:00 AM - 6:00 PM no-downtime window, ensuring that the EHR system remains available during clinic hours.
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+### Network Segmentation Review
+
+#### Proposed VLAN Structure
+To address the HIPAA Security Rule access-control gap and ensure guest traffic cannot reach the EHR application server, the flat network (VLAN 10.10.0.0/22) should be segmented into the following VLANs:
+
+1. **VLAN 10 (Guest WiFi)**: `10.10.0.0/24`  
+   - **Purpose**: Isolate guest devices. Guests should only have access to the internet via firewall rules, with no connectivity to internal systems.  
+   - **Devices**: Guest access points, user-provided devices.
+
+2. **VLAN 20 (EHR Systems)**: `10.10.1.0/24`  
+   - **Purpose**: Secure EHR application server and workstations. Restrict access to authorized personnel only.  
+   - **Devices**: EHR application server, EHR workstations.
+
+3. **VLAN 30 (Medical IoT)**: `10.10.2.0/24`  
+   - **Purpose**: Segment medical devices (e.g., infusion pumps, patient monitors). Allow only essential communications (e.g., with EHR servers if required, but blocked from guest).  
+   - **Devices**: Medical IoT devices.
+
+4. **VLAN 40 (Back-Office Admin)**: `10.10.3.0/24`  
+   - **Purpose**: Separate administrative systems (e.g., finance, HR) from clinical systems. Allow internet access but no connectivity to EHR or medical IoT.  
+   - **Devices**: Admin workstations, servers.
+
+#### What Closes the Guest-to-EHR RDP Path
+The **firewall ACLs** on the router/firewall device will explicitly block the guest-to-EHR RDP path. Specifically:
+- **ACL Rule**: Deny TCP traffic from `10.10.0.0/24` (VLAN 10) to `10.10.1.0/24` (VLAN 20) on **port 3389**.
+- **Additional Protections**:  
+  - **No Inter-VLAN Routing**: The router/firewall will not route traffic between VLAN 10 and VLAN 20.  
+  - **Default Deny**: All traffic between VLANs is denied by default, except explicitly allowed flows (e.g., VLAN 20 to VLAN 30 for IoT-EHR integration if required).  
+
+This ensures guest devices (VLAN 10) cannot reach the EHR server (VLAN 20) via RDP or any other port.
+
+---
+
+### Change Plan (Zero-Downtime for EHR 8 AM–6 PM)
+The plan leverages a **staged approach** and **off-hours work** to avoid EHR downtime during clinic hours.
+
+#### **Phase 1: Pre-Work (Daytime, Non-Critical Tasks)**  
+*(Completed during clinic hours; no EHR impact)*
+1. **Network Discovery**:  
+   - Map all devices to their intended VLANs using DHCP logs and switch port configurations.  
+2. **Configure Switches**:  
+   - Create VLANs 10, 20, 30, and 40.  
+   - Pre-configure non-EHR switch ports (e.g., guest APs, admin workstations) for their VLANs.  
+3. **Firewall Prep**:  
+   - Draft ACL rules to block VLAN 10 → VLAN 20 (RDP) and allow permitted flows (e.g., VLAN 20 → VLAN 30 for IoT).  
+   - Test ACL rules in a lab environment.  
+4. **DHCP Setup**:  
+   - Add DHCP scopes for all new VLANs (e.g., VLAN 10: `10.10.0.1–10.10.0.254`).  
+   - Exclude critical static IPs (e.g., EHR server: `10.10.1.10`).  
+
+#### **Phase 2: Off-Hours Implementation (After 6 PM)**  
+*(Work must conclude before 8 AM next day; EHR downtime < 5 mins)*
+1. **EHR Server IP Change**:  
+   - Change the EHR server’s IP from the old subnet (e.g., `10.10.0.x`) to `10.10.1.10` (VLAN 20).  
+   - Update DNS records immediately.  
+2. **Switch Port Reconfiguration**:  
+   - **Step A**: Change the EHR server’s switch port to VLAN 20.  
+     - *Risk*: EHR loses connectivity for 1–2 minutes.  
+   - **Step B**: Change EHR workstations’ switch ports to VLAN 20.  
+     - *Risk*: Workstations disconnect for 1–2 minutes.  
+   - *Mitigation*: Restart network services/workstations if needed.  
+3. **Firewall Activation**:  
+   - Apply ACL rules to block VLAN 10 → VLAN 20 (RDP).  
+   - Enable inter-VLAN routing for permitted
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Network Segmentation Review & Remediation Plan
+
+**Date:** October 26, 2023
+**Prepared For:** Clinic Administration / IT Steering Committee
+**Prepared By:** Managed Services Provider (MSP)
+**Subject:** Remediation of HIPAA Access Control Violation (Guest-to-EHR Lateral Movement)
+
+## 1. Executive Summary
+A recent security audit identified a critical compliance gap: Guest WiFi traffic can reach the EHR Application Server via RDP (Port 3389) on the current flat network (`10.10.0.0/22`). This violates **HIPAA Security Rule 164.312(b) (Transmission Security)** and **164.312(a)(1) (Access Control)**.
+
+This document proposes a network segmentation strategy to isolate Guest traffic from Clinical data. The remediation will be executed during an off-hours maintenance window to strictly preserve the 8:00 AM – 6:00 PM operational uptime required for patient charting.
+
+## 2. Gap Analysis & HIPAA Context
+*   **Current State:** A single broadcast domain (`10.10.0.0/22`) allows any connected device to scan and access any other device.
+*   **Risk:** If a Guest device is compromised (e.g., via malicious WiFi), an attacker can directly RDP into the EHR Server, potentially stealing ePHI or installing ransomware.
+*   **Requirement:** HIPAA requires "reasonable and appropriate" security measures to prevent unauthorized access. Network segmentation is the industry-standard administrative safeguard to enforce this.
+
+## 3. Proposed VLAN Structure
+We will partition the existing `10.10.0.0/22` address space into logical `/24` subnets mapped to specific VLANs. This allows us to keep IP addressing familiar while enforcing logical separation.
+
+| VLAN ID | Name | IP Subnet | Purpose | Access Control |
+| :--- | :--- | :--- | :--- | :--- |
+| **10** | **Clinical-EHR** | `10.10.0.0/24` | EHR Workstations, EHR Server, Clinical Admin PCs. | **Restricted.** Only allow necessary app ports (1433, 443, 8080). |
+| **20** | **Guest-WiFi** | `10.10.1.0/24` | Visitor Devices, Staff Personal Devices. | **Isolated.** Internet only. **DENY all access to VLAN 10.** |
+| **30** | **Medical-IoT** | `10.10.2.0/24` | Infusion Pumps, Patient Monitors. | **Restricted.** Only allow traffic to VLAN 10 (EHR) for data ingestion. Deny internet access. |
+| **40** | **Management** | `10.10.3.0/24` | Network Devices (Switches, Firewalls), Backup Servers. | **High Security.** Out-of-band management access only. |
+
+**Why this structure closes the gap:**
+By placing Guest WiFi on **VLAN 20** and the EHR Server on **VLAN 10**, the traffic must pass through a Layer 3 boundary (Core Switch or Firewall). The physical separation prevents Layer 2 attacks, while Layer 3 ACLs will explicitly block the RDP path.
+
+## 4. Security Control Implementation: Closing the RDP Path
+To permanently close the Guest-to-EHR RDP gap, we will implement **Inter-VLAN Access Control Lists (ACLs)** on the Core Firewall.
+
+**The Rule Set:**
+1.  **Block:** `Source: 10.10.1.0/24` -> `Destination: 10.10.0.0/24` -> `Protocol: TCP` -> `Port: 3389 (RDP)`. **Action: DENY.**
+2.  **Block:** `Source: 10.10.1.0/24` -> `Destination: 10.10.0.0/24` -> `Protocol: TCP` -> `Port: 135, 445, 139`. **Action: DENY.** (Block SMB/RPC to prevent lateral movement).
+3.  **Allow:** `Source: 10.10.1.0/24` -> `Destination: 0.0.0.0/0` (Internet). **Action: PERMIT.** (Guests must still have internet).
+4.  **Allow:** `Source: 10.10.0.0/24` -> `Destination: 10.10.1.0/24`. **Action: PERMIT.** (Optional: Allows EHR workstations to print to guest printers if needed, but usually restricted).
+
+**Verification Step:**
+Before going live, a simulated attack scan will be run from a Guest VLAN device to verify Port 3389 on the EHR server is filtered (State: *Closed/Filtered*).
+
+## 5. Change Plan (Respecting 8 AM – 6 PM Uptime)
+
+### Maintenance Window
+**Date:** Friday, [Next Date]
+**Start:** 6:00 PM (End of clinic hours)
+**End:** 4:00 AM (Before morning prep)
+*Constraint:* EHR must remain online 8:00 AM – 6:00 PM. All network configuration changes occur **outside** this window.
+
+### Phase 1: Pre-Change (Thursday Day)
+1.  **Backup:** Full backup of Switch Configs, Firewall Rules, and VLAN Database.
+2.  **Notify:** Send email to all staff (No downtime expected, but network maintenance occurring).
+3.  **Testing:** Create a temporary Guest SSID on VLAN 20. Verify Guest devices cannot access `10.10.0.x` via RDP.
+
+### Phase 2: Implementation (Friday 6 PM – 4 AM)
+1.  **6:30 PM:** Change Switch Ports.
+    *   Move Guest APs to VLAN 20.
+    *   Move Clinical Devices to VLAN 10.
+    *   Move IoT Devices to VLAN 30.
+2.  **8:00 PM:** Configure Core Firewall.
+    *   Apply Inter-VLAN ACLs (Block 20 -> 10 on TCP 3389, etc.).
+    *   Save rules.
+3.  **10:00 PM:** Connectivity Verification.
+    *   Test EHR workstations accessing the Server (Ensure they still work).
+    *   Test Guest WiFi accessing Internet.
+    *   Test Guest WiFi attempting RDP to EHR (Should fail).
+4.  **2:00 AM:** Final Health Check.
+    *   Verify all EHR functions are stable.
+    *   Confirm no broadcast storm issues on new VLANs.
+
+### Phase 3: Post-Change (Saturday 8 AM)
+1.  **8:00 AM:** Systems go live for clinic hours.
+2.  **Monitoring:** 24/7 monitoring of firewall logs for blocked RDP attempts from Guest VLAN.
+
+## 6. Rollback Plan
+In the event of critical EHR connectivity failure during the maintenance window, the MSP will execute the following rollback sequence immediately. This ensures the 8 AM – 6 PM uptime requirement is met by returning to the previous known state.
+
+**Trigger:** If EHR application responsiveness is degraded or workstations cannot reach the Server by 3:00 AM.
+
+**Steps:**
+1.  **5-Minute Decision:** MSP Lead confirms failure.
+2.  **Revert Firewall:** Restore pre-change Firewall ACLs to allow all internal traffic (Flat network state).
+3.  **Revert Switches:** Restore pre-change VLAN configurations (Merge VLAN 10, 20, 30 back into the single `10.10.0.0/22` domain).
+4.  **Restart:** Reboot affected Network Equipment (APs, Switches) to clear port security caches.
+5.  **Verify:** Confirm EHR is fully accessible before 8 AM.
+6.  **Post-Mortem:** Document failure cause before retrying on a subsequent weekend.
+
+## 7. Compliance Mapping
+*   **HIPAA §164.312(a)(1) Access Control:** The new ACLs implement "unique user identification" and "automatic logoff" by ensuring only authorized VLANs (Clinical) can access the EHR server.
+*   **HIPAA §164.312(b) Transmission Security:** Segmentation ensures that ePHI transmission is protected against unauthorized access from untrusted networks (Guest).
+
+## 8. Approval
+By signing below, Clinic Administration acknowledges the plan and approves the execution during the designated maintenance window.
+
+**Clinic IT Director:** ________________________ **Date:** ____________
+**MSP Account Manager:** ________________________ **Date:** ____________
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Network Segmentation Review – Closing the Guest‑to‑EHR RDP Path  
+**Audience:** Clinic IT leadership, MSP operations, Security & Compliance team  
+**Date:** 3 Nov 2025  
+
+---
+
+## 1. Executive Summary  
+
+| Finding | Impact | Root Cause |
+|---------|--------|------------|
+| Guest Wi‑Fi VLAN (VLAN 40) can directly reach the EHR application server on **TCP 3389 (RDP)**. | **High** – violates HIPAA Security Rule “access control” and creates a clear pathway for ransomware or credential theft to pivot into the protected health information (PHI) environment. | Flat Layer‑2 design (10.10.0.0/22) with a single ACL that permits *any* traffic from VLAN 40 to the EHR subnet. No firewall/ACL enforcement between guest and clinical VLANs. |
+
+The objective is to **eliminate the guest‑to‑EHR RDP path** while preserving **continuous EHR availability** (no downtime between 08:00‑18:00). The solution introduces a minimal, purpose‑built VLAN architecture and a set of firewall/ACL changes that can be rolled out in a controlled, non‑disruptive fashion.
+
+---
+
+## 2. Proposed VLAN Structure  
+
+| VLAN ID | Name | IP Subnet ( /24 ) | Primary Purpose | Security Controls |
+|--------|------|-------------------|-----------------|-------------------|
+| **10** | **Mgmt** | 10.10.10.0/24 | Switch/router management, NTP, syslog, SNMP | Strict admin‑only access (SSH/HTTPS); no user traffic allowed. |
+| **20** | **EHR‑Servers** | 10.10.20.0/24 | EHR application, database, print services | Only reachable from **VLAN 30 (Clinician)** and **VLAN 50 (Admin)**. All inbound/outbound traffic must pass a **stateful firewall** (e.g., Palo Alto, FortiGate). |
+| **30** | **Clinician‑Workstations** | 10.10.30.0/24 | EHR workstations, clinical documentation PCs | Allowed to initiate RDP/HTTPS to VLAN 20. No inbound from VLAN 40 or VLAN 60. |
+| **40** | **Guest‑WiFi** | 10.10.40.0/24 | Public‑facing wireless APs (captive portal) | Internet‑only NAT; **no direct routing** to internal VLANs. All inter‑VLAN traffic must be inspected by the perimeter firewall. |
+| **50** | **Admin‑Back‑Office** | 10.10.50.0/24 | Practice‑management, billing, HR, file shares | Access limited to VLAN 20 (EHR) and VLAN 10 (Mgmt) via firewall policies. |
+| **60** | **Medical‑IoT** | 10.10.60.0/24 | Infusion pumps, patient monitors, telemetry | Whitelisted outbound to VLAN 20 (EHR) only for required health‑data streams; otherwise isolated. |
+| **70** | **DMZ‑Services** (optional) | 10.10.70.0/24 | External‑facing services (e‑mail gateway, VPN concentrator) | Terminated at the edge firewall; no direct route to VLAN 40. |
+
+### Addressing the Guest‑to‑EHR RDP Gap  
+
+1. **Logical segregation** – Guest Wi‑Fi lives in **VLAN 40**. The EHR servers reside in **VLAN 20**.  
+2. **Stateful firewall rule** – The perimeter firewall (or an inline L3 switch with ACLs) will have a **default‑deny** posture. The only allowed flow is:  
+
+   - **VLAN 30 → VLAN 20** (RDP/HTTPS) for clinician workstations.  
+   - **VLAN 50 → VLAN 20** (RDP/HTTPS) for admin workstations (restricted to specific admin hosts).  
+
+   **All traffic from VLAN 40 to VLAN 20 is explicitly denied**, which immediately cuts the RDP path.  
+
+3. **RDP exposure limited to management VLAN** – RDP is moved to a **management‑only** interface (VLAN 10 or a dedicated “Admin‑RDP” VLAN) that is not routable from VLAN 40. If RDP must remain on VLAN 20 for clinician workstations, it will be **source‑restricted** to the **Clinician‑Workstation VLAN (30)** only.
+
+---
+
+## 3. Detailed Change Set (What Closes the Gap)
+
+| Change | Description | Effect on Guest‑to‑EHR RDP Path |
+|--------|-------------|---------------------------------|
+| **A. VLAN migration** | Re‑assign existing ports and trunk links to the new VLAN IDs (10‑70). Use **VLAN tagging** on all uplinks; no change to IP addressing of end‑devices (static IP or DHCP scopes remain). | Creates a clear L2/L3 boundary between guest and clinical zones. |
+| **B. ACL/Firewall rule update** | Add a **deny** rule: `src VLAN 40 → dst VLAN 20` (any protocol). Add **permit** rules for required flows (30→20, 50→20). Ensure rule order places deny before any broader allow rule. | Directly blocks the rogue RDP connection from guest Wi‑Fi to EHR servers. |
+| **C. RDP service relocation** | Move the RDP listener on the EHR servers to a **dedicated management IP** (e.g., 10.10.20.250) bound to a NIC that is only in VLAN 20 and is **not advertised** to other VLANs. Optionally, place it behind a **jump‑host** in VLAN 10 that is the only legitimate source of RDP sessions. | Even if a mis‑configured ACL is later applied, the RDP port is not reachable from VLAN 40. |
+| **D. Network Access Control (NAC)** | Deploy 802.1X or captive‑portal NAC on the Guest‑WiFi SSID so that only **guest‑isolated** devices are placed in VLAN 40. Enforce that any device attempting to authenticate to the corporate LAN is redirected to VLAN 30/50 after re‑authentication. | Prevents a compromised guest device from manually assigning an IP in the clinical subnet. |
+| **E. Logging & Monitoring** | Enable flow‑logs for all inter‑VLAN traffic. Create an alert for any **src VLAN 40** traffic reaching **dst VLAN 20**. Verify that alerts are visible in the SIEM. | Provides continuous assurance that the segmentation holds. |
+
+---
+
+## 4. Change Implementation Plan (No‑Downtime Window)
+
+### 4.1 Guiding Principles  
+
+* **Zero‑impact to production** – All modifications are applied **outside** the 08:00‑18:00 clinic hours.  
+* **Staged rollout** – Start with a **shadow VLAN** configuration, validate with test traffic, then cut over.  
+* **Rollback‑first** – Every step has a documented “undo” command that can be executed in seconds.  
+* **Redundancy** – Critical links (uplinks between core switches and the perimeter firewall) are kept **up** throughout; spanning‑tree (RSTP) ensures no loop while VLANs are being renumbered.
+
+### 4.2 Timeline (All actions completed before 08:00 AM on the target day)
+
+| Time (Local) | Activity | Success Criteria | Rollback Trigger |
+|--------------|----------|------------------|------------------|
+| **22:00 – 23:00** | **Backup current configs** – Export running‑config from core switches, firewall, and EHR servers to a secured repository. | Backup verified checksum; restoration script tested. | If backup fails, abort and postpone. |
+| **23:00 – 23:30** | **Deploy new VLAN definitions** on all access/core switches (VLANs 10‑70). Use a **non‑disruptive VLAN addition** command (`vlan 40`, etc.) that does not delete existing VLANs. | `show vlan brief` reflects new IDs; no ports flapped. | Revert to previous VLAN database using saved config. |
+| **23:30 – 23:45** | **Configure inter‑VLAN routing** on the L3 switch (or firewall) – enable routing for new subnets, but **do not enable any ACLs yet**. | `show ip route` lists all /24 routes, but no traffic flows across yet. | Remove newly added routes; revert to original static routes. |
+| **23:45 – 00:15** | **Apply firewall/ACL deny rule**: `deny any src 10.10.40.0 0.0.0.255 dst 10.10.20.0 0.0.0.255`. Verify rule order. | Rule is live; `test` from a guest‑WiFi AP shows *connection timeout* to an EHR IP. | Remove the deny rule; restore previous ACL backup. |
+| **00:15 – 00:30** | **Restrict RDP service** on EHR servers – bind RDP to a management IP (10.10.20.250) and enable host‐based firewall allowing only 10.10.30.0/24 and 10.10.50.0/24. | `nmap -p 3389 10.10.20.250` shows *closed* from a guest‑WiFi IP; open from a clinician workstation. | Re‑enable original RDP bind address; revert server firewall rules. |
+| **00:30 – 00:45** | **Enable logging & alerting** for any traffic from VLAN 40 to VLAN 20. Verify SIEM rule fires on a synthetic test. | Alert appears in SIEM; ticket opened for verification. | Disable alert rule; revert to previous logging config. |
+| **00:45 – 01:00** | **Validate end‑to‑end connectivity** – Perform functional testing with a *clinical* workstation (VLAN 30) accessing EHR via RDP; confirm success. Simultaneously, from a **guest** laptop, attempt RDP – should fail. | RDP succeeds for clinicians; fails for guest. No false‑positive blocks. | Re‑apply previous firewall/ACL settings; re‑bind RDP to original IP. |
+| **01:00 – 01:30** | **Document change** – Update network diagram, change‑control ticket, and HIPAA compliance checklist. | Documentation signed off by compliance officer. | N/A (documentation is immutable). |
+| **01:30 – 02:00** | **Final verification & hand‑off** – Hand over to MSP NOC with a “green‑light” status. | NOC acknowledges “segmentation active, no open RDP from guest”. | If any issue detected, trigger rollback (see below). |
+| **02:00 – 06:30** | **Stand‑by monitoring** – Continuous monitoring of EHR availability and segmentation health. | No alerts, EHR response times unchanged. | If an alert fires, execute rollback immediately. |
+| **06:30 – 07:30** | **Pre‑shift health check** – Verify that all production services are operating normally before clinic opens. | All health‑checks green. | Proceed to normal clinic hours. |
+| **08:00 – 18:00** | **Live operation** – Clinic uses EHR as usual; segmentation protects against guest‑to‑EHR RDP. | Continuous compliance monitoring. | N/A |
+
+### 4.3 Rollback Procedure (If any step threatens uptime)
+
+1. **Immediate Rollback Command Set** (executed from the NOC console):  
+   - **VLAN removal** – `no vlan 10 20 30 40 50 60 70` on all switches (re‑import saved config).  
+   - **ACL revert** – `no access-list GUEST‑TO‑EHR‑DENY`; re‑apply previous inbound/outbound ACLs.  
+   - **RDP bind revert** – Restore original NIC/IP binding on EHR servers (`netsh interface ipv4 set address "EHR‑RDP" 10.10.20.10`).  
+   - **Routing revert** – Delete newly added static routes; reinstate original static default routes.  
+   - **Logging revert** – Restore previous syslog configuration.  
+
+2. **Verification** – Run a quick health‑check script that pings the EHR server from a workstation in each VLAN and attempts an RDP connection from a guest device. If any of these succeed, the rollback is considered successful.
+
+3. **Post‑Rollback Review** – Within 30 minutes after rollback, convene an incident review to identify the root cause and schedule a **planned maintenance window** for a permanent fix.
+
+---
+
+## 5. Validation & Ongoing Assurance  
+
+| Validation Item | Method | Frequency |
+|-----------------|--------|-----------|
+| **Segmentation integrity** | Run a scheduled Nmap/Scapy scan from a test guest AP targeting all internal subnets. | Weekly |
+| **RDP availability** | Automated health‑check script that attempts an RDP session from each clinician workstation. | Every 5 min (monitored by NOC) |
+| **Firewall rule compliance** | Review ACLs against a baseline “deny guest → clinical” rule. | Daily (automated diff) |
+| **HIPAA audit log** | Export firewall flow logs to the compliance SIEM; verify no guest‑to‑EHR sessions recorded. | Continuous, with monthly audit |
+| **Change‑control sign‑off** | All future modifications to VLANs/ACLs require a documented risk assessment and a peer‑review. | Per change |
+
+---
+
+## 6. Recommendations & Future Enhancements  
+
+1. **Deploy a dedicated “Jump‑Host”** in VLAN 10 for all remote administrative access (RDP, SSH). This host will be the only system allowed to initiate RDP to EHR servers, dramatically reducing the attack surface.  
+2. **Enable MACsec** on the uplinks between access and distribution switches to protect traffic at Layer 2 from MAC‑spoofing attacks.  
+3. **Implement 802.1X with RADIUS** on the Guest‑WiFi SSID, forcing any device that wishes to join the corporate LAN to re‑authenticate and be placed in a *restricted* VLAN before gaining any internal access.  
+4. **Micro‑segmentation** – Consider an internal SD‑N overlay (e.g., Cisco DNA Center or VMware NSX) to enforce per‑application policies, allowing finer‑grained controls (e.g., only DICOM traffic from imaging workstations to the PACS server).  
+5. **Periodic Pen‑Testing** – Conduct external/internal red‑team exercises at least annually to validate that no lateral movement from guest Wi‑Fi to PHI environments is possible.
+
+---
+
+## 7. Conclusion  
+
+By **introducing a dedicated VLAN for guest Wi‑Fi (VLAN 40) and enforcing a stateful deny rule that blocks any traffic from that VLAN to the EHR server subnet (VLAN 20)**, the clinic eliminates the specific RDP exposure identified in the security review. The change is implemented **outside of clinical hours**, with a **pre‑tested rollback plan** that can be executed instantly should any step jeopardize the 8 AM‑6 PM uptime guarantee.  
+
+The proposed architecture satisfies:
+
+* **HIPAA Security Rule – Access Control** – PHI‑containing systems are isolated from the guest network.  
+* **Zero‑downtime requirement** – All modifications are performed during the maintenance window (22:00‑07:30) and are reversible within minutes.  
+* **Operational continuity** – Clinician workstations retain full, unimpeded RDP access to the EHR, and the EHR remains fully available throughout clinic hours.  
+
+Implementation should be scheduled at the earliest maintenance window that aligns with the clinic’s calendar, followed by a **post‑implementation review** to confirm that segmentation is effective and that all monitoring/alerting mechanisms are functioning as intended.
+
+--- 
+
+**Prepared by:**  
+[Your Name] – Senior Network Architect, MSP Security Team  
+[Contact Information]  
+
+*All recommendations are aligned with industry best practices and HIPAA compliance guidance.*
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### **Network Segmentation Review & Remediation Proposal**
+
+**To:** Clinic Management / Compliance Officer  
+**From:** [Your MSP Name]  
+**Date:** October 26, 2023  
+**Subject:** Remediation of HIPAA Security Gap: Unauthorized Lateral Movement (Guest to EHR)
+
+---
+
+#### **1. Executive Summary**
+A recent security audit identified a critical vulnerability: the clinic's network is currently a "flat" topology (10.10.0.0/22). This allows any device on the Guest WiFi to communicate directly with the Electronic Health Record (EHR) server via RDP (Port 3389). This lack of segmentation violates the HIPAA Security Rule regarding Access Control and Transmission Security, as ePHI is not isolated from non-clinical, untrusted traffic.
+
+#### **2. Proposed VLAN Structure**
+To resolve this, we will move from a single broadcast domain to a segmented architecture. This limits the "blast radius" of any single compromised device and ensures that traffic must pass through a Layer 3 device (Firewall/Core Switch) where security policies can be enforced.
+
+| VLAN ID | Name | Purpose | Security Posture |
+| :--- | :--- | :--- | :--- |
+| **VLAN 10** | **Management** | Switches, Access Points, UPS, Printers | Restricted to IT Admin only. |
+| **VLAN 20** | **EHR / Clinical** | EHR Server, Medical Workstations | High Security; No internet access except for updates. |
+| **VLAN 30** | **Medical IoT** | Infusion pumps, patient monitors | Isolated; Can only talk to specific medical gateways. |
+| **VLAN 40** | **Admin / Back-Office** | Billing, HR, Reception workstations | Standard business access; Internet allowed. |
+| **VLAN 50** | **Guest WiFi** | Patient/Visitor mobile devices | **Internet Only; Zero access to internal VLANs.** |
+
+#### **3. Remediation of the RDP Gap**
+The specific gap—the ability for a Guest user to reach the EHR via RDP—is closed by implementing **Inter-VLAN Access Control Lists (ACLs)** or **Stateful Firewall Rules** at the Layer 3 boundary (the Gateway).
+
+**The specific technical fix:**
+We will implement a "Deny All" rule for traffic originating from **VLAN 50** destined for the **VLAN 20** subnet. 
+*   **Rule Logic:** `DENY source 10.10.50.0/24 destination 10.10.20.0/24 port 3389 (and all other ports).`
+*   **Result:** Even if a guest knows the IP of the EHR server, the gateway will drop the packets before they ever reach the server, effectively making the EHR "invisible" to the Guest network.
+
+---
+
+#### **4. Change Plan (Implementation Strategy)**
+
+**Constraint Compliance:** To ensure zero downtime for providers during clinic hours (8:00 AM – 6:00 PM), all configuration changes and device re-IPing will occur during a scheduled maintenance window starting at **8:00 PM**.
+
+**Phase 1: Pre-Implementation (Done during business hours - No Downtime)**
+1.  **Audit & Inventory:** Document all static IP addresses currently in use on the 10.10.0.0/22 subnet.
+2.  **Configuration Staging:** Pre-configure the new VLANs, DHCP scopes, and ACLs on the Core Switch/Firewall.
+3.  **Testing:** Verify the new VLANs can reach the Internet via a lab laptop to ensure gateway routing is functional.
+
+**Phase 2: Execution (The Maintenance Window: 8:00 PM – 4:00 AM)**
+1.  **Step 1 (Guest Isolation):** Re-configure the Guest SSID to tag traffic to VLAN 50. This is the highest priority for HIPAA compliance.
+2.  **Step 2 (Admin/IoT Migration):** Move Admin and IoT devices to their respective VLANs. This requires updating static IPs on printers/pumps and DHCP reservations.
+3.  **Step 3 (EHR Migration):** Move the EHR Server and Clinical Workstations to VLAN 20. 
+4.  **Step 4 (Verification):** 
+    *   Confirm EHR server is reachable from Clinical Workstations.
+    *   Confirm Guest WiFi can reach the Internet but **cannot** ping the EHR server.
+    *   Confirm IoT devices can reach their required gateways.
+
+**Phase 3: Validation (6:00 AM - 8:00 AM)**
+1.  Perform a "Walk-through" test: Verify every workstation in the clinic can log into the EHR successfully before providers arrive.
+
+#### **5. Rollback Plan**
+If critical failures occur during Phase 2 that cannot be resolved within the window:
+1.  **Immediate Action:** Revert the Core Switch/Firewall configuration to the "Last Known Good" backup (the flat 10.10.0.0/22 state) taken at 7:45 PM.
+2.  **Re-addressing:** Re-assign the original IP addresses to all critical devices via DHCP/Static assignment to restore original connectivity.
+3.  **Post-Mortem:** Documentation of the failure to identify why the migration failed before the 8:00 AM deadline.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

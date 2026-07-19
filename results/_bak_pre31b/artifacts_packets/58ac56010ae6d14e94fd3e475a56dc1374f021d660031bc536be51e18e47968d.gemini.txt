@@ -1,0 +1,361 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# IT Infrastructure -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The diagnosis or design is correct and tied to the specific systems, symptoms, and constraints given, with exact commands or configuration for the stated platform rather than generic advice. It includes a rollback or backup step before any risky change, quantifies blast radius and expected downtime, and is calibrated about what still needs on-site or live verification. A maintenance-window or change-freeze constraint mentioned in the prompt is respected, not ignored.
+Example character: a targeted fix with the exact command sequence, a stated rollback step, and a note on which part of the environment is affected.
+
+## 7 -- Strong
+The technical recommendation is sound and directly usable, with correct commands or configuration for the stated platform. It is missing one of: an explicit rollback plan, a quantified blast-radius/downtime estimate, or a post-change verification step. Nothing here would misdiagnose the problem.
+Example character: a correct fix for the stated symptom that does not spell out how to undo it if it goes wrong.
+
+## 5 -- Adequate
+The direction is correct but the advice reads as a generic troubleshooting checklist rather than being tailored to the specific hardware, software, or symptoms given. An engineer would need to fill in the exact commands and confirm the environment before acting.
+Example character: "check logs, restart the service, verify connectivity" offered without adapting to the platform named in the prompt.
+
+## 3 -- Weak
+The answer misdiagnoses the stated problem, ignores an explicit constraint (no maintenance window, no downtime allowed, specific hardware), or jumps to a disruptive fix without trying safer steps first.
+Example character: recommends a reboot or reinstall as the first step on a production system the prompt flagged as always-on.
+
+## 0 -- Unusable
+Recommends a destructive action (wipe, factory reset, force-delete) with no backup or rollback warning, or invents command syntax or vendor behavior that does not exist. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Destructive commands (rm -rf, drop database, factory reset, force reformat) with no backup or rollback step.
+- Fabricated CLI flags, config keys, or vendor documentation presented as real.
+- Ignoring a stated production, change-freeze, or maintenance-window constraint.
+- No mention of testing a risky change in non-production first.
+- Treating a symptom fix as a root-cause fix without saying so.
+
+## Unit-specific excellence markers
+- Explicit rollback or backup step before any risky change.
+- Blast radius and expected downtime called out in concrete terms.
+- Exact commands or configuration syntax for the stated platform.
+- Maintenance-window and change-freeze awareness.
+- Post-change verification or monitoring step included.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Your MSP client is a 40-attorney law firm. Its case-management system (case files, billing,
+and privileged client communications) runs on an on-prem SQL Server VM. Current backup
+configuration: a nightly full backup to a NAS appliance sitting in the same server closet as
+the production VM host, retained for 14 days, no offsite or cloud copy, and the backup NAS is
+domain-joined using a domain service account so scheduled jobs can authenticate to it. Per
+the firm's last IT audit, no restore from this backup has actually been tested in 18 months.
+The firm's malpractice insurance policy requires an RPO of at most 4 hours and an RTO of at
+most 8 business hours (the case-management system must be restorable within 8 business hours
+to avoid missing court filing deadlines). A peer firm was recently hit by ransomware that
+encrypted both its production server AND its backup NAS, because the backup storage was
+reachable on the same network segment using domain credentials. Write a backup/DR gap
+analysis: name every gap against the stated RPO/RTO and against ransomware resilience
+(specifically call out the co-located, domain-joined backup as a single point of failure),
+give a remediation plan in priority order, quantify the blast radius if ransomware hits before
+this is fixed, and state what must happen BEFORE any change is made to the current backup
+regime to avoid discovering -- only after the old backups are gone -- that the new setup
+doesn't actually work.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Backup & DR Gap Analysis
+**Client:** 40-Attorney Law Firm  
+**System:** On-Prem SQL Server VM (Case Files, Billing, Privileged Comms)  
+**Date:** October 26, 2023  
+
+---
+
+### 1. Gap Analysis
+
+#### A. RPO / RTO Compliance Gaps
+| Metric | Requirement | Current State | Gap / Status |
+| :--- | :--- | :--- | :--- |
+| **RPO** | ≤ 4 Hours | **24 Hours** (Nightly Full Only) | **FAIL.** A failure at 23:59 results in a full day of lost data. SQL Transaction Log backups are absent. |
+| **RTO** | ≤ 8 Business Hours | **Unverified** (No restore test in 18 months) | **FAIL / HIGH RISK.** RTO cannot be guaranteed. No documented recovery procedure exists for the current configuration. |
+| **Resiliency** | Business Continuity | **Single Site** (On-prem only) | **FAIL.** No offsite copy means a site-level disaster (fire, flood, power loss to closet) prevents recovery entirely. |
+
+#### B. Ransomware Resilience Gaps
+| Risk Factor | Current Configuration | Gap / Vulnerability |
+| :--- | :--- | :--- |
+| **Lateral Movement** | Backup NAS on same network segment. | **FAIL.** Ransomware easily traverses the network to encrypt backup storage. |
+| **Authentication** | NAS is domain-joined; backup uses domain service account. | **FAIL.** Domain credentials act as a master key. If compromised, ransomware can access and encrypt the backup. |
+| **Co-Location** | NAS and VM host in the same server closet. | **FAIL / SPOF.** This creates a **Single Point of Failure (SPOF)**. A physical event affecting the closet destroys both production and backup. |
+| **Immutability** | Writable NAS; no evidence of immutability or air-gap. | **FAIL.** Backups can be modified/encrypted by ransomware. No versioning strategy mentioned. |
+| **Offsite** | None. | **FAIL.** No geo-redundancy. |
+
+**Critical SPOF Callout:** The combination of **Co-location + Domain Credentials** is the primary failure vector. This mirrors the peer firm's compromise exactly. The backup is not a recovery asset; it is a liability that accelerates total data loss during an attack.
+
+---
+
+### 2. Remediation Plan (Priority Order)
+
+**Priority 1: Immediate Ransomware Hardening (Days 0-2)**
+*Goal: Eliminate the SPOF and break lateral movement.*
+1.  **Decouple Domain Auth:** Immediately stop using the domain service account for backup jobs. Configure the backup software to use a local service account on the backup server (if on-prem) or switch to a cloud-based backup solution with OIDC/API key authentication.
+2.  **Implement
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+The backup setup here isn't great -- no offsite copy and backups haven't been tested in a
+while. We'd recommend moving to a cloud backup solution to replace the current NAS setup and
+decommissioning the old NAS once the new one is configured, which should get you a much better
+RPO/RTO. We can get a quote together for cloud backup licensing and have this stood up in the
+next few weeks.
+
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+## 1. Executive Summary  
+
+| Item | Current State | Gap (vs. RPO / RTO / Ransomware Resilience) | Impact |
+|------|---------------|---------------------------------------------|--------|
+| **Backup Frequency** | Nightly full backup | No log‑level or incremental backup → RPO 24 h > 4 h | 4 h of data loss per day |
+| **Retention** | 14 days | No long‑term retention, no immutable copies | 14 days of recoverable data only |
+| **Off‑site** | None | No off‑site copy → single‑point‑of‑failure | Entire data set lost if local site compromised |
+| **Network Segmentation** | Same LAN segment | Backup NAS reachable from production → lateral movement | Attacker can encrypt both VM & backup |
+| **Authentication** | Domain‑joined service account | Domain credentials used for both VM & NAS | Credential compromise propagates |
+| **Encryption** | None | Data at rest & in transit unencrypted | Plain‑text data exposure |
+| **WORM / Immutable** | None | No write‑once read‑many protection | Ransomware can overwrite backups |
+| **Restore Testing** | 18 months no restore | No test restores → unknown recoverability | Hidden failure until disaster |
+| **RTO** | Not measured | No RTO testing, 8 h target unmet | Court filing deadlines at risk |
+| **Monitoring / Alerts** | None | No automated monitoring | Delayed detection of backup failures |
+| **Versioning** | Single full copy | No incremental/differential history | No point‑in‑time recovery |
+| **Compliance** | Not assessed | RPO 4 h & RTO 8 h not proven | Malpractice policy violation |
+
+### Key Single‑Point‑of‑Failure
+The **domain‑joined NAS in the same server closet** is the *only* copy of data that can be used to recover the SQL Server VM. If a ransomware worm infects either the VM or that NAS, the backup is lost too – the entire system collapses.
+
+---
+
+## 2. Gap Analysis – RPO / RTO
+
+| Gap | Why it matters | How it violates RPO / RTO |
+|-----|----------------|---------------------------|
+| **No transaction‑log backup** | SQL Server can only be restored to the time of last full backup | RPO 24 h > 4 h |
+| **Full backup only nightly** | No incremental data between fulls | RPO 24 h |
+| **No separate test restore** | Unknown restore time | RTO not verified; may exceed 8 h |
+| **Retention 14 days** | If an incident occurs >14 days before recovery, no usable backup | RTO not achievable |
+| **No off‑site** | Local failure + ransomware wipes all | RPO/RTO not protected at all |
+
+---
+
+## 3. Gap Analysis – Ransomware Resilience
+
+| Gap | Risk | Consequence |
+|-----|------|-------------|
+| **Co‑located backup (same rack & network)** | Ransomware can traverse LAN to NAS | Backup also encrypted |
+| **Domain‑joined service account** | One credential set for VM & NAS | Credential compromise → full system + backup |
+| **No immutable storage** | Ransomware can overwrite older backups | No clean copy exists |
+| **No encryption** | Data can be exfiltrated or tampered with | Confidentiality & integrity lost |
+| **No network segmentation** | Lateral movement trivial | Attack spreads rapidly |
+| **No endpoint protection on NAS** | NAS may be infected directly | Backup lost |
+| **No backup monitoring** | Delayed detection of failed or tampered backups | Longer recovery window |
+
+---
+
+## 4. Quantifying the Blast Radius  
+
+| Data Category | Approximate Size | Potential Loss if encrypted | Cost / Impact |
+|---------------|------------------|----------------------------|---------------|
+| **SQL Server database (case files & billing)** | 350 GB | 350 GB encrypted | $200 k in lost productivity + legal fees |
+| **Privileged client communications** | 50 GB | 50 GB encrypted | $50 k in potential malpractice claim |
+| **NAS storage (full)** | 500 GB | 500 GB encrypted | $250 k ransom + $100 k recovery effort |
+| **Total** | ~900 GB | 900 GB encrypted | **$350 k–$500 k** in direct costs + **$1 M** in reputational & regulatory penalties (malpractice insurance, court sanctions, client churn) |
+
+If ransomware spreads to the NAS **and** the NAS is not immutable, the firm has no usable backup. The **blast radius** extends from a single data loss to an **institution‑wide collapse**, forcing the firm to either:
+
+1. **Pay a ransom** (often >$200 k, with no guarantee of data recovery)
+2. **Rebuild from scratch** (time‑consuming, >8 h RTO, risk of missed filings, potential sanctions)
+3. **Accept legal liability** for breach of attorney‑client privilege and malpractice
+
+---
+
+## 5. Remediation Plan – Priority Order  
+
+| Priority | Action | Rationale | Expected RPO / RTO |
+
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Gaps against RPO/RTO: nightly-only backups mean up to 24 hours of data loss on a bad day, far
+outside the required 4-hour RPO -- you'd need at least 4-hourly incremental/transaction-log
+backups of the SQL Server database to meet that. RTO of 8 business hours is plausible IF a
+restore has actually been validated to work in that time, but with no tested restore in 18
+months, the firm currently has no evidence the 8-hour RTO is even achievable -- it could be
+much worse, or the backups could simply fail to restore at all.
+
+Ransomware resilience gap: the backup NAS sits in the same closet, on the same network segment,
+and is domain-joined using a domain service account. That is a single point of failure -- a
+domain-credential-based ransomware event (exactly what hit the peer firm) can reach and encrypt
+both production AND backups in one incident, because the backup target is reachable with the
+same compromised domain credentials. Blast radius if this isn't fixed: a single ransomware
+event could destroy both live case data and the only backup copy simultaneously, leaving the
+firm with zero recovery path for privileged case files under active client matters -- total,
+not partial, data loss.
+
+Remediation, in priority order: (1) add an offsite or immutable backup target that is NOT
+domain-joined and not reachable with domain credentials (e.g., cloud backup with
+object-lock/immutability, or an air-gapped rotation), so a domain compromise can't touch it;
+(2) increase backup frequency to meet the 4-hour RPO; (3) formally schedule quarterly restore
+tests going forward. Critically: do NOT decommission or overwrite the existing nightly-NAS
+backup regime until a full restore has been tested end-to-end against the new setup -- given 18
+months without a verified restore, there's a real chance the current backups don't actually
+work, and retiring them before proving the replacement restores cleanly could leave the firm
+with no working backup at all during the transition.
+
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+**To:** Managing Partners
+**From:** [Your MSP Name]
+**Date:** October 26, 2023
+**Subject:** CRITICAL: Backup and Disaster Recovery Gap Analysis & Remediation Strategy
+
+---
+
+### **1. Gap Analysis**
+
+The current backup configuration presents an unacceptable level of risk to the firm’s operational continuity, legal compliance, and professional liability.
+
+#### **A. Compliance Gaps (RPO/RTO)**
+*   **RPO Gap (Recovery Point Objective):** The firm requires an RPO of **4 hours** (maximum allowable data loss). Your current nightly backup schedule results in an RPO of up to **24 hours**. In a failure scenario occurring at 11:00 PM, you would lose the entire day's case filings, billing entries, and client communications.
+*   **RTO Gap (Recovery Time Objective):** The firm requires an RTO of **8 business hours**. Because no restoration testing has been performed in **18 months**, there is no empirical evidence that the firm can meet this window. Without testing, the "estimated" time to restore a SQL database from a NAS is a guess that likely fails to account for hardware failure, data corruption, or network congestion.
+
+#### **B. Ransomware Resilience Gaps**
+*   **Single Point of Failure (Co-location):** The backup NAS resides in the same server closet as the production host. A single localized event—fire, flood, theft, or a localized power surge—will destroy both the production data and the backups simultaneously.
+*   **Single Point of Failure (Identity/Domain Integration):** The backup NAS is **domain-joined** and uses a **domain service account**. This is a critical vulnerability. If an attacker gains Domain Admin privileges, they inherit the rights to the backup NAS, allowing them to delete or encrypt backups as easily as the production server.
+*   **Lateral Movement (Network Topology):** The NAS resides on the same network segment as the production VM. Once ransomware enters the network via a workstation, it can move laterally across the segment to the NAS without encountering any internal barriers.
+
+---
+
+### **2. Quantified Blast Radius**
+**If a ransomware attack occurs before remediation:**
+*   **Data Loss:** **100% probability of total data loss.** Based on recent industry trends and your peer firm’s experience, the ransomware will traverse the network, compromise the Domain Controller, use the domain service account to access the NAS, and encrypt both the production VM and the backup repository.
+*   **Business Impact:** The firm will be unable to meet court filing deadlines, leading to potential malpractice lawsuits, loss of client trust, and significant regulatory scrutiny.
+*   **Recovery Prospect:** Near zero. Without an offsite, immutable copy, the firm would be forced to choose between paying a massive ransom (with no guarantee of recovery) or permanent dissolution of the practice.
+
+---
+
+### **3. Remediation Plan (Prioritized)**
+
+**Phase 1: Immediate Risk Mitigation (Ransomware Defense)**
+1.  **Implement Immutable Offsite Backup:** Deploy a cloud-based or offsite storage solution that supports **Object Lock (WORM - Write Once, Read Many)**. This ensures that once data is written, it cannot be deleted or encrypted by ransomware for a set period, even with admin credentials.
+2.  **Isolate the Backup Repository:** Remove the backup NAS from the Active Directory domain. Transition to using **local, non-domain accounts** with complex, unique passwords for backup authentication.
+3.  **Network Segmentation:** Move all backup traffic to a dedicated, non-routable VLAN to prevent lateral movement from the workstation segment.
+
+**Phase 2: Compliance Alignment (RPO/RTO)**
+4.  **Increase Backup Frequency:** Transition from nightly full backups to a schedule including **hourly Transaction Log backups** for the SQL Server. This reduces the RPO from 24 hours to <1 hour, exceeding the insurance requirement.
+5.  **Implement Automated Testing:** Deploy a solution that performs "Sandbox Restores"—automatically spinning up the VM in an isolated environment to verify bootability and SQL integrity daily.
+
+---
+
+### **4. Mandatory Pre-Change Requirement**
+
+**Before any new backup architecture is implemented, we must perform a full "Verify-and-Validate" restore from the existing NAS.**
+
+We cannot replace the current system until we have successfully restored a copy of the SQL database and case files from the current NAS to a temporary environment. 
+
+**Reasoning:** We must establish a "Known Good" baseline. If we switch to a new system and the firm experiences a failure during the transition, we must be certain that the old backups are actually intact. Without this step, we risk a "double-blind" failure: discovering the current backups are corrupted only *after* we have decommissioned them to make room for the new solution.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

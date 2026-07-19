@@ -1,0 +1,839 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Helpdesk -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+Triage priority matches the actual business impact described, and the response tone is consistent with the urgency that priority implies. Troubleshooting steps are ordered from least to most disruptive, a clear escalation path is given for when the fix is out of the agent's scope, and the answer is calibrated about what genuinely needs remote hands or an on-site visit.
+Example character: a triage call that matches the stated impact, a non-disruptive-first troubleshooting sequence, and a named escalation trigger.
+
+## 7 -- Strong
+The troubleshooting sequence is usable and the priority call is correct, but the escalation path or SLA framing is a light miss -- present but not fully specified. Nothing here jumps to a disruptive step too early.
+Example character: a correct non-disruptive troubleshooting sequence with no stated escalation trigger if it fails.
+
+## 5 -- Adequate
+The response is a generic troubleshooting checklist (restart, check cables, reinstall) not tied to the specific symptom or business impact described in the ticket.
+Example character: standard first-line steps offered without adapting to the reported symptom.
+
+## 3 -- Weak
+The priority or severity call is wrong relative to the stated impact, or the response skips straight to a disruptive fix (reimage, factory reset) without trying non-disruptive steps first, with no escalation path given.
+Example character: recommends reimaging a device as the first step for a minor, non-blocking symptom.
+
+## 0 -- Unusable
+Recommends a data-destructive action (wipe, reformat, delete profile) with no backup step or warning, or fabricates vendor or product behavior presented as known fact. Empty or off-task.
+
+## Unit-specific red flags (deduct hard)
+- Destructive troubleshooting step (reimage, factory reset, delete profile) recommended before non-disruptive steps, or with no backup warning.
+- Priority/SLA call that does not match the stated business impact.
+- No escalation path given when the issue is clearly out of scope.
+- Fabricated product or vendor behavior presented as known fact.
+
+## Unit-specific excellence markers
+- Triage priority matches the stated business impact.
+- Troubleshooting steps ordered least-to-most disruptive.
+- Explicit escalation trigger and path given.
+- SLA/urgency framing consistent with the ticket's actual severity.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+A contract research organization's remote clinical research associates (CRAs) upload case
+report form data to a sponsor's clinical-trial portal over the company VPN. Over the last 6
+weeks, 11 separate tickets from 7 different CRAs all report the same thing: "VPN disconnects
+mid-upload, I have to restart the upload." Past fixes, one per ticket, each treated as
+unrelated: told a user to reconnect and retry (worked temporarily, every time); once
+increased the VPN client's idle-timeout setting for one specific user; once told a different
+user to switch from WiFi to a wired connection at home, which seemed to help that one user.
+No common cause was ever identified across the 11 tickets. Here is the pattern nobody had
+connected yet: in all 11 cases the disconnect happened between 35 and 50 minutes into the VPN
+session -- never earlier, never much later. The affected CRAs are on different ISPs,
+different home networks, and different laptop hardware. The VPN concentrator's own connection
+logs show these sessions ending with a code unrelated to idle-timeout, and the timing lines up
+closely with one fact from the concentrator's configuration: its max-session /
+re-authentication interval is set to 45 minutes. State the actual root cause (not the
+per-ticket fixes already tried), explain why the idle-timeout change and the wired-connection
+suggestion each appeared to help their one user even though neither addressed the real cause,
+give the actual fix, and say how this should have been caught after the 2nd or 3rd similar
+ticket instead of the 11th.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Root‑cause**
+
+The VPN concentrator is configured with a **hard‑coded max‑session / re‑authentication timer of 45 minutes**.  
+When a client’s session reaches exactly 45 minutes the concentrator forces a re‑authentication and terminates the tunnel, regardless of how much data has been transferred or whether the user is still actively uploading.  
+
+The 45‑minute “dead‑spot” is what all 11 tickets have in common – every disconnect occurs between 35 and 50 minutes, never earlier or later, even though the users have different ISPs, hardware, home‑network setups, and different VPN client versions. The concentrator’s own logs show the session ending with a *session‑expire* code (the same code that is emitted when a max‑session timer fires), not an idle‑timeout or network‑error code.
+
+---
+
+### Why the “quick fixes” seemed to work for the single user they were applied to
+
+| Fix that was tried | What it actually changed | Why it *appeared* to help that one user |
+|--------------------|--------------------------|------------------------------------------|
+| **Increased the VPN client’s *idle‑timeout* setting for a single user** | Modified the client‑side timer that decides when the tunnel is considered “idle”. | The CRAs’ uploads are not continuous; they have bursts of traffic followed by short pauses while the form data is saved, validated, or while the user checks for errors. On a Wi‑Fi link those pauses can be long enough for the client to think the session is idle, causing the client to drop the tunnel *just before* the concentrator’s 45‑minute timer fires. By raising the idle‑timeout the client stayed “alive” long enough that the tunnel survived until the 45‑minute mark, after which the user simply restarted the upload. The fix only delayed the moment the tunnel would be dropped; it did **not** change the underlying 45‑minute re‑auth interval. |
+| **Switched a user from Wi‑Fi to a wired Ethernet connection** | Removed the wireless‑specific power‑save / RF‑interference effects that sometimes caused the client to pause traffic for >30 seconds, which the client interpreted as “idle”. | With a wired connection the client sees a steady flow of packets, so the idle‑timer never fires. The tunnel therefore survives the 45‑minute window for that user, making it look like the “wired‑only” suggestion solved the problem. Again, the real culprit – the max‑session timer – was untouched. |
+
+Both of these “solutions” succeeded only because they **masked** the symptom (preventing the client from seeing the session as idle) and gave the tunnel a few more minutes before the inevitable 45‑minute termination. They worked for the single user they were applied to, but the same 45‑minute disconnect would re‑appear for any other user whose traffic pattern or network conditions triggered the same idle detection, which is why the problem persisted across 11 tickets.
+
+---
+
+### The actual fix
+
+1. **Raise the concentrator’s max‑session / re‑authentication interval** from 45 minutes to a value that comfortably exceeds the longest expected upload time (e.g., 8 hours or “indefinite” for the session).  
+2. **Optionally**, enable a “session‑keep‑alive” or “re‑authentication‑grace‑period” that automatically re‑establishes the tunnel without forcing the user to manually reconnect.  
+3. **Communicate the change** to all CRA teams and roll it out globally (or at least to all VPN profiles used for data uploads).  
+
+After this change the tunnel will stay up for the entire duration of an upload, and users will no longer see a hard stop at the 45‑minute mark. If a brief network glitch does occur, the VPN client will automatically reconnect and the upload can resume from where it left off (most modern clients support session‑resume or checkpointing).
+
+---
+
+### How this could have been caught after the 2nd or 3rd ticket
+
+| What to look for | Why it points to the real cause |
+|------------------|---------------------------------|
+| **All tickets show disconnects clustered around the same time (≈ 45 min)** | The coincidence of a narrow time window is a classic symptom of a timer‑based termination, not a network‑specific issue. |
+| **VPN concentrator logs record a “session‑expire” or “max‑session” code at the moment of disconnect** | The logs explicitly name the mechanism that is ending the tunnel. |
+| **The same numeric value (45) appears in multiple configuration files or admin notes** | A static value that matches the observed disconnect time is a red flag that a timer is being used as a hard cutoff. |
+| **No ISP, hardware, or Wi‑Fi‑related errors appear in client logs** | If the problem were truly client‑ or ISP‑specific, the logs would show varying error codes and timing; they do not. |
+
+**Early detection steps that could have been instituted after ticket #2 or #3:**
+
+1. **Create a simple time‑stamp report** – pull the disconnect timestamps from all VPN logs and plot them. A spike at exactly 45 minutes would be obvious.  
+2. **Cross‑reference the time window with the VPN configuration** – a quick grep for “max‑session” or “re‑auth” values would reveal the 45‑minute setting.  
+3. **Add a ticket‑template tag** (e.g., “possible‑timer‑issue”) that triggers an automatic review of the concentrator’s timeout parameters whenever a new ticket lands in the same time‑window.  
+4. **Set up an alert** on the concentrator for sessions that terminate with the “max‑session” code, so the operations team is notified the moment the pattern re‑appears.  
+
+Because the disconnect is deterministic and tied to a configuration parameter, the pattern would have surfaced after only a couple of similar tickets, allowing the team to adjust the timer *before* 11 separate incidents accumulated.
+
+---
+
+### TL;DR Summary
+
+* **Root cause:** The VPN concentrator’s max‑session/re‑auth timer is set to 45 minutes, forcing a tunnel teardown that shows up as a “mid‑upload disconnect” for every CRA, regardless of ISP, hardware, or network type.  
+* **Why the idle‑timeout and wired fixes looked like solutions:** They only prevented the VPN client from thinking the session was idle (or removed a wireless glitch that could trigger idle detection), thereby delaying the moment the 45‑minute timer fired. They did not change the timer itself, so the underlying problem remained.  
+* **Real fix:** Increase the max‑session interval (or disable the hard re‑auth) on the concentrator and ensure automatic reconnect/resume is enabled.  
+* **How to catch it earlier:** Look for the exact 45‑minute disconnect pattern in logs, correlate it with the concentrator’s timeout setting, and set up alerts/monitoring after the 2nd–3rd similar ticket. This would have revealed the configuration issue after only a few tickets instead of waiting for the 11th.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+## Root Cause
+
+The actual root cause is that the VPN concentrator is configured with a **maximum session lifetime of 45 minutes**, and when this timeout is reached, the connection is terminated regardless of activity. The "disconnect mid-upload" behavior occurs because the upload process is typically initiated at the beginning of a session, so it runs into the session timeout.
+
+## Why Previous Fixes Appeared to Work
+
+**Idle-timeout change**: This appeared to help because it extended the time before an inactive connection would drop. However, since the actual issue was the maximum session timeout, users were still getting dropped at the same 45-minute mark - they just had more time to upload before hitting the session limit.
+
+**Wired connection suggestion**: This seemed to help because it reduced the instability of the network connection, which might have caused additional issues that could trigger a "connection reset" before the 45-minute session timeout. However, it didn't address the fundamental session lifetime problem.
+
+## Actual Fix
+
+The fix is to either:
+1. **Increase the maximum session lifetime** on the VPN concentrator beyond 50 minutes (to allow for the longest possible uploads)
+2. **Implement automatic re-authentication** with a mechanism that allows sessions to continue beyond the 45-minute limit
+
+## How It Should Have Been Caught Sooner
+
+After the 2nd or 3rd similar ticket, the team should have:
+1. **Created a systematic investigation** rather than treating each case as isolated
+2. **Examined the VPN concentrator configuration** - specifically the session timeout settings
+3. **Looked for patterns in connection logs** and timing data
+4. **Correlated multiple user reports** and identified the consistent 35-50 minute timeframe
+5. **Performed a root cause analysis** instead of applying quick fixes
+
+The key was recognizing that the pattern of timing (45-minute intervals) was not coincidental, but rather a system configuration issue that needed to be addressed at the infrastructure level rather than through user workarounds.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Actual root cause: this is not a client-side issue at all -- it's the VPN concentrator's own
+max-session / re-authentication interval, configured at 45 minutes. The tell is the 35-50
+minute disconnect window holding steady across 7 different CRAs on entirely different ISPs,
+home networks, and laptop hardware. If this were a client, WiFi, or ISP problem, you'd expect
+the timing to vary a lot between users; instead it clusters tightly around the same interval
+regardless of who or what they're connecting with, which points straight at something shared
+on the server/concentrator side forcibly ending sessions around that mark -- and the
+concentrator's connection logs confirm the sessions are ending on a code unrelated to idle
+timeout, not from inactivity.
+
+Why the earlier fixes appeared to work: the idle-timeout increase for one user and the
+wired-connection suggestion for another were both coincidental. Neither touched the
+concentrator's 45-minute re-authentication interval, which is what was actually killing the
+session -- if those two users' uploads happened to finish before hitting the 45-minute mark
+after the change (e.g., a wired connection sped up their specific upload enough to finish in
+time), the "fix" looked successful by luck, not because the real cause was addressed.
+
+Actual fix: extend the VPN concentrator's re-authentication/session-renewal interval, or
+better, configure it so an in-progress upload/transfer is exempted from a forced
+re-authentication mid-session (many concentrators support a "don't drop active data
+connections" or seamless re-key setting) rather than simply hard-terminating the session at 45
+minutes regardless of activity.
+
+Process lesson: this should have been caught by the 2nd or 3rd ticket if tickets were
+correlated by symptom and timing instead of each being treated as an isolated, one-off
+network issue -- once two unrelated users hit the same "disconnects around 35-50 minutes in"
+pattern, that's a strong trend/chronic-issue signal that warrants checking shared
+infrastructure (the concentrator config) rather than continuing to apply per-user band-aids
+through eleven tickets.
+
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+**Root Cause**  
+The VPN concentrator is configured with a **maximum session / re‑authentication interval of 45 minutes**. When a session exceeds this interval without a re‑authentication event, the concentrator terminates the tunnel, which appears to the user as a “VPN disconnect.” All 11 incidents occurred between 35–50 minutes into the upload, exactly the window in which the 45‑minute timer would expire, confirming that the session‑timeout setting – not a network‑level idle timeout or a local connectivity issue – is the true culprit.
+
+---
+
+### Why the “idle‑timeout increase” and “wired‑connection” “fixes” seemed to help (but didn’t)
+
+| Attempted Fix | Apparent Effect | Why It Was Only Coincidental |
+|---------------|----------------|------------------------------|
+| **Increasing the VPN client’s idle‑timeout** (applied to one user) | The user reported fewer mid‑upload drops. | The client‑side idle‑timeout governs how long the *client* stays alive when **no data** is seen. The uploads were continuously streaming data, so the client never hit its idle timer. Raising that value did **not** extend the concentrator’s 45‑minute session limit, but if the user’s upload finished **before** the 45‑minute mark (perhaps because the file was slightly smaller or the network was marginally faster that day), the session would naturally survive, giving the illusion of a fix. |
+| **Switching from Wi‑Fi to a wired connection** (applied to another user) | That user experienced fewer disconnections. | A wired link generally provides more stable throughput and lower latency, which can **shorten the effective upload time** (the file finishes earlier) or avoid brief Wi‑Fi “drop‑outs” that might add jitter to the timing. If the upload completed, say, at 38 minutes instead of 48 minutes, it would slip under the 45‑minute cutoff. The underlying session‑timeout policy remained unchanged; the apparent success was purely a timing side‑effect. |
+
+Both interventions masked the problem by **altering the conditions that made the upload finish before the 45‑minute limit**, not by addressing the limit itself.
+
+---
+
+### Actual Fix  
+
+**Adjust the VPN concentrator’s session/re‑authentication policy** so that sessions are not forcibly terminated after 45 minutes, or implement one of the following equivalent solutions:  
+
+1. **Increase the max‑session interval** (e.g., to 120 minutes or “no enforced limit”) to give CRAs ample time for large uploads.  
+2. **Enable keep‑alive / periodic re‑authentication** (e.g., a “renew” every 30 minutes) that refreshes the session timer without user intervention.  
+3. **Configure a longer idle‑timeout on the concentrator** that aligns with the expected upload duration, ensuring the tunnel stays alive as long as traffic is present.
+
+After applying the change, test with a representative upload that typically takes > 45 minutes to confirm the session no longer drops.
+
+---
+
+### How This Should Have Been Caught After Ticket #2 or #3  
+
+1. **Pattern Recognition in Ticket Data**  
+   - **Time‑stamp analysis**: The first two tickets already logged “disconnect between 35‑50 min.” A simple spreadsheet or ticket‑query grouping by “disconnect time” would have revealed the tight 35‑50 min cluster.  
+   - **Common symptom threshold**: Once two incidents fell in the same narrow window, the support analyst should have flagged “disconnects occurring around the 45‑minute mark” as a **potential systemic timer** rather than a user‑specific network issue.
+
+2. **Cross‑Reference with VPN Infrastructure Config**  
+   - **Configuration audit**: After the second recurring complaint, the VPN admin (or a tier‑2 engineer) should have reviewed the concentrator’s policy settings (session‑timeout, keep‑alive, max‑session). The 45‑minute “max‑session / re‑authentication interval” would have been immediately evident as a candidate.  
+
+3. **Root‑Cause Investigation Protocol**  
+   - **Standard operating procedure (SOP)** for repeated connectivity tickets could mandate:  
+     a. Log the exact elapsed time of failure.  
+     b. If ≥ 2 tickets share a similar elapsed‑time range, escalate to network engineering with the concentrator config as a required check.  
+   - This SOP would have triggered the config review after the **second** ticket, preventing the subsequent nine “band‑aid” fixes.
+
+4. **Metrics & Alerting**  
+   - Implement a **monitoring alert** on the VPN concentrator that flags sessions terminated with the specific “session‑timeout” code. The alert could be set to trigger after **N** occurrences within a given period, again surfacing the issue early.
+
+By instituting these simple analytical and procedural steps, the team would have identified the **session‑timeout configuration** after the second or third similar ticket, applied the correct fix, and avoided the cascade of temporary work‑arounds.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Root Cause**
+The root cause is the VPN concentrator's **max-session / re-authentication interval** being set to 45 minutes. The VPN is configured to force a session termination to require the user to re-authenticate every 45 minutes for security purposes. Because the CRAs are performing large data uploads that span this 45-minute window, the session is killed by the concentrator mid-transfer, regardless of how active the user is.
+
+**Why the previous "fixes" appeared to help:**
+*   **The Reconnect/Retry approach:** This was not a fix, but a manual reset. By reconnecting, the user started a brand-new session with a fresh 45-minute timer, allowing them to successfully complete the upload—until the new timer hit the 45-minute mark again.
+*   **The Idle-Timeout change:** This was likely a case of **misdiagnosis/coincidence**. Since the disconnect was caused by a hard session limit (re-authentication) rather than inactivity, increasing the idle-timeout did nothing to stop the 45-minute cutoff. The user likely perceived it as "helping" because they were no longer being interrupted by *other* minor network fluctuations, or the technician misattributed a session that finished just before the 45-minute mark as a "success" due to the timeout change.
+*   **The Wired Connection:** This improved the **upload speed and connection stability**. By moving to a wired connection, the user was likely able to complete the data upload *before* the 45-minute re-authentication threshold was reached. It didn't fix the VPN; it simply allowed the user to outrun the timer.
+
+**The Actual Fix**
+Increase the **max-session / re-authentication interval** in the VPN concentrator configuration to a duration that exceeds the longest expected data upload (e.g., 8 or 12 hours) and implement a re-authentication method that can occur in the background (such as a transparent re-keying or a "keep-alive" refresh) without terminating the active TCP session.
+
+**How this should have been caught earlier**
+This should have been caught after the 2nd or 3rd ticket through **Trend Analysis and Pattern Recognition**. Instead of treating each ticket as an isolated incident (a "siloed" approach), the support team should have looked for commonalities across the tickets. When three different users on different networks report a failure at the exact same time-interval, it indicates a systemic configuration issue rather than a local user error. A simple "time-of-failure" comparison across the tickets would have immediately revealed the 35–50 minute pattern.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Actual Root Cause
+The VPN concentrator is configured with a **hard 45-minute maximum session lifetime / periodic re-authentication interval**. When this timer expires, the concentrator forcibly terminates the existing tunnel to enforce re-authentication. Because standard VPN re-authentication tears down and rebuilds the underlying IPsec/SSL tunnel, the active TCP connection carrying the CRF upload is abruptly dropped. The observed 35–50 minute window accounts for the offset between when the VPN session began and when the upload started, plus normal timer granularity and network latency. The concentrator logs show a non-idle error code because this is a hard session-limit trigger, not an inactivity detection mechanism.
+
+### Why the Previous “Fixes” Appeared to Work
+* **Idle-timeout increase:** Changing the client-side idle timeout only affects client-initiated disconnects or local keep-alive pacing. It does not override the concentrator’s hard 45-minute session limit. In that single case, the change likely shifted the timing of background keep-alive packets or slightly delayed the session start, causing the upload to complete just before the server’s hard cutoff. It was a timing coincidence, not a functional resolution.
+* **Wired connection suggestion:** Wi‑Fi introduces variable throughput, retransmissions, and micro-pauses that extend transfer duration. Switching to Ethernet improved effective upload speed, allowing the file to finish *before* the 45-minute server timer expired. This didn’t fix the timer; it simply beat it. Other users on different ISPs/home networks had upload durations that still crossed the threshold, so the “fix” didn’t generalize.
+
+### The Actual Fix
+1. **Increase the concentrator’s max‑session timeout** to a value that safely exceeds the longest expected CRF upload plus buffer (e.g., 2–4 hours), aligned with clinical data transfer SLAs.
+2. **Enable seamless tunnel rekeying/re-authentication** that preserves active TCP sessions (e.g., IKEv2 keepalives, stateful re-auth, or vendor-specific “session persistence during rekey” features) so background credential refresh doesn’t drop in-flight transfers.
+3. **Verify keep-alive configuration** ensures active data transfers are recognized as non-idle by the concentrator, and document the corrected session parameters in the CRA onboarding/runbooks.
+
+### How This Should Have Been Caught After Ticket 2 or 3
+* **Cluster & Correlate, Don’t Close:** After the second identical symptom, tickets should have been tagged and grouped under a single problem record rather than treated as isolated incidents.
+* **Extract & Plot Timestamps:** Support should have pulled `session_start_time` and `disconnect_time` from the concentrator logs for each ticket, calculated the delta, and plotted them. A tight 35–50 minute band would immediately flag a timer-driven pattern.
+* **Cross-Reference Configuration:** That duration band should have been compared against known VPN policies (the 45-minute max-session setting), revealing the direct match.
+* **Escalate to Problem Management:** Instead of applying per-user workarounds, the pattern would have triggered a system-level RCA, leading to a config change that prevents recurrence. Basic ITSM discipline—symptom clustering, duration analysis, and log-to-config correlation—would have resolved this after ticket 2 or 3, saving ~9 tickets, 6 weeks of rework, and clinical data upload delays.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+It sounds like different users are having different WiFi and connection issues that are
+causing the VPN to drop. We'll keep recommending users switch to a wired connection if
+possible and adjust individual timeout settings as needed on a case-by-case basis. If it keeps
+happening we can look at getting everyone new equipment or upgrading their home internet.
+
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Actual Root Cause
+The VPN concentrator enforces a **hard 45-minute session limit with mandatory re-authentication**. When that threshold is reached, the concentrator forcibly terminates the tunnel regardless of user activity or network health. Large case report uploads are long-running processes; when the upload hits the 45-minute mark, the data tunnel is abruptly severed, causing the upload to fail mid-transfer. The disconnect code in the logs is unrelated to idle-timeout because it's a policy-enforced session expiration, not a client inactivity or network issue.
+
+### Why the "Per-Ticket Fixes" Appeared to Work
+1. **Increased client idle-timeout:** Client-side idle timeouts only apply when the tunnel shows no activity. During an active file upload, the session is considered "in use," so this setting had zero effect on the disconnect. The upload succeeded temporarily only because the user **reconnected**, which reset the 45-minute timer. The timeout change was a red herring; the reconnection was the actual temporary workaround.
+2. **Switched to wired connection:** A wired connection provided higher throughput and lower packet loss, which **reduced the total upload time**. Because the transfer completed before the 45-minute wall, the disconnect never triggered. It didn't fix the root cause; it simply changed the variable (duration) so the workflow finished before the server-enforced limit.
+
+### Actual Fix
+1. **Adjust the concentrator configuration:** Increase the `max-session` or `re-authentication-interval` setting to exceed the maximum expected upload duration (e.g., 2–4 hours), or remove the hard limit for upload-heavy workloads.
+2. **Implement transparent re-authentication:** If a 45-minute limit is mandated for compliance/security, deploy a mechanism that re-authenticates automatically without dropping the data tunnel (e.g., certificate-based renewal, SSO token refresh, or background re-auth prompts that pause but don't terminate the upload).
+3. **Align with workflow:** Ensure the VPN policy distinguishes between interactive desktop sessions and long-running data transfers. Many enterprise VPNs support "session persistence" or "upload profiles" that bypass short re-auth intervals for large file operations.
+
+### How This Should Have Been Caught After Ticket #2 or #3
+1. **Correlate timestamps, don't just collect symptoms:** After the 2nd or 3rd ticket, compare user-reported disconnect times with VPN concentrator session logs. The 35–50 minute consistency across tickets would immediately rule out random network glitches and point to a time-based policy.
+2. **Recognize the cross-environment pattern:** Different ISPs, home networks, and hardware eliminate local connectivity as the root cause. When multiple disparate environments fail at the exact same interval, the bottleneck is almost always the shared infrastructure (the concentrator).
+3. **Stop treating tickets as isolated:** The first ticket is a data point; the second confirms a trend; the third demands a root-cause analysis. Continuing to apply user-side workarounds is a classic "firefighting" loop. At ticket #3, the ticket manager should have:
+   - Pulled concentrator configuration documentation.
+   - Noted the 45-minute re-auth interval.
+   - Asked affected users to log exact upload start/end times or run a controlled test with a known duration.
+   - Escalated to network/security to adjust the session policy, recognizing this as a systemic misconfiguration, not a user-error problem.
+
+In short: **The concentrator's 45-minute hard session limit is interrupting long uploads. Adjust the policy, implement transparent re-auth if required by compliance, and correlate ticket timestamps with server logs after the second incident to break the symptom-management cycle.**
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Root Cause
+The actual root cause is **the VPN concentrator's max-session / re-authentication interval is set to 45 minutes**. This configuration forces the VPN session to terminate exactly at the 45-minute mark, regardless of user activity or network conditions. The disconnects occur between 35–50 minutes because sessions are terminated near this interval, and the disconnect code in the logs (unrelated to idle-timeout) confirms this is a session timeout, not an idle disconnect. The uploads are failing because they are interrupted at this fixed interval.
+
+### Why Previous Fixes Appeared to Help
+1. **Reconnect and retry**:  
+   This worked temporarily because restarting the upload re-establishes a new VPN session, resetting the 45-minute timer. It does not fix the underlying issue but allows the upload to continue until the next 45-minute interval.
+
+2. **Increased idle-timeout setting for one user**:  
+   This user likely had an **idle-timeout conflict**. If the idle-timeout was set too low (e.g., 30 minutes), it could disconnect the user during inactivity (e.g., pauses in uploading). Increasing the idle-timeout (e.g., to 60 minutes) prevented premature disconnects due to inactivity, making the session stable until the 45-minute max-session timeout. However, the 45-minute disconnect still occurred but was misattributed to the idle-timeout fix. The user’s uploads may have completed before 45 minutes in some cases, masking the root cause.
+
+3. **Switched to wired connection for another user**:  
+   This user probably experienced **network instability** (e.g., WiFi drops). Switching to Ethernet reduced packet loss or reconnections during uploads, making the session appear stable. However, the 45-minute disconnect was still inevitable but coincided with the end of their upload due to the improved connection. The wired fix resolved a secondary issue (network jitter) but not the core session timeout.
+
+### Actual Fix
+**Adjust the VPN concentrator's max-session / re-authentication interval** to a value longer than the typical upload duration (e.g., 120 minutes or disable it entirely if security allows). This prevents session termination during uploads. Additionally, implement **seamless re-authentication** to avoid interrupting active sessions. For example:
+- Change the max-session timeout from 45 minutes to 120 minutes.
+- Configure the concentrator to re-authenticate without disconnecting sessions (if supported).
+
+### How This Should Have Been Caught Earlier
+After the **2nd or 3rd ticket**, the pattern of dislocations (all between 35–50 minutes) should have triggered an analysis of:
+1. **VPN concentrator logs**: The logs showed disconnects unrelated to idle-timeout, suggesting a different timeout mechanism.
+2. **Configuration review**: The max-session interval (45 minutes) should have been cross-referenced with the disconnect timing. The tight alignment (45 minutes ±15 minutes) is a classic sign of a session timeout.
+3. **Affected user diversity**: Since CRAs used different ISPs, hardware, and networks, the issue was clearly system-wide (VPN concentrator) not user-specific. This should have ruled out local fixes (e.g., wiring or idle-timeout changes).
+4. **Repetitive timing**: After the first few tickets, the consistent 35–50-minute window should have prompted a focused check of concentrator timeouts instead of treating each case as unique.
+
+**Key missed indicator**: The disconnect timing was **not random** but clustered near 45 minutes. This uniformity across 7 CRAs (with no common variables) screamed for a systemic investigation of the VPN infrastructure, not isolated user fixes.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Root Cause**
+
+The VPN concentrator's **re-authentication interval is set to 45 minutes**, which is shorter than the duration of a typical CRF upload session. When the session reaches the 45-minute mark, the concentrator forces a re-authentication (or terminates the tunnel), cutting the active upload short. The CRA must then reconnect, re-authenticate, and restart the upload. This is a server-side configuration issue, not a user-side problem.
+
+**Why the Previous Fixes Appeared to Work**
+
+Neither the idle-timeout change nor the wired-connection suggestion addressed the 45-minute server-side re-authentication timer. They only worked because they inadvertently removed a **competing, faster failure mode** that would have caused the connection to drop *before* the 45-minute mark in those specific instances.
+
+*   **The idle-timeout change:** The VPN client or the local operating system likely had a default idle-timeout setting (e.g., 15–20 minutes) that would terminate the client-side VPN tunnel if no data was sent for that duration. Since CRF uploads can involve periods of latency (waiting for server acknowledgment), the client would disconnect due to "idle" before the server's 45-minute timer even triggered. By increasing the idle-timeout, the client stayed connected long enough for the upload to finish *within* the 45-minute window. It worked "temporarily" because the fix didn't change the 45-minute server limit; if an upload took longer than 45 minutes, it would eventually fail again.
+*   **The wired-connection switch:** WiFi connections are prone to interference, signal drops, and power-saving behaviors that can cause intermittent packet loss. The VPN concentrator might interpret high packet loss or high latency (caused by WiFi) as a "dead peer," triggering a premature re-authentication or disconnection *before* the 45-minute mark. Switching to wired removed this local instability, ensuring the connection was stable enough to reach the 45-minute server-side kill point without a local drop. Again, this only worked because the specific upload finished before the 45-minute server re-auth trigger.
+
+**Actual Fix**
+
+Increase the VPN concentrator's **max-session / re-authentication interval** to a duration that exceeds the longest expected CRF upload session (e.g., 60 or 90 minutes). Additionally, the CRO should implement session persistence or "keep-alive" protocols that allow active data uploads to bypass the re-authentication check, ensuring that a tunnel drop does not interrupt an in-progress file transfer.
+
+**How This Should Have Been Caught Earlier**
+
+This issue should have been identified after the **2nd or 3rd ticket** by simply asking for the **timestamp of the disconnect relative to the session start time**.
+
+The root cause was a temporal pattern (35–50 minutes) that is impossible to miss if it is recorded. Instead of treating each ticket as an unrelated user issue, the IT or helpdesk team should have logged the *duration* of the VPN session for every ticket. After two or three tickets with disconnect times converging on the same window, the statistical probability of this being a coincidence drops to near zero. A simple ticket template field asking "At what time did the connection drop?" or "How long were you connected before the error?" would have revealed the 45-minute correlation immediately, signaling a server-side configuration issue rather than a user-side problem.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Root Cause
+The actual root cause is the **VPN concentrator's max-session duration limit set to 45 minutes**, which triggers a mandatory re-authentication. Case report form (CRF) uploads taking longer than this limit hit the timer boundary. The re-authentication process either failed to complete seamlessly or interrupted the active data stream, causing the session to terminate with a code unrelated to idle-timeout (likely a re-auth failure or forced session termination). The 35–50 minute window reflects natural variance in upload start times relative to the 45-minute absolute cap, plus slight drift or network latency in the re-auth handshake.
+
+### Why the Past Fixes Appeared to Work
+Each past fix addressed a secondary factor or masked the root cause rather than resolving it:
+
+1.  **Reconnect and Retry:** Restarting the upload resets the session timer. If the remaining upload time was less than 45 minutes, the upload completed before the timer expired. The fix worked by coincidence of timing, hiding the fact that the session would have dropped if the upload had continued past 45 minutes.
+2.  **Increased Client Idle-Timeout:** This helped the specific user likely because the VPN client or concentrator configuration had a dependency where the **max-session duration was capped by the idle-timeout setting**. By increasing the idle-timeout to a value exceeding 45 minutes, the effective session duration was extended beyond the threshold, or the user's upload finished before the drop occurred after the reset. Alternatively, the change may have inadvertently suppressed the re-auth trigger in that client version. The fix was a masking effect, not a resolution of the hard 45-minute limit.
+3.  **Switch to Wired Connection:** The wired connection improved link stability and reduced packet loss/jitter. The re-authentication at 45 minutes requires a successful handshake. On unstable WiFi, this handshake likely failed or timed out, causing the drop. Wired connectivity allowed the re-authentication to succeed, preserving the session. This masked the root cause by ensuring the re-authentication step didn't fail, rather than removing the requirement for re-authentication.
+
+### Actual Fix
+1.  **Increase Session Duration:** Update the VPN concentrator configuration to raise the `max-session / re-authentication interval` to a value that exceeds the maximum expected upload duration (e.g., 8–24 hours, or configurable per user role).
+2.  **Enable Seamless Re-authentication:** Implement token-based or background re-authentication mechanisms so that session renewal occurs without interrupting active data transfers.
+3.  **Validate:** Test uploads exceeding 45 minutes to confirm sessions persist and data integrity is maintained without drops.
+
+### How This Should Have Been Caught Earlier
+The pattern should have been identified after the **2nd or 3rd ticket** through basic data correlation:
+
+*   **Timestamp Analysis:** A reviewer should have queried the session logs for the second incident and noted the session duration. Comparing this to the third incident would reveal a cluster of disconnects occurring between 35 and 50 minutes.
+*   **Timer Correlation:** Once a time-based pattern is detected, the next step is to check the concentrator configuration for timers. The 45-minute `max-session` setting would immediately align with the observed window.
+*   **Process Failure:** The tickets were treated as isolated user errors or transient network issues. Implementing a **time-bucket analysis** on recurring connectivity tickets or an automated alert for session drops within a specific time window would have flagged the timer issue immediately. No common cause was identified because the "35–50 minute" correlation was never aggregated across tickets, and the diversity of user environments distracted from the timing clue.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Root Cause
+The VPN concentrator enforces a **hard max-session lifetime / mandatory re-authentication interval of 45 minutes**. When this timer fires, the concentrator forcibly terminates the session regardless of whether data is still flowing. CRF uploads that run longer than ~45 minutes hit this server-side cap, triggering the mid-upload disconnect. The consistent 35–50 minute window, the termination code unrelated to idle-timeout, and the exact alignment with the configured timer all point to an infrastructure-level session cap, not client or network instability.
+
+### Why the Past Fixes Appeared to Work
+- **Increasing idle-timeout:** The idle-timeout setting only governs disconnections when there is zero traffic. Active uploads don't trigger it. The fix "worked" because the user retried and likely finished the upload within the remaining window before the 45-minute hard cap expired, or the retry inadvertently refreshed the session timer. It was temporal coincidence and session retry masking the cap, not causation.
+- **Switching to wired:** Home Wi-Fi routers and ISPs frequently drop long-lived NAT sessions or throttle sustained uploads due to signal degradation, aggressive NAT timeouts, or QoS throttling. Going wired eliminated those local variables. That specific user either completed the upload before the concentrator's limit, or the wired connection prevented a *concurrent* local drop that had nothing to do with the VPN server. Again, symptom mitigation + coincidence created the illusion of a fix.
+
+Both interventions were treating a **server-side hard timer** as a **client-side fluke**. They managed the symptom long enough to break the correlation, never the cause.
+
+### Actual Fix
+1. **Reconfigure the VPN concentrator's max-session lifetime / re-authentication interval** to exceed the maximum expected CRF upload duration (e.g., 4–8 hours), validated against actual upload SLAs.
+2. **Enable transparent session renewal** (keepalive/heartbeat with silent re-authentication) so long-running sessions auto-renew without terminating active data flows.
+3. **Add monitoring/alerting** for the specific session termination code so future cap hits are caught at the infrastructure layer before they become user-facing tickets.
+4. **Document maximum expected session times** with the CRO and incorporate them into infrastructure capacity planning.
+
+### How This Should Have Been Caught After the 2nd or 3rd Ticket
+- **Mandate time-to-failure logging:** Require field engineers to record "minutes from VPN connect to disconnect" on every reconnect ticket. Without this data, each ticket looks like an isolated random failure.
+- **Auto-cluster by symptom + duration:** ITSM tools should group tickets sharing identical symptoms. When a cluster forms, extract the session duration. A 35–50 minute cluster immediately points to a timer-based infrastructure limit.
+- **"3 strikes = system audit" rule:** Any recurring VPN disconnect reported by multiple users across different ISPs, hardware, and home networks should trigger an immediate concentrator log review, not another user-level retry. Client-side variables are ruled out the moment the pattern crosses multiple environments.
+- **Cross-reference termination codes early:** The VPN termination code (unrelated to idle-timeout) should have been mapped to known concentrator timer settings on ticket #2 or #3. A simple config lookup against the code would have revealed the 45-minute cap.
+- **Root-cause discipline:** Treat the first recurrence as an anomaly, the second as a pattern, and the third as a system limit. The moment the time-to-failure aligns with a known infrastructure timer, the investigation should have pivoted from "user environment" to "concentrator configuration" immediately.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Root Cause**
+The actual root cause is a systemic configuration constraint on the **VPN concentrator**. The concentrator enforces a hard **max-session (re-authentication) interval of 45 minutes**. Because the data upload process consistently takes between 35 and 50 minutes, the VPN connection is forcibly terminated by the server shortly after the 45-minute mark, regardless of user activity or network stability. The logs confirm this with an error code unrelated to idle-timeout, as the session is expiring due to the server-side duration limit.
+
+**Why Previous "Fixes" Appeared to Help**
+*   **Idle-timeout increase:** This setting controls disconnects due to *inactivity*, not session duration. It appeared to help the specific user only because that user’s subsequent upload session happened to take **less than 45 minutes**, allowing them to finish before the server’s hard limit hit. The fix did not alter the underlying 45-minute expiration, so the problem would have reoccurred if that user ever uploaded a larger file or encountered delays.
+*   **Wired connection switch:** Switching from WiFi to wired improves throughput and reduces packet loss/retransmissions. This appeared to help because the faster, more stable connection allowed that specific user to **complete the upload in under 45 minutes**. The improvement in speed masked the session limit issue; if that user ever uploaded a larger dataset, the disconnect would have returned.
+
+**Actual Fix**
+The VPN concentrator’s `max-session` or `re-authentication interval` must be increased to a value that accommodates the longest expected upload duration (e.g., **120 minutes**). Alternatively, the concentrator should be reconfigured to support **session resumption** or automatic re-authentication that preserves the active session state rather than dropping the connection at the 45-minute mark.
+
+**How to Catch This After the 2nd or 3rd Ticket**
+This should have been caught by implementing a **pattern-based analysis protocol** for VPN-related tickets:
+1.  **Ticket Grouping:** The helpdesk system should automatically group tickets tagged with "VPN Disconnect" or "Upload Failure" regardless of the user or hardware.
+2.  **Data Correlation:** After 2 or 3 tickets, IT should extract the **session duration** (time between connection and disconnect) from the concentrator logs for each reported case.
+3.  **Pattern Recognition:** Plotting these durations would immediately reveal the spike at the **45-minute mark**, proving the issue is infrastructure-wide rather than user-specific.
+4.  **Infrastructure Review:** A mandatory review of VPN concentrator configurations is triggered when >3 tickets show similar symptoms, preventing the team from chasing individual user-side fixes for a centralized system problem.
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Root Cause:**  
+The actual root cause is that the **VPN concentrator is configured to enforce re-authentication every 45 minutes**, and during or just after this re-authentication process, the active data upload session is being **abruptly terminated instead of seamlessly re-established**. This causes the clinical research associates (CRAs) to lose their connection mid-upload, even though they are actively transferring data. The disconnects consistently occur between 35 and 50 minutes—centered around the 45-minute mark—because that is when the forced re-authentication triggers.
+
+The session termination logs showing a code "unrelated to idle-timeout" are misleading only in interpretation; the code likely reflects a **normal re-authentication event**, but the **client or application (the upload process) does not handle session continuity gracefully** after re-authentication. Thus, from the user’s perspective, the VPN "drops," requiring a reconnect and restart of the upload.
+
+---
+
+**Why the Past Fixes *Seemed* to Help (Without Fixing the Root Cause):**
+
+1. **Increasing the idle-timeout setting for one user:**  
+   This user may have had brief idle periods (e.g., paused between form entries), causing suspicion of idle disconnects. Increasing the idle-timeout prevented confusion between idle-timeout and re-authentication events, but the real issue—the 45-minute hard re-authentication—remained. If their upload happened to finish just under 45 minutes *after* the fix, or they were more likely to reconnect quickly, it *appeared* resolved. But the underlying trigger was still the 45-minute re-authentication cycle.
+
+2. **Switching from WiFi to wired connection for another user:**  
+   A wired connection provides more stable connectivity with fewer transient glitches. When the VPN re-authenticates, a more reliable network allows **faster reconnection or smoother re-establishment** of the tunnel, possibly allowing the upload application to resume or fail less noticeably. However, the session still broke at ~45 minutes—just the impact was reduced due to faster recovery. This created the illusion of a network stability fix, when in fact the root cause (forced re-authentication) was unchanged.
+
+---
+
+**Actual Fix:**  
+Adjust the **VPN concentrator's maximum session duration / re-authentication interval** from 45 minutes to a longer period (e.g., 8–24 hours), **or enable session persistence across re-authentication** (if supported), so that established tunnels are **seamlessly rekeyed without breaking active connections**. Alternatively, ensure that client software and the upload application are **designed to survive brief tunnel interruptions** (e.g., with resume capability), but the primary fix lies in the **infrastructure configuration**.
+
+Ideally, the re-authentication should not terminate the session but instead perform a **rekey operation in the background** without disrupting active data transfers.
+
+---
+
+**How This Should Have Been Caught After the 2nd or 3rd Ticket:**
+
+The pattern of **disconnects occurring consistently between 35 and 50 minutes**—centered at 45 minutes—is a classic indicator of a **time-based system policy**, such as a session timeout or re-authentication interval.
+
+The organization should have implemented a **pattern analysis protocol** for recurring technical issues, including:
+
+1. **Correlate timestamps:** For any recurring disconnection reports, analyze when (after how many minutes) the failure occurs. A tight window like 35–50 minutes across multiple users strongly suggests a server-side timer.
+2. **Centralized log review after 2–3 similar tickets:** A network or security engineer should review the **VPN concentrator’s configuration and logs** for systemic policies (e.g., max session duration, re-authentication settings).
+3. **Root cause tracking system:** Use a knowledge base or incident management system that flags similar ticket patterns (e.g., “VPN disconnect after ~45 minutes”) and prompts investigation beyond individual user fixes.
+4. **Ask the right question:** Instead of “How do we fix this user’s connection?”, ask: “What happens on the network or server at ~45 minutes into a session?”
+
+**Conclusion:**  
+This was not a user, device, or local network issue—it was a **systemic infrastructure design flaw**. The 45-minute re-authentication policy was silently breaking active sessions. Recognizing the temporal pattern early would have led to the root cause in hours, not weeks. The fix is not user education or network tweaks, but **adjusting the VPN concentrator’s session management policy to preserve active connections during re-authentication**.
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+**Root‑cause**
+
+The VPN concentrator is configured with a *max‑session / re‑authentication interval of 45 minutes*.  
+When a session reaches that age the concentrator forces the client to re‑authenticate; if the
+client cannot complete the re‑auth (because the VPN tunnel is already in the middle of a
+large upload, or because the VPN client is not configured to re‑authenticate automatically),
+the tunnel is closed and the upload is interrupted.  
+The server logs show the disconnect code that belongs to the “re‑auth required” event – it
+is not an idle‑timeout error, but the VPN‑concentrator’s own timeout rule.
+
+The 35–50 minute window you observed is simply the period just before the 45‑minute mark
+(typical variance of a few minutes because of when the upload actually starts, packet
+loss, or client‑side keep‑alive packets). All the CRAs were hitting the same rule, no
+matter which ISP, home network or laptop they used.
+
+---
+
+### Why the “per‑ticket” fixes looked like they helped
+
+| Fix tried | Why it seemed to work | Why it didn’t solve the real problem |
+|-----------|----------------------|------------------------------------|
+| **Reconnect & retry** | The user got a fresh session that lasted > 45 min, so the upload finished. | The underlying rule still existed; the user just happened to finish before the 45‑minute mark. |
+| **Increase client idle‑timeout** | The client’s idle timer was the *only* timer the user could change, so raising it prevented the client from disconnecting “because it was idle”. | The VPN concentrator was still forcing a re‑auth after 45 min regardless of the client’s idle timer. |
+| **Switch from Wi‑Fi to wired** | A wired link had less packet loss and jitter, so the VPN tunnel stayed “alive” longer and the upload could finish before the 45‑minute boundary. | The re‑auth rule still applied; the wired link only delayed the moment the client hit the 45‑minute limit. |
+
+In short, each fix only **delayed** the inevitable 45‑minute cutoff; none addressed the
+concentrator’s policy.
+
+---
+
+### The real fix
+
+1. **Adjust the VPN concentrator policy**  
+   *Set `max‑session‑time` (or the equivalent “re‑authentication interval”) to a value that
+   matches the longest expected upload session, e.g. 120 minutes, or disable the mandatory
+   re‑auth entirely if your security policy permits.*  
+
+   ```text
+   # Example for a typical Juniper / Cisco VPN concentrator
+   set vpn concentrator max-session-time 120
+   # or
+   set vpn concentrator reauth-required no
+   ```
+
+2. **Enable automatic re‑authentication / keep‑alive**  
+   If the vendor insists on a re‑auth interval, configure the VPN client to send a
+   “keep‑alive” packet (or to automatically perform the re‑auth) so the tunnel never
+   reaches the 45‑minute hard stop.  
+   *On most VPN clients this is a simple “Always re‑auth” or “Send keep‑alive every X seconds” setting.*
+
+3. **Validate**  
+   • Run a test upload that lasts > 45 minutes and verify the tunnel stays up.  
+   • Check the VPN concentrator logs to confirm the disconnect code no longer appears
+     after the session length threshold.
+
+---
+
+### How this should have been caught earlier
+
+| Step | What to do | Why it would have worked |
+|------|------------|--------------------------|
+| **1. Correlate ticket timestamps with VPN logs** | After the second or third ticket, pull the VPN concentrator logs for the corresponding times and look for a pattern of session‑termination codes. | The logs would have shown the 45‑minute re‑auth event exactly where the uploads failed. |
+| **2. Track session duration** | Enable a simple monitoring metric that reports the length of each active VPN session. | A spike in “sessions ending at ~45 min” would have surfaced before the 11th ticket. |
+| **3. Perform a root‑cause analysis (RCA) on the first recurring pattern** | When the same “disconnect‑after‑35‑50 min” pattern appeared twice, run an RCA instead of treating it as a new “user‑error” ticket. | The RCA would have identified the concentrator’s re‑auth rule as the common denominator. |
+| **4. Document and share** | Once the rule was identified, create a knowledge‑base article and alert the support team to check session‑timeouts on any future similar tickets. | That knowledge would have prevented 9 more tickets. |
+
+In practice, the pattern of *“disconnect always between 35–50 min”* is a classic
+indicator that a policy‑level timeout (not a client‑side idle‑timeout) is firing. Once
+the ticket data were aggregated and the logs examined, the root cause emerged
+immediately.
+
+---
+
+**Bottom line**
+
+The VPN concentrator’s *45‑minute re‑authentication interval* is the true culprit.
+Adjust that setting (or enable automatic re‑auth/keep‑alive) and the uploads will
+complete without interruption. The per‑ticket workarounds only masked the symptom,
+not the source. By correlating ticket times with server logs after the second or
+third incident, the issue would have been identified far sooner.
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+A classic case of a subtle, yet recurring issue!
+
+**Root Cause:**
+The actual root cause is that the VPN concentrator's max-session / re-authentication interval is set to 45 minutes, which causes the VPN session to terminate and disconnect the CRAs between 35 and 50 minutes into the session.
+
+**Why previous fixes appeared to help:**
+The idle-timeout change and the wired-connection suggestion each appeared to help their respective users because:
+
+1. **Idle-timeout change:** Increasing the idle-timeout setting for one specific user may have seemed to help because it gave the user a bit more time to complete their upload before the VPN session timed out. However, this was just a temporary relief, as the underlying issue was still present. The user's session was still terminating due to the max-session / re-authentication interval, but the increased idle-timeout setting pushed the timeout boundary further away, making it seem like the fix worked.
+2. **Wired-connection suggestion:** Telling a user to switch from WiFi to a wired connection may have seemed to help because a wired connection is generally more stable and less prone to intermittent issues. However, in this case, the problem was not with the connection type (WiFi vs. wired), but with the VPN concentrator's configuration. The wired connection may have had a slightly more stable connection, which allowed the user to complete their upload before the VPN session timed out, but again, this was just a coincidence.
+
+**Actual Fix:**
+The actual fix is to adjust the VPN concentrator's max-session / re-authentication interval setting to a value that is longer than the typical upload duration, or to implement a more flexible re-authentication mechanism that doesn't terminate the VPN session after a fixed interval.
+
+**How this should have been caught earlier:**
+This issue should have been caught after the 2nd or 3rd similar ticket because of the following:
+
+1. **Pattern recognition:** The fact that multiple CRAs reported the same issue, with similar timing (between 35 and 50 minutes into the VPN session), should have raised a red flag.
+2. **Common denominator:** Even though the affected CRAs were on different ISPs, home networks, and laptop hardware, the common denominator was the VPN concentrator's configuration.
+3. **Investigation:** A more thorough investigation into the VPN concentrator's logs and configuration should have revealed the root cause earlier.
+
+To prevent similar issues in the future, it's essential to:
+
+1. **Implement robust monitoring and logging:** Collect and analyze logs from the VPN concentrator and other relevant systems to identify patterns and anomalies.
+2. **Encourage collaboration:** Foster communication among teams and stakeholders to share knowledge and identify common issues.
+3. **Perform root cause analysis:** Go beyond superficial fixes and investigate the underlying causes of recurring issues.
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+**Root cause**  
+The VPN concentrator is configured with a **“maximum‑session / re‑authentication interval” of 45 minutes**. After a client has been up for that amount of time the concentrator forces a re‑authentication. The VPN client (the Cisco AnyConnect/Check‑Point/FortiClient used by the CRAs) does **not** perform a transparent “session‑refresh” – it tears the IPsec/IKE tunnel down, forces a new handshake and then re‑establishes the tunnel. Because the CRAs are in the middle of a large file upload, the tunnel disappears for a few seconds while the new IKE/SPI is negotiated. The clinical‑trial portal sees this as a dropped connection and aborts the upload, forcing the CRA to start over.
+
+So the disconnect is **not** an idle‑timeout, ISP outage, or Wi‑Fi stability issue; it is the *scheduled re‑auth* that the concentrator imposes on every VPN session after ~45 minutes.
+
+---
+
+### Why the per‑ticket “fixes” seemed to work
+
+| “Fix” that was tried | Why it appeared to help one user | Why it didn’t solve the real problem |
+|----------------------|----------------------------------|--------------------------------------|
+| **Increased the client’s idle‑timeout** (e.g., from 5 min to 30 min) | The client now stayed “alive” longer when the user was idle, so the tunnel didn’t drop for the *idle‑timeout* reason. The re‑auth still happened at 45 min, but the user happened to finish the upload before the next re‑auth, giving the illusion of a cure. | The underlying re‑auth timer was untouched, so any upload lasting >45 min would still be broken. |
+| **Switched from Wi‑Fi to wired Ethernet** | A wired link typically has lower latency and fewer packet losses. When the concentrator forced the re‑auth, the new IKE negotiation completed *quickly enough* that the upload client (the portal’s JavaScript/HTML5 uploader) did not notice the brief interruption, so the upload continued. | The tunnel still tears down and rebuilds; a slower Wi‑Fi link just makes the interruption visible. The root cause (forced re‑auth) remains. |
+
+Both “solutions” only mitigated the *symptom* for a single session; they never removed the scheduled tunnel reset that is happening to **every** VPN user after 45 minutes.
+
+---
+
+## The actual fix
+
+1. **Raise or disable the max‑session / re‑authentication interval** on the VPN concentrator.  
+   *Typical values*: 8 h (480 min) or “no limit”.  
+   If the policy demands periodic re‑auth for security, set the interval to a value **longer than the longest expected upload** (e.g., 8 h) and enable *session‑preserve* (DPD/keep‑alive) so the tunnel stays up while the user is active.
+
+2. **Enable seamless re‑authentication** (if the vendor supports it).  
+   - Cisco ASA: `crypto ipsec security-association lifetime` + `rekey` with `ikev1/rekey` set to *soft* so the SA is refreshed in‑place.  
+   - FortiGate: `set reauth` with `auto-reconnect` on the client profile.  
+   - Check‑Point: `vpn community` → *Re‑authentication* → *Enable re‑auth without tunnel down*.
+
+3. **Configure the client to auto‑reconnect** and resume the upload.  
+   - Turn on “Enable automatic reconnect” in the VPN client.  
+   - If the portal supports it, use a resumable upload protocol (e.g., HTTP Range or multipart) so a brief tunnel loss does not force a full restart.
+
+4. **Communicate the change** to all remote CRAs and update the internal SOP: “VPN sessions now stay alive for up to X hours; no manual reconnect required.”
+
+---
+
+## How this should have been spotted after the 2nd‑3rd ticket
+
+1. **Ticket correlation** – After the first ticket, the support engineer noted “VPN disconnects during upload”.  
+   After the **second** ticket (different CRA, different ISP, same symptom) the analyst should have added a **time‑stamp field** (e.g., “disconnect occurred after X minutes of VPN uptime”).
+
+2. **Simple log‑review** – The VPN concentrator’s syslog already records a *“session‑re‑auth timeout”* event with the user’s IP and a timestamp. A quick grep for the session IDs from the two tickets would have shown all of them ending with the same *re‑auth* code at ~45 min.
+
+3. **Pattern detection** – With two data points showing *“disconnect at 35‑50 min”* and *“same syslog code”*, a root‑cause hypothesis (re‑auth timer) could be raised. A third ticket would have cemented the pattern, prompting a configuration review *before* the 11th ticket.
+
+In practice, a **basic “time‑to‑disconnect” metric** in the ticket template (or an automated alert when a VPN log shows a re‑auth event) would have flagged the 45‑minute interval after the second or third similar case, leading the team straight to the concentrator’s *max‑session* setting.
+
+---
+
+### TL;DR
+
+*The VPN is deliberately tearing the tunnel down after 45 minutes because of the concentrator’s “max‑session / re‑authentication interval.”*  
+Idle‑timeout tweaks and wired‑connection advice only hid the problem for a single user.  
+
+**Fix:** increase or disable that interval (or enable seamless re‑auth) and make the client auto‑reconnect/resume uploads.  
+
+A quick check of the VPN logs after the **second** similar ticket would have revealed the re‑auth event and prevented the cascade of 11 tickets.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

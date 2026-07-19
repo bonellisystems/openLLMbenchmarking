@@ -1,0 +1,238 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# IT Infrastructure -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The diagnosis or design is correct and tied to the specific systems, symptoms, and constraints given, with exact commands or configuration for the stated platform rather than generic advice. It includes a rollback or backup step before any risky change, quantifies blast radius and expected downtime, and is calibrated about what still needs on-site or live verification. A maintenance-window or change-freeze constraint mentioned in the prompt is respected, not ignored.
+Example character: a targeted fix with the exact command sequence, a stated rollback step, and a note on which part of the environment is affected.
+
+## 7 -- Strong
+The technical recommendation is sound and directly usable, with correct commands or configuration for the stated platform. It is missing one of: an explicit rollback plan, a quantified blast-radius/downtime estimate, or a post-change verification step. Nothing here would misdiagnose the problem.
+Example character: a correct fix for the stated symptom that does not spell out how to undo it if it goes wrong.
+
+## 5 -- Adequate
+The direction is correct but the advice reads as a generic troubleshooting checklist rather than being tailored to the specific hardware, software, or symptoms given. An engineer would need to fill in the exact commands and confirm the environment before acting.
+Example character: "check logs, restart the service, verify connectivity" offered without adapting to the platform named in the prompt.
+
+## 3 -- Weak
+The answer misdiagnoses the stated problem, ignores an explicit constraint (no maintenance window, no downtime allowed, specific hardware), or jumps to a disruptive fix without trying safer steps first.
+Example character: recommends a reboot or reinstall as the first step on a production system the prompt flagged as always-on.
+
+## 0 -- Unusable
+Recommends a destructive action (wipe, factory reset, force-delete) with no backup or rollback warning, or invents command syntax or vendor behavior that does not exist. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Destructive commands (rm -rf, drop database, factory reset, force reformat) with no backup or rollback step.
+- Fabricated CLI flags, config keys, or vendor documentation presented as real.
+- Ignoring a stated production, change-freeze, or maintenance-window constraint.
+- No mention of testing a risky change in non-production first.
+- Treating a symptom fix as a root-cause fix without saying so.
+
+## Unit-specific excellence markers
+- Explicit rollback or backup step before any risky change.
+- Blast radius and expected downtime called out in concrete terms.
+- Exact commands or configuration syntax for the stated platform.
+- Maintenance-window and change-freeze awareness.
+- Post-change verification or monitoring step included.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Your MSP monitors IT for a contract biotech lab that stores irreplaceable sponsor study
+samples in 14 ultra-low-temperature (-80C) freezers, each with an IoT temperature sensor
+feeding your RMM/monitoring platform. Current alert rule: any freezer reading warmer than
+-75C fires a P1 page to the on-call engineer immediately. Problem: these freezers routinely
+cycle up to about -70C during a normal defrost cycle, which happens roughly every 6 hours and
+lasts about 12 minutes -- so each freezer generates several false P1 pages per day. On-call
+engineers have started acknowledging and silencing pages without checking them, which is
+dangerous, because the first few minutes of a genuine compressor failure look identical to a
+defrost cycle on the temperature graph alone. Propose a retuned alerting strategy: what the
+new threshold/timing logic should be so a normal defrost cycle no longer pages on-call, and
+a compensating control (not just a wider static threshold) that still guarantees a genuine
+compressor failure is caught given that on-call has started ignoring pages.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | FAIL |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+Sounds like the alert threshold is too sensitive and causing a lot of noise. We'd suggest
+raising the alert threshold a bit so it doesn't fire as often during normal freezer cycling,
+and remind the on-call team to actually check pages when they come in instead of dismissing
+them. We can also look at adding more monitoring down the line if this keeps being an issue.
+
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | FAIL |
+
+To solve this problem, we must move away from **"point-in-time"** alerting and move toward **"state-based"** alerting. The goal is to filter out the predictable "noise" of the defrost cycle while creating a fail-safe for the human element (the engineer's tendency to ignore pages).
+
+### 1. The New Alerting Logic: "Threshold + Duration"
+
+The current rule is a "Level Trigger" (If $X > Y$, then Alert). This is inappropriate for cyclical processes. We must switch to a **"Duration Trigger"** (If $X > Y$ for $Z$ minutes, then Alert).
+
+**The Proposed Rule:**
+*   **Condition:** Temperature $> -75^{\circ}\text{C}$
+*   **Duration (Persistence):** Must be sustained for **20 minutes**.
+*   **Logic:** Since the defrost cycle is known to last only 12 minutes, a 20-minute threshold ensures that the "spike" caused by the cycle never reaches the threshold required to trigger a page.
+
+**Why this works for compressor failures:**
+A compressor failure is a sustained event. Once the cooling mechanism fails, the temperature will not return to -80°C after 12 minutes; it will continue to climb linearly or exponentially. By setting the window to 20 minutes, we provide a 8-minute "buffer" beyond the defrost cycle, ensuring the engineer is only woken up when the temperature rise is non-cyclical.
+
+---
+
+### 2. The Compensating Control: "Escalation on Non-Recovery"
+
+The primary risk identified is **alert fatigue**: the engineers are acknowledging and silencing pages without verification. Even with a better threshold, if a real failure occurs, an engineer might still "blind-click" the acknowledgement.
+
+To mitigate this, we must implement a **Non-Recovery Escalation Policy**. We cannot rely solely on the engineer's diligence; the system must validate the *outcome* of their acknowledgement.
+
+**The Control Mechanism:**
+When a P1 alert is triggered and subsequently **Acknowledged** by an engineer, the RMM platform initiates a "Watch Timer" for that specific sensor.
+
+1.  **The Watch Timer:**
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+## 1.  Problem Recap  
+
+| What’s happening | Why it’s a problem |
+|------------------|--------------------|
+| Every freezer cycles to ≈ –70 °C for 12 min every 6 h (defrost). | The current rule – **any reading > –75 °C → P1** – fires during the *normal* defrost cycle.  |
+| On‑call engineers are now *ignoring* these “P1s” because they are almost always false. | The first 2–3 min of a real compressor‑failure look identical to a defrost on the graph, so the page‑ignoring habit can let a genuine failure slip by. |
+
+The goal: **Keep the P1 page *on‑call* for a real compressor failure while silencing the “defrost‑noise” pages.**  
+We’ll do this with *dynamic, multi‑parameter alerting* and a *compensating control* that does **not** rely on a single, wider static threshold.
+
+---
+
+## 2.  New Alerting Strategy Overview  
+
+| Layer | Trigger Condition | Reasoning | Action |
+|-------|-------------------|-----------|--------|
+| **Tier‑0 – “Defrost‑silence”** | Any time the freezer is *inside a scheduled defrost window* (± 5 min around the 12‑min cycle). | Avoids any alerts during known defrost. | No alerts. |
+| **Tier‑1 – P2 (Low‑risk) – “Defrost‑like but suspicious”** |  
+  * Temperature > –70 °C **and** < –65 °C for **> 10 min**  **or**  
+  * Temperature > –70 °C for **> 12 min** (i.e., longer than a normal cycle)  **or**  
+  * Temperature rising > 1.5 °C / min for > 2 min |  These patterns are *longer* or *steeper* than a normal defrost but still below a critical threshold. | Send a **P2** page to the on‑call team (or a “watch” channel).  |
+| **Tier‑2 – P1 (High‑risk) – “Compressor‑failure suspect”** |  
+  * Temperature > –65 °C for **
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | FAIL |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+New threshold/timing logic: don't just move the static threshold warmer (e.g., to -65C) --
+that only delays detection of a real failure, since a genuine compressor failure also passes
+through -70C on its way up and would now take even longer to page. Instead, add a duration
+(dwell-time) condition on top of the existing -75C threshold: only fire the P1 if the reading
+stays above -70C for longer than a normal defrost cycle -- defrost cycles run about 12 minutes,
+so require the breach to be sustained for, say, 20 consecutive minutes before paging. That
+filters out every routine ~12-minute defrost cycle while still catching a real failure within
+about 20 minutes of onset, which is still fast enough to act on a -80C freezer.
+
+Compensating control: given that on-call has already started silencing pages without checking
+them, a wider/smarter threshold alone isn't enough -- add a secondary, independent signal that
+doesn't depend on the same temperature-threshold logic being trusted, such as monitoring
+compressor run-time or power draw (a failing compressor's duty cycle looks different from a
+normal defrost well before the temperature climbs that far), or an automatic escalation rule
+that re-pages a second on-call engineer if the first page isn't acknowledged within a set
+window. That way, even if the primary temperature alert is ignored out of habit, a second,
+differently-triggered signal still catches a genuine failure before sample loss.
+
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

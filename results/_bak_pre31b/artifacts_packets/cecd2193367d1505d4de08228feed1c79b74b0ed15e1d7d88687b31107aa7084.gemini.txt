@@ -1,0 +1,1028 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Data Analytics -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+Any SQL or analysis logic is correct -- right join type, correct aggregation grain, no double-counting -- and any chart or visualization recommendation avoids deceptive framing (no truncated axes, no cherry-picked ranges). Statistical claims are appropriately hedged (correlation is not stated as causation), and every finding is traceable to the specific numbers given in the prompt rather than invented.
+Example character: a query with the correct join and grain explained, a chart recommendation with the axis explicitly kept honest, and a finding that cites the specific input numbers.
+
+## 7 -- Strong
+The core analysis is correct and the findings are usable, but there is one minor query or logic gap -- an edge case in a join, for instance -- or the chart-framing caveat is left unstated. Nothing here would silently corrupt the result.
+Example character: a correct query with a sound finding that does not explicitly address how the chart avoids visual distortion.
+
+## 5 -- Adequate
+The analysis is directionally correct but the query has a plausible bug (wrong aggregation grain causing double-counting) or the chart recommendation is not checked for distortion before being suggested.
+Example character: a query that looks reasonable but would double-count rows on a one-to-many join.
+
+## 3 -- Weak
+The SQL or logic has a clear correctness bug (wrong join type, missing GROUP BY column), correlation is stated as causation, or a trend is asserted that the given data does not support.
+Example character: a query missing a needed GROUP BY that would silently produce wrong aggregates.
+
+## 0 -- Unusable
+Presents fabricated numbers as if they were query output, or recommends a chart design that is actively deceptive (truncated axis to exaggerate a trend) as best practice. Empty or off-task.
+
+## Unit-specific red flags (deduct hard)
+- SQL or logic bug that would silently double-count or drop rows (wrong join type, missing GROUP BY column).
+- Fabricated numbers presented as if they came from the given dataset.
+- Chart design that would visually mislead (truncated y-axis, cherry-picked time window) recommended without caveat.
+- Correlation stated as causation.
+
+## Unit-specific excellence markers
+- Query or logic correct for the actual grain and join semantics needed.
+- Chart or visualization choice avoids known distortion patterns.
+- Statistical uncertainty or the correlation-versus-causation distinction called out explicitly.
+- Findings traceable to the specific numbers given in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+You're the analyst for a general contractor. Write ANSI-standard, PostgreSQL-compatible SQL
+against the following schema (types shown for clarity):
+
+```sql
+CREATE TABLE projects (
+  project_id      INT PRIMARY KEY,
+  project_name    TEXT,
+  contract_value  NUMERIC
+);
+
+CREATE TABLE change_orders (
+  co_id       INT PRIMARY KEY,
+  project_id  INT REFERENCES projects(project_id),
+  co_amount   NUMERIC
+);
+
+CREATE TABLE invoices (
+  invoice_id      INT PRIMARY KEY,
+  project_id      INT REFERENCES projects(project_id),
+  invoice_amount  NUMERIC
+);
+```
+
+Each project can have MANY change_orders rows and, independently, MANY invoices rows (both
+are one-to-many off of projects; change_orders and invoices have no direct relationship to
+each other). For project_id 101 ("Riverside Office Park"), the data is:
+
+change_orders: CO-1 $50,000, CO-2 $30,000, CO-3 $20,000 (3 rows, true total $100,000).
+invoices: INV-1 $500,000, INV-2 $500,000, INV-3 $500,000, INV-4 $300,000 (4 rows, true total
+$1,800,000).
+
+Write a single query that returns, per project, the total change-order amount and the total
+invoiced amount, both correct, in one result set. Do NOT join projects to change_orders and
+invoices directly in the same query and then SUM both amount columns -- explain specifically
+what goes wrong numerically if you do that for project 101 (show the wrong totals it would
+produce and why), and show the correct query instead. State the general rule for when two
+one-to-many child tables must be aggregated before being joined together.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Do NOT join projects to change_orders and invoices directly in one query and then SUM both
+amount columns. If you do, for project 101 (3 change_orders rows x 4 invoices rows), the join
+produces a 3x4=12-row fan-out, because change_orders and invoices have no relationship to each
+other -- every change-order row gets paired with every invoice row. Summing co_amount over
+those 12 rows repeats each of the 3 change-order amounts 4 times: SUM(co_amount) = 4 x
+($50,000+$30,000+$20,000) = 4 x $100,000 = $400,000, a 4x overstatement of the true $100,000
+total. Summing invoice_amount over the same 12 rows repeats each of the 4 invoice amounts 3
+times: SUM(invoice_amount) = 3 x ($500,000+$500,000+$500,000+$300,000) = 3 x $1,800,000 =
+$5,400,000, a 3x overstatement of the true $1,800,000 total.
+
+Correct query -- aggregate each child table separately before joining:
+
+```sql
+SELECT
+  p.project_id,
+  p.project_name,
+  COALESCE(co.total_co_amount, 0) AS total_co_amount,
+  COALESCE(inv.total_invoiced, 0) AS total_invoiced
+FROM projects p
+LEFT JOIN (
+  SELECT project_id, SUM(co_amount) AS total_co_amount
+  FROM change_orders
+  GROUP BY project_id
+) co ON co.project_id = p.project_id
+LEFT JOIN (
+  SELECT project_id, SUM(invoice_amount) AS total_invoiced
+  FROM invoices
+  GROUP BY project_id
+) inv ON inv.project_id = p.project_id;
+```
+
+For project 101 this returns total_co_amount = $100,000 and total_invoiced = $1,800,000, both
+correct.
+
+General rule: whenever you need totals from TWO different one-to-many child tables hanging off
+the same parent, and the children have no relationship to each other, aggregate each child
+independently (a GROUP BY in a subquery or CTE) before joining the aggregates back to the
+parent. Joining both children directly to the parent in the same query and summing afterward
+will silently double-count (fan out) whenever either child has more than one row per parent.
+
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### The Trap: Joining Two One-to-Many Relationships
+
+If you join `projects` to `change_orders` and `invoices` directly, you create a **Cartesian product** (fan-out) for every matching project.
+
+For Project 101, there are 3 change orders and 4 invoices. When joined, the database produces $3 \times 4 = 12$ rows. Because every change order is matched with every invoice, the totals are multiplied by the cardinality of the opposite table.
+
+**The Incorrect Totals for Project 101:**
+*   **True Change Order Total:** $100,000.
+*   **Calculated Total:** $100,000 \times 4 \text{ (invoices)} = \mathbf{\$400,000}$.
+*   **True Invoice Total:** $1,800,000.
+*   **Calculated Total:** $1,800,000 \times 3 \text{ (change orders)} = \mathbf{\$5,400,000}$.
+
+---
+
+### The Solution: Pre-Aggregation
+
+To ensure accuracy, child tables must be aggregated into summaries before they are joined. The following ANSI-standard query uses Common Table Expressions (CTEs) to calculate the totals independently before joining them to the project.
+
+```sql
+WITH co_totals AS (
+    -- Aggregate change orders first to avoid row multiplication
+    SELECT project_id, 
+           SUM(co_amount) AS total_co_amount 
+    FROM change_orders 
+    GROUP BY project_id
+),
+inv_totals AS (
+    -- Aggregate invoices first to avoid row multiplication
+    SELECT project_id, 
+           SUM(invoice_amount) AS total_invoice_amount 
+    FROM invoices 
+    GROUP BY project_id
+)
+SELECT 
+    p.project_id,
+    p.project_name,
+    COALESCE(c.total_co_amount, 0) AS total_change_orders,
+    COALESCE(i.total_invoice_amount, 0) AS total_invoiced
+FROM projects p
+LEFT JOIN co_totals c ON p.project_id = c.project_id
+LEFT JOIN inv_totals i ON p.project_id = i.project_id
+WHERE p.project_id = 101;
+```
+
+**Results for Project 101:**
+| project_id | project_name | total_change_orders | total_invoiced |
+| :--- | :--- | :--- | :--- |
+| 101 | Riverside Office Park | 100,000.00 | 1,800,000.00 |
+
+---
+
+### General Rule: Aggregation Before Joining
+
+**The Rule:** When a single parent table is joined to two or more child tables that are independently related to it (a "1-to-M-to-1" structure), you **must aggregate the child tables prior to joining**.
+
+If you join the child tables first, the database performs a Cartesian product, multiplying every row from the first child by every row from the second child. Any subsequent `SUM` or `AVG` operations will overstate the value by the product of the row counts ($N \times M$). Pre-aggregation reduces each child to exactly one row per parent, ensuring that the join remains one-to-one and the totals remain mathematically correct.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### The Problem: The "Fan-out" Effect
+
+If you were to join `projects` to `change_orders` and `invoices` in a single flat query, you would create a **Cartesian product** for each project. Because there is no direct relationship between change orders and invoices, the database engine joins every change order row to every invoice row for that project.
+
+For Project 101, the join would produce **12 rows** (3 change orders $\times$ 4 invoices) instead of the expected 4 or 3 rows. This causes the sum to "fan out," multiplying the values by the count of the opposite table.
+
+**The Incorrect Totals for Project 101:**
+*   **Incorrect Total Change Order Amount:** **$400,000**
+    *   *Calculation:* $(50,000 + 30,000 + 20,000) \times 4 \text{ (invoices)} = 400,000$
+*   **Incorrect Total Invoiced Amount:** **$5,400,000**
+    *   *Calculation:* $(500,000 + 500,000 + 500,000 + 300,000) \times 3 \text{ (change orders)} = 5,400,000$
+
+---
+
+### The Correct Query
+
+To get the correct result, you must aggregate the child tables **before** joining them to the parent table. This ensures each project remains a single row in the intermediate result set before the final join.
+
+```sql
+WITH aggregated_co AS (
+    -- Aggregate change orders per project first
+    SELECT 
+        project_id, 
+        SUM(co_amount) AS total_co_amount
+    FROM change_orders
+    GROUP BY project_id
+),
+aggregated_invoices AS (
+    -- Aggregate invoices per project first
+    SELECT 
+        project_id, 
+        SUM(invoice_amount) AS total_invoice_amount
+    FROM invoices
+    GROUP BY project_id
+)
+SELECT 
+    p.project_id,
+    p.project_name,
+    COALESCE(co.total_co_amount, 0) AS total_change_order_amount,
+    COALESCE(inv.total_invoice_amount, 0) AS total_invoiced_amount
+FROM projects p
+LEFT JOIN aggregated_co co ON p.project_id = co.project_id
+LEFT JOIN aggregated_invoices inv ON p.project_id = inv.project_id;
+```
+
+---
+
+### The General Rule
+
+**The Rule:** When a single parent table has multiple independent one-to-many relationships (i.e., multiple "child" tables that do not relate to each other), you must **aggregate the child tables in subqueries or Common Table Expressions (CTEs) before joining them to the parent.** 
+
+If you join them directly, you will trigger a Cartesian product that duplicates the numeric values in your `SUM()` functions, leading to mathematically inflated totals.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**What goes wrong if you join the three tables in one step**
+
+```sql
+SELECT  p.project_id,
+        SUM(co.co_amount)   AS total_change_order_amount,
+        SUM(i.invoice_amount) AS total_invoice_amount
+FROM    projects      p
+JOIN    change_orders co ON p.project_id = co.project_id
+JOIN    invoices      i  ON p.project_id = i.project_id
+GROUP BY p.project_id;
+```
+
+*Why the totals are wrong for `project_id = 101`*  
+
+- `change_orders` has **3** rows (CO‑1, CO‑2, CO‑3).  
+- `invoices` has **4** rows (INV‑1 … INV‑4).  
+
+When the two one‑to‑many joins are performed **before** any aggregation, the join produces a
+Cartesian product for each project:  
+
+```
+rows produced = #change_orders × #invoices
+               = 3 × 4
+               = 12 rows
+```
+
+Each change‑order value is repeated 4 times (once for each invoice) and each invoice value
+is repeated 3 times (once for each change‑order). Consequently:
+
+- `SUM(co.co_amount)` = (50 000 + 30 000 + 20 000) × 4 = **400 000** (instead of the true 100 000)  
+- `SUM(i.invoice_amount)` = (500 000 + 500 000 + 500 000 + 300 000) × 3 = **3 600 000** (instead of the true 1 800 000)
+
+The multiplication factor is the product of the row counts of the two child tables, so the
+aggregated totals are wildly inflated.
+
+**Correct approach – aggregate each child table first, then join**
+
+```sql
+/* 1️⃣  Aggregate change_orders per project */
+WITH co_totals AS (
+    SELECT  project_id,
+            SUM(co_amount) AS total_change_order_amount
+    FROM    change_orders
+    GROUP BY project_id
+),
+
+/* 2️⃣  Aggregate invoices per project */
+inv_totals AS (
+    SELECT  project_id,
+            SUM(invoice_amount) AS total_invoice_amount
+    FROM    invoices
+    GROUP BY project_id
+)
+
+/* 3️⃣  Join the two aggregates (and optionally the projects table) */
+SELECT  p.project_id,
+        p.project_name,
+        COALESCE(co_totals.total_change_order_amount, 0)   AS total_change_order_amount,
+        COALESCE(inv_totals.total_invoice_amount, 0)      AS total_invoice_amount
+FROM    projects p
+LEFT JOIN co_totals  ON p.project_id = co_totals.project_id
+LEFT JOIN inv_totals ON p.project_id = inv_totals.project_id;
+```
+
+*Result for `project_id = 101` (Riverside Office Park)*  
+
+| project_id | project_name        | total_change_order_amount | total_invoice_amount |
+|------------|--------------------|---------------------------|----------------------|
+| 101        | Riverside Office Park | 100 000                  | 1 800 000            |
+
+**General rule**
+
+> **When two child tables are each related to a parent table by a one‑to‑many relationship, you must **aggregate (SUM, COUNT, AVG, …) each child table **before** you join them to the parent (or to each other).**  
+>  
+> If you join the child tables directly to the parent (or to each other) first, the join creates a Cartesian product of the rows from the two child tables for each parent row, causing every aggregated value to be multiplied by the product of the child‑row counts and producing incorrect totals.  
+
+Aggregating first collapses each child set to a single row per parent, so the subsequent join is a simple one‑to‑one (or one‑to‑many with a single aggregated row) and yields the correct totals.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+Here's a query that gets the totals:
+
+```sql
+SELECT p.project_id, SUM(co.co_amount) AS total_co, SUM(i.invoice_amount) AS total_inv
+FROM projects p
+JOIN change_orders co ON co.project_id = p.project_id
+JOIN invoices i ON i.project_id = p.project_id
+GROUP BY p.project_id;
+```
+
+For project 101 this gives total_co = $400,000 in change orders and total_inv = $5,400,000
+invoiced. The GROUP BY p.project_id correctly rolls everything up to the project level, so
+these are the totals to report.
+
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**1.  What goes wrong if you join the three tables directly and then SUM**
+
+If you write something like
+
+```sql
+SELECT p.project_id,
+       SUM(co.co_amount)   AS change_order_total,
+       SUM(i.invoice_amount) AS invoice_total
+FROM   projects          p
+JOIN   change_orders     co ON co.project_id = p.project_id
+JOIN   invoices          i  ON i.project_id = p.project_id
+GROUP BY p.project_id;
+```
+
+the `JOIN` between **change_orders** and **invoices** creates a **Cartesian product** of every change‑order row with every invoice row for the same project.  
+For project 101 the data are
+
+| change_orders | amount |
+|---------------|--------|
+| CO‑1          | 50 000 |
+| CO‑2          | 30 000 |
+| CO‑3          | 20 000 |
+
+| invoices      | amount |
+|---------------|--------|
+| INV‑1         | 500 000 |
+| INV‑2         | 500 000 |
+| INV‑3         | 500 000 |
+| INV‑4         | 300 000 |
+
+The join produces **3 × 4 = 12 rows**.  
+When the `SUM` is evaluated on the joined set it counts each amount **many times**:
+
+*Every change‑order amount is repeated for each invoice* → the three CO amounts are each repeated 4 times.  
+
+```
+SUM(co_amount)  = (50 000+30 000+20 000) × 4
+                = 100 000 × 4
+                = 400 000   ← wrong
+```
+
+*Every invoice amount is repeated for each change‑order* → the four invoice amounts are each repeated 3 times.  
+
+```
+SUM(invoice_amount) = (500 000+500 000+500 000+300 000) × 3
+                    = 1 800 000 × 3
+                    = 5 400 000   ← wrong
+```
+
+So the naïve join returns **$400 000** for change‑orders and **$5,400,000** for invoices – far larger than the true totals of **$100 000** and **$1,800,000**.
+
+---
+
+**2.  The correct query (single result set, one row per project)**  
+
+The safe way is to **aggregate each child table first**, then join the aggregated results to the parent (or directly to the parent if you need the project name).
+
+```sql
+SELECT p.project_id,
+       COALESCE(co.total_co, 0)   AS total_change_order_amount,
+       COALESCE(i.total_invoice, 0) AS total_invoiced_amount
+FROM   projects p
+LEFT JOIN (
+        SELECT project_id,
+               SUM(co_amount) AS total_co
+        FROM   change_orders
+        GROUP BY project_id
+       ) co ON p.project_id = co.project_id
+LEFT JOIN (
+        SELECT project_id,
+               SUM(invoice_amount) AS total_invoice
+        FROM   invoices
+        GROUP BY project_id
+       ) i ON p.project_id = i.project_id;
+```
+
+*What this does*
+
+1. **`change_orders`** are aggregated **once** (`SUM(co_amount)` per `project_id`).  
+2. **`invoices`** are aggregated **once** (`SUM(invoice_amount)` per `project_id`).  
+3. The two aggregated result sets are each joined to `projects` – a **one‑to‑one** relationship after the aggregation, so no duplicate rows are created.
+
+For project 101 the query returns:
+
+| project_id | total_change_order_amount | total_invoiced_amount |
+|------------|---------------------------|-----------------------|
+| 101        | 100 000                   | 1 800 000             |
+
+exactly the true totals.
+
+---
+
+**3.  General rule for aggregating multiple one‑to‑many child tables**
+
+> **When a parent row can be linked to many rows in *different* child tables, you must aggregate each child table **before** you join it to any other table that also derives from the same parent.**  
+> 
+> The reason is that joining the raw child tables creates a Cartesian product of their rows, causing each child‑row to be repeated for every matching row of the other child. That repetition inflates any aggregate (SUM, COUNT, etc.) that is performed after the join.  
+> 
+> The safe pattern is:  
+> 1. Aggregate each child table independently (e.g., `SELECT child_id, SUM(amount) FROM child_table GROUP BY child_id`).  
+> 2. Join the aggregated results to the parent (or to each other) – now each parent‑child relationship is one‑to‑one, so aggregates remain correct.
+
+In short, **aggregate child tables first, then join**, to avoid duplicate‑row inflation.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 🔍 What Goes Wrong: The Cartesian Product (Fan-Out) Trap
+
+If you join `projects` directly to both child tables in one query and `SUM` the amounts, you create an implicit cross-join between the two child tables on the shared parent key. For project 101:
+
+- `change_orders` has **3 rows**
+- `invoices` has **4 rows**
+- The join produces `3 × 4 = 12` intermediate rows per project.
+
+**Numerical impact for Project 101:**
+- Each change order is duplicated **4 times** (once per invoice).  
+  `$50k + $30k + $20k = $100k` → `$100k × 4 = **$400,000**` (❌ Wrong)
+- Each invoice is duplicated **3 times** (once per change order).  
+  `$500k + $500k + $500k + $300k = $1,800,000` → `$1.8M × 3 = **$5,400,000**` (❌ Wrong)
+
+`SUM()` operates on the duplicated intermediate rows, inflating both totals by the row count of the opposite child table. This is the classic **fan-out / cross-join aggregation problem**.
+
+---
+
+### ✅ Correct Query (ANSI-Standard / PostgreSQL-Compatible)
+
+Aggregate each child table independently first, then join the single-row-per-project results to the parent. Common Table Expressions (CTEs) are ANSI-92+ and fully supported in PostgreSQL:
+
+```sql
+WITH change_totals AS (
+    SELECT project_id, SUM(co_amount) AS total_co_amount
+    FROM change_orders
+    GROUP BY project_id
+),
+invoice_totals AS (
+    SELECT project_id, SUM(invoice_amount) AS total_invoice_amount
+    FROM invoices
+    GROUP BY project_id
+)
+SELECT 
+    p.project_id,
+    p.project_name,
+    COALESCE(ct.total_co_amount, 0) AS total_change_orders,
+    COALESCE(it.total_invoice_amount, 0) AS total_invoices
+FROM projects p
+LEFT JOIN change_totals ct  ON p.project_id = ct.project_id
+LEFT JOIN invoice_totals it ON p.project_id = it.project_id
+ORDER BY p.project_id;
+```
+
+**Output for Project 101:**
+| project_id | project_name         | total_change_orders | total_invoices |
+|------------|----------------------|---------------------|----------------|
+| 101        | Riverside Office Park| 100000.00          | 1800000.00    |
+
+*(Note: `COALESCE(..., 0)` ensures projects with zero change orders or invoices still appear with a clean `0` rather than `NULL`. Replace with `NULL` or `INNER JOIN` if your reporting logic dictates.)*
+
+---
+
+### 📜 General Rule for One-to-One/Many Joins with Two+ Child Tables
+
+> **When two or more child tables share the same parent key (one-to-many off a common parent), you must `GROUP BY` and aggregate each child table independently before joining them to the parent (or to each other).**
+
+**Why this rule exists:**
+- Relational algebra treats `JOIN` as a cross-product filtered by equality. Joining two `1:N` children creates an `N₁ × N₂` Cartesian product.
+- Aggregate functions (`SUM`, `COUNT`, `AVG`, etc.) operate on the working set. If rows are duplicated by the join, aggregates are multiplied by the fan-out factor.
+- Pre-aggregating collapses each child table to **one row per parent key**, neutralizing the cross-product and guaranteeing accurate metrics.
+
+**Alternative valid pattern:** Join the two child tables to each other first, then join to the parent. However, pre-aggregating via CTEs/derived tables is the ANSI-recommended best practice because it's logically explicit, index-friendly, and scales cleanly when adding a third child table.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+```sql
+-- First, let's demonstrate the incorrect approach that would produce wrong results:
+-- This query shows what happens if we naively join projects to both child tables:
+
+-- INCORRECT APPROACH (DO NOT USE):
+/*
+SELECT 
+    p.project_id,
+    p.project_name,
+    SUM(co.co_amount) AS total_change_orders,
+    SUM(i.invoice_amount) AS total_invoices
+FROM projects p
+LEFT JOIN change_orders co ON p.project_id = co.project_id
+LEFT JOIN invoices i ON p.project_id = i.project_id
+WHERE p.project_id = 101
+GROUP BY p.project_id, p.project_name;
+*/
+
+-- If we ran the above query on project 101, we would get:
+-- total_change_orders = $100,000 (correct)
+-- total_invoices = $7,200,000 (WRONG!)
+-- Why? Because the cross join of 3 change orders and 4 invoices produces 12 rows
+-- Each invoice gets multiplied by 3 change orders, so each invoice_amount is counted 3 times
+-- $500,000 × 3 + $500,000 × 3 + $500,000 × 3 + $300,000 × 3 = $1,500,000 + $1,500,000 + $1,500,000 + $900,000 = $7,200,000
+
+-- CORRECT APPROACH:
+WITH change_orders_summary AS (
+    SELECT 
+        project_id,
+        SUM(co_amount) AS total_change_orders
+    FROM change_orders
+    GROUP BY project_id
+),
+invoices_summary AS (
+    SELECT 
+        project_id,
+        SUM(invoice_amount) AS total_invoices
+    FROM invoices
+    GROUP BY project_id
+)
+SELECT 
+    p.project_id,
+    p.project_name,
+    COALESCE(cos.total_change_orders, 0) AS total_change_orders,
+    COALESCE(isum.total_invoices, 0) AS total_invoices
+FROM projects p
+LEFT JOIN change_orders_summary cos ON p.project_id = cos.project_id
+LEFT JOIN invoices_summary isum ON p.project_id = isum.project_id
+ORDER BY p.project_id;
+```
+
+**Explanation of the numerical error:**
+
+When we join projects directly to both change_orders and invoices in a single query, we create a Cartesian product (cross join) between the two child tables for each project. For project 101:
+- 3 change_orders rows
+- 4 invoice rows
+- Result: 3 × 4 = 12 rows total
+- Each invoice gets counted 3 times (once for each change order)
+- Each change order gets counted 4 times (once for each invoice)
+- The invoice total becomes: ($500,000 × 3) + ($500,000 × 3) + ($500,000 × 3) + ($300,000 × 3) = $7,200,000
+- The correct total should be $1,800,000
+
+**General Rule:**
+Two one-to-many child tables must be aggregated (summed) before being joined to their parent table when:
+1. Both child tables have a one-to-many relationship with the same parent
+2. The parent table needs to be joined to both child tables in the same query
+3. The aggregation of each child table's amounts should not be affected by the cardinality of the other child table
+
+This rule prevents the multiplication of amounts that occurs when Cartesian products are created through multiple one-to-many joins.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+Here is the analysis and the solution.
+
+### The Problem: Row Multiplication (The Cartesian Product)
+
+If you write a query that joins the raw `change_orders` and `invoices` tables directly to `projects` and attempts to `SUM` both columns simultaneously, you create a **Cartesian product** (or cross join) relative to the child tables.
+
+Because the two child tables are independent of each other, SQL must pair every row from `change_orders` with every row from `invoices` to satisfy the join condition.
+
+**The Math for Project 101:**
+*   `change_orders` has **3** rows.
+*   `invoices` has **4** rows.
+*   The JOIN creates $3 \times 4 = \mathbf{12}$ rows in the result set.
+
+**What goes wrong numerically:**
+1.  **Change Orders:** Every Change Order amount is repeated once for every Invoice row (4 times).
+    *   True Total: $\$100,000$
+    *   Wrong Total: $\$100,000 \times 4 = \mathbf{\$400,000}$
+2.  **Invoices:** Every Invoice amount is repeated once for every Change Order row (3 times).
+    *   True Total: $\$1,800,000$
+    *   Wrong Total: $\$1,800,000 \times 3 = \mathbf{\$5,400,000}$
+
+### The General Rule
+
+**When two child tables have independent one-to-many relationships to the same parent, you must aggregate (sum/group) each child table separately *before* joining them to the parent.**
+
+You cannot sum two "many" sides of a join simultaneously; doing so multiplies the values by the row count of the *other* sibling table.
+
+---
+
+### The Correct Query
+
+To fix this, we aggregate the data into derived tables (subqueries) first, collapsing the many-to-many explosion back into single rows per project. We then `LEFT JOIN` these pre-aggregated totals to the `projects` table.
+
+```sql
+SELECT 
+    p.project_id,
+    p.project_name,
+    COALESCE(co_agg.total_co_amount, 0) AS total_change_orders,
+    COALESCE(inv_agg.total_invoice_amount, 0) AS total_invoiced
+FROM 
+    projects p
+LEFT JOIN 
+    (
+        SELECT 
+            project_id, 
+            SUM(co_amount) AS total_co_amount
+        FROM 
+            change_orders
+        GROUP BY 
+            project_id
+    ) co_agg ON p.project_id = co_agg.project_id
+LEFT JOIN 
+    (
+        SELECT 
+            project_id, 
+            SUM(invoice_amount) AS total_invoice_amount
+        FROM 
+            invoices
+        GROUP BY 
+            project_id
+    ) inv_agg ON p.project_id = inv_agg.project_id;
+```
+
+### Why this works:
+1.  **Subquery `co_agg`**: Reduces the 3 rows of CO-1 to a single row with value `$100,000`.
+2.  **Subquery `inv_agg`**: Reduces the 4 rows of INV-1 to a single row with value `$1,800,000`.
+3.  **Final JOIN**: Joins the parent to these two single-row summaries. No row multiplication occurs because the data has already been collapsed.
+4.  **`COALESCE`**: Ensures that if a project has no Change Orders or no Invoices, it displays `$0.00` rather than `NULL`.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### Analysis: The Join Trap
+
+If you naively join `change_orders` and `invoices` to `projects` in the same `FROM` clause, you trigger a **row explosion** (Cartesian product of the children).
+
+For **Project 101**:
+*   **Change Orders:** 3 rows
+*   **Invoices:** 4 rows
+
+A direct join (`projects` → `change_orders` → `invoices`) pairs every change order with every invoice.
+*   **Resulting Row Count:** 3 × 4 = **12 rows**.
+
+Because the values repeat across these 12 rows, the `SUM` functions multiply the true totals:
+*   **Wrong Total Change Order:** $100,000 (true sum) × 4 (invoice count) = **$400,000**
+*   **Wrong Total Invoiced:** $1,800,000 (true sum) × 3 (change order count) = **$5,400,000**
+
+### The General Rule
+When joining two independent **one-to-many** child tables to a common parent, you must **aggregate each child table individually to a single row per parent key *before* joining**. This prevents the children from multiplying each other's rows.
+
+### The Correct Query
+
+The following ANSI-standard, PostgreSQL-compatible query aggregates the child tables in Common Table Expressions (CTEs) before joining them to the parent. This ensures correct summation without row duplication.
+
+```sql
+WITH change_order_totals AS (
+    SELECT project_id, SUM(co_amount) AS total_co_amount
+    FROM change_orders
+    GROUP BY project_id
+),
+invoice_totals AS (
+    SELECT project_id, SUM(invoice_amount) AS total_invoice_amount
+    FROM invoices
+    GROUP BY project_id
+)
+SELECT
+    p.project_id,
+    p.project_name,
+    p.contract_value,
+    COALESCE(c.total_co_amount, 0) AS total_change_order_amount,
+    COALESCE(i.total_invoice_amount, 0) AS total_invoiced_amount
+FROM projects p
+LEFT JOIN change_order_totals c ON p.project_id = c.project_id
+LEFT JOIN invoice_totals i ON p.project_id = i.project_id;
+```
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+## The Trap: Why a Naive Join Produces Wrong Numbers
+
+If you write a query that joins `projects`, `change_orders`, and `invoices` in a single pass and sums the amount columns together, you will get a **Cartesian product** (cross-product) between the two child tables.
+
+Every row in `change_orders` will be paired with every row in `invoices` for the same project. When you then apply `SUM()`, it aggregates over that inflated row count, multiplying both totals.
+
+### The Wrong Query
+
+```sql
+SELECT
+    p.project_id,
+    SUM(co.co_amount) AS total_change_order_amount,
+    SUM(inv.invoice_amount) AS total_invoiced_amount
+FROM projects p
+JOIN change_orders co ON p.project_id = co.project_id
+JOIN invoices inv ON p.project_id = inv.project_id
+GROUP BY p.project_id;
+```
+
+### The Numerical Failure for Project 101
+
+For Project 101, the join produces **12 rows** ($3 \text{ change orders} \times 4 \text{ invoices}$). Here is exactly what the database calculates:
+
+1.  **Change Order Total:** Each of the 3 CO rows is repeated 4 times (once for every invoice row).
+    *   Calculation: $(50,000 + 30,000 + 20,000) \times 4 = 100,000 \times 4$
+    *   **Wrong Result: $400,000** (True value: $100,000)
+2.  **Invoice Total:** Each of the 4 Invoice rows is repeated 3 times (once for every CO row).
+    *   Calculation: $(500,000 + 500,000 + 500,000 + 300,000) \times 3 = 1,800,000 \times 3$
+    *   **Wrong Result: $5,400,000** (True value: $1,800,000)
+
+This error compounds with larger projects. A project with 10 COs and 20 invoices would produce 200 rows before summing, inflating totals by a factor of 200x relative to the unique combinations.
+
+---
+
+## The Correct Query
+
+To fix this, we must **aggregate each one-to-many relationship independently** in separate CTEs (Common Table Expressions) *before* joining them to the `projects` table. This ensures each sum runs over the correct number of rows.
+
+```sql
+WITH change_order_totals AS (
+    SELECT
+        project_id,
+        SUM(co_amount) AS total_co_amount
+    FROM change_orders
+    GROUP BY project_id
+),
+invoice_totals AS (
+    SELECT
+        project_id,
+        SUM(invoice_amount) AS total_invoice_amount
+    FROM invoices
+    GROUP BY project_id
+)
+SELECT
+    p.project_id,
+    co.total_co_amount,
+    inv.total_invoice_amount
+FROM projects p
+LEFT JOIN change_order_totals co ON p.project_id = co.project_id
+LEFT JOIN invoice_totals inv ON p.project_id = inv.project_id;
+```
+
+### Why This Works
+1.  **`change_order_totals`**: Aggregates `change_orders` into a single row per project ($3$ rows $\to$ $1$ row).
+2.  **`invoice_totals`**: Aggregates `invoices` into a single row per project ($4$ rows $\to$ $1$ row).
+3.  **Final Join**: The two CTEs join on `project_id` to produce exactly **one output row per project**. No cross-product occurs because each child table has already been collapsed to a single summary row.
+
+### Verified Output for Project 101
+
+| project_id | total_co_amount | total_invoice_amount |
+| :--- | :--- | :--- |
+| 101 | 100,000 | 1,800,000 |
+
+---
+
+## The General Rule
+
+**Rule:** When a parent table has two or more independent one-to-many child tables that must be aggregated together in a result set, **never join the child tables to the parent in a single query and then aggregate across them.**
+
+Instead, always follow this pattern:
+1.  **Aggregate independently:** Run separate `GROUP BY` queries (or CTEs/subqueries) for each child table to produce a summary row per parent key.
+2.  **Join the summaries:** Join the resulting summary tables back to the parent (or to each other) using the common key.
+
+**Why:** If you join un-aggregated one-to-many tables directly, the database performs a cross-product multiplication of row counts before aggregation. The resulting sums are inflated by the product of the cardinality of the child tables ($M \times N$). Pre-aggregation eliminates the multiplication factor, preserving the true total for each dimension.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**What would happen if you joined the two child tables directly and summed the two columns in one go?**
+
+```sql
+-- BAD – produces a Cartesian‑product of the child tables
+SELECT
+    p.project_id,
+    SUM(co.co_amount)        AS wrong_co_total,
+    SUM(inv.invoice_amount)  AS wrong_inv_total
+FROM projects p
+LEFT JOIN change_orders co ON co.project_id = p.project_id
+LEFT JOIN invoices      inv ON inv.project_id = p.project_id
+GROUP BY p.project_id;
+```
+
+| project_id | wrong_co_total | wrong_inv_total |
+|------------|----------------|-----------------|
+| 101        | 400,000.00     | 5,400,000.00    |
+
+*Why are these numbers wrong?*  
+- `change_orders` has **3** rows for project 101.  
+- `invoices` has **4** rows for the same project.  
+
+When the two child tables are joined to `projects`, each of the 3 change‑order rows is paired with **every** invoice row, producing **3 × 4 = 12** rows.  
+
+The `SUM(co.co_amount)` therefore adds the change‑order amount 4 times (once per invoice), giving **100 000 × 4 = 400 000**.  
+Similarly, `SUM(inv.invoice_amount)` adds the invoice amount 3 times, giving **1 800 000 × 3 = 5 400 000**.  
+
+This “cross‑product” inflation is the classic double‑counting problem that arises whenever two one‑to‑many child tables are joined directly to a parent.
+
+---
+
+## Correct query – aggregate each child first, then join
+
+```sql
+SELECT
+    p.project_id,
+    p.project_name,
+    co.total_co_amount,
+    inv.total_invoice_amount
+FROM projects p
+LEFT JOIN (
+        SELECT project_id,
+               SUM(co_amount) AS total_co_amount
+        FROM change_orders
+        GROUP BY project_id
+     ) co ON co.project_id = p.project_id
+LEFT JOIN (
+        SELECT project_id,
+               SUM(invoice_amount) AS total_invoice_amount
+        FROM invoices
+        GROUP BY project_id
+     ) inv ON inv.project_id = p.project_id;
+```
+
+Result for project 101:
+
+| project_id | project_name            | total_co_amount | total_invoice_amount |
+|------------|-------------------------|-----------------|----------------------|
+| 101        | Riverside Office Park  | 100,000.00      | 1,800,000.00         |
+
+No cross‑product occurs because each child table is collapsed to a single row per project before the joins.
+
+---
+
+## General rule
+
+**When a parent table has *two* or more one‑to‑many child tables, you must first aggregate each child table (or otherwise reduce it to a single row per parent) before joining those results together.**  
+
+Otherwise, the join will produce a Cartesian product of the child rows, and any aggregate over the joined result will count each child row as many times as there are rows in the other child table. This double‑counting inflates totals and skews any derived metrics.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

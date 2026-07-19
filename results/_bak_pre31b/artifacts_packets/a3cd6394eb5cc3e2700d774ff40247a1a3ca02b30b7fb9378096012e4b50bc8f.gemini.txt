@@ -1,0 +1,657 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+You're writing a compliance-audit query against a USDA-inspected poultry plant's
+lot-tracking database (PostgreSQL). Schema:
+
+- `lots(lot_id INT PRIMARY KEY, product_line VARCHAR, production_date DATE)`
+- `scan_events(event_id INT PRIMARY KEY, lot_id INT REFERENCES lots(lot_id),
+  station VARCHAR, scanned_at TIMESTAMP)`
+- `recalls(recall_id INT PRIMARY KEY, lot_id INT REFERENCES lots(lot_id),
+  recall_date DATE, reason VARCHAR)`
+
+USDA rules require every lot to have at least 3 recorded scan checkpoints (intake,
+processing, shipping). A lot with fewer than 3 scan_events rows is a documentation gap that
+is itself a compliance finding, even if the lot was never recalled and the product shipped
+fine.
+
+Write a single SQL query that returns every lot produced in the last 24 months that has:
+(a) zero matching rows in `recalls`, AND (b) fewer than 3 rows in `scan_events` -- including
+lots with ZERO scan_events at all, which is the worst version of this gap. Return
+`lot_id`, `product_line`, `production_date`, and the scan-event count, ordered by
+`production_date` ascending (oldest gap first).
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM lots l
+LEFT JOIN scan_events se
+    ON l.lot_id = se.lot_id
+WHERE l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM recalls r
+      WHERE r.lot_id = l.lot_id
+  )
+GROUP BY l.lot_id, l.product_line, l.production_date
+HAVING COUNT(se.event_id) < 3
+ORDER BY l.production_date ASC;
+```
+
+**Key design choices for audit compliance:**
+- `LEFT JOIN` on `scan_events` ensures lots with **zero** scan rows are still returned (the `COUNT(se.event_id)` safely evaluates to `0` rather than dropping the row).
+- `NOT EXISTS` for recalls is the standard anti-join pattern in PostgreSQL; it's more performant than `NOT IN` and immune to NULL-related false positives.
+- `HAVING COUNT(se.event_id) < 3` filters after aggregation, capturing 0, 1, or 2 scans in one pass.
+- `CURRENT_DATE - INTERVAL '24 months'` is a rolling window that auto-adjusts as the audit runs, avoiding hardcoded cutoffs that could miss recent lots on month boundaries.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+Here is the single SQL query written for PostgreSQL that meets all your compliance criteria.
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM lots l
+LEFT JOIN scan_events se ON l.lot_id = se.lot_id
+WHERE
+    -- 1. Timeframe: Produced in the last 24 months
+    l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+    -- 2. Recall Status: Zero matching rows in recalls
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM recalls r 
+        WHERE r.lot_id = l.lot_id
+    )
+GROUP BY
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING
+    -- 3. Documentation Gap: Fewer than 3 scan events (including 0)
+    COUNT(se.event_id) < 3
+ORDER BY
+    l.production_date ASC;
+```
+
+### Key Logic Explanation:
+*   **`LEFT JOIN scan_events`**: This is critical. An `INNER JOIN` would exclude lots with 0 events. By using a `LEFT JOIN`, we retain the lot even if there are no events, allowing us to identify the "zero events" gap.
+*   **`NOT EXISTS`**: This efficiently filters out any lot that appears in the `recalls` table.
+*   **`COUNT(se.event_id)`**: We count the child table's primary key. If a lot has 0 events, the join results in a row with NULLs for `se` columns, and `COUNT` correctly returns 0.
+*   **`HAVING COUNT < 3`**: This filters the aggregated results to find only those gaps (0, 1, or 2 events) while excluding compliant lots (3+ events).
+*   **`INTERVAL '24 months'`**: Standard PostgreSQL syntax for calculating the rolling date window.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+Here’s a one‑statement solution that satisfies every requirement:
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM
+    lots AS l
+LEFT JOIN
+    scan_events AS se
+    ON se.lot_id = l.lot_id
+WHERE
+    -- only lots produced in the last 24 months
+    l.production_date >= current_date - INTERVAL '24 months'
+    -- the lot must have *no* recall at all
+    AND NOT EXISTS (SELECT 1
+                    FROM recalls AS r
+                    WHERE r.lot_id = l.lot_id)
+GROUP BY
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING
+    -- fewer than 3 scan checkpoints (0, 1, or 2)
+    COUNT(se.event_id) < 3
+ORDER BY
+    l.production_date ASC;          -- oldest gap first
+```
+
+**Why this works**
+
+| Step | What it does | Why it’s needed |
+|------|--------------|-----------------|
+| `LEFT JOIN scan_events` | Pulls in any checkpoints for the lot | Needed to count them, including 0 |
+| `COUNT(se.event_id)` | Counts non‑NULL event IDs | Gives 0, 1, 2, … |
+| `HAVING COUNT(se.event_id) < 3` | Keeps only lots with <3 checkpoints | Matches the USDA rule |
+| `NOT EXISTS (SELECT 1 FROM recalls …)` | Filters out any lot that has a recall record | Only “zero‑recall” lots are returned |
+| `l.production_date >= current_date - INTERVAL '24 months'` | Restricts to the last 24 months | The audit window |
+| `ORDER BY l.production_date ASC` | Oldest gaps appear first | Makes the report readable |
+
+The query returns **`lot_id`, `product_line`, `production_date`, and `scan_event_count`** for every lot that meets all three criteria, including those that never had any scan events.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+**SQL (single statement)**  
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count          -- 0, 1 or 2
+FROM   lots          AS l
+LEFT JOIN scan_events AS se
+       ON se.lot_id = l.lot_id                     -- keep lots with 0 scans
+WHERE  l.production_date >= (CURRENT_DATE - INTERVAL '24 months')   -- last 24 mo
+  AND  NOT EXISTS (SELECT 1 FROM recalls r WHERE r.lot_id = l.lot_id)   -- no recall
+GROUP BY
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING COUNT(se.event_id) < 3                     -- fewer than 3 checkpoints
+ORDER BY l.production_date ASC;                  -- oldest gap first
+```
+
+**Explanation**
+
+| Requirement | How it’s satisfied |
+|-------------|--------------------|
+| **Lots produced in the last 24 months** | `l.production_date >= (CURRENT_DATE - INTERVAL '24 months')` |
+| **Zero rows in `recalls`** | `NOT EXISTS (SELECT 1 FROM recalls r WHERE r.lot_id = l.lot_id)` |
+| **Fewer than 3 rows in `scan_events` (including 0)** | `HAVING COUNT(se.event_id) < 3` – `COUNT` returns 0 when a lot has no scan rows |
+| **Return `lot_id`, `product_line`, `production_date`, and the scan‑event count** | Selected columns; `COUNT(se.event_id)` is aliased as `scan_event_count` |
+| **Ordered by `production_date` ascending** | `ORDER BY l.production_date ASC` |
+
+The query uses a `LEFT JOIN` to `scan_events` so that lots with **zero** scan rows are retained, then aggregates with `COUNT`. The `HAVING` clause filters to those with fewer than three scans, and the `NOT EXISTS` clause guarantees the lot has no recall record. The result set is thus exactly the set of undocumented gaps that USDA would flag.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+Here's the SQL query to identify lots with documentation gaps that meet your compliance criteria:
+
+```sql
+SELECT 
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM lots l
+LEFT JOIN scan_events se ON l.lot_id = se.lot_id
+WHERE l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+    AND l.lot_id NOT IN (SELECT lot_id FROM recalls)
+GROUP BY l.lot_id, l.product_line, l.production_date
+HAVING COUNT(se.event_id) < 3
+ORDER BY l.production_date ASC;
+```
+
+This query:
+1. Joins `lots` with `scan_events` using a LEFT JOIN to include lots with zero scan events
+2. Filters for lots produced in the last 24 months
+3. Excludes lots that appear in the `recalls` table using `NOT IN`
+4. Groups by lot details to count scan events per lot
+5. Uses `HAVING` to filter for lots with fewer than 3 scan events
+6. Orders results by production date ascending to show oldest gaps first
+
+The query will return lots with 0, 1, or 2 scan events, which all represent documentation gaps requiring compliance attention.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+```sql
+SELECT 
+    l.lot_id, 
+    l.product_line, 
+    l.production_date, 
+    COUNT(s.event_id) AS scan_event_count
+FROM 
+    lots l
+LEFT JOIN 
+    scan_events s ON l.lot_id = s.lot_id
+WHERE 
+    -- Filter for lots produced in the last 24 months
+    l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+    -- Requirement (a): Lot must NOT exist in the recalls table
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM recalls r 
+        WHERE r.lot_id = l.lot_id
+    )
+GROUP BY 
+    l.lot_id, 
+    l.product_line, 
+    l.production_date
+HAVING 
+    -- Requirement (b): Fewer than 3 scan events (includes 0 due to LEFT JOIN)
+    COUNT(s.event_id) < 3
+ORDER BY 
+    l.production_date ASC;
+```
+
+### Explanation:
+1.  **`LEFT JOIN scan_events`**: We use a `LEFT JOIN` instead of an `INNER JOIN` to ensure that lots with **zero** scan events are included in the results. If we used an inner join, lots without any scans would be filtered out entirely.
+2.  **`COUNT(s.event_id)`**: By counting the specific primary key of the `scan_events` table rather than using `COUNT(*)`, we correctly return `0` for lots that have no matching rows in the scan table (since `COUNT` ignores `NULL` values produced by the left join).
+3.  **`NOT EXISTS`**: This is the most efficient way to handle requirement (a). It checks the `recalls` table and excludes any `lot_id` that has a corresponding entry there, ensuring we only audit "clean" lots that are missing documentation.
+4.  **`INTERVAL '24 months'`**: This is standard PostgreSQL syntax to handle the rolling date window required by the audit.
+5.  **`HAVING`**: Since we are filtering based on an aggregate (`COUNT`), we must use the `HAVING` clause rather than the `WHERE` clause for the scan count requirement.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_count
+FROM lots l
+LEFT JOIN scan_events se ON se.lot_id = l.lot_id
+LEFT JOIN recalls r ON r.lot_id = l.lot_id
+WHERE l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+  AND r.recall_id IS NULL
+GROUP BY l.lot_id, l.product_line, l.production_date
+HAVING COUNT(se.event_id) < 3
+ORDER BY l.production_date ASC;
+```
+
+Why LEFT JOIN, not INNER JOIN, on `scan_events`: an INNER JOIN would require at least one
+matching scan_events row to keep a lot in the result at all, so a lot with ZERO scan events
+-- the worst version of the documentation gap this query is supposed to find -- would be
+silently dropped entirely instead of surfaced. LEFT JOIN keeps every lot in `lots` regardless
+of whether it has scan events, and `COUNT(se.event_id)` correctly returns 0 for a lot with no
+matching rows (COUNT of a column ignores NULLs, so an unmatched LEFT JOIN row counts as 0,
+not 1).
+
+Why HAVING, not WHERE, for the scan-count filter: `COUNT(se.event_id)` is an aggregate that
+isn't computed until after grouping; WHERE clauses are evaluated before GROUP BY/aggregation,
+so `WHERE COUNT(...) < 3` is invalid SQL. The count filter has to go in a HAVING clause, which
+runs after the GROUP BY aggregates the rows.
+
+The "not recalled" condition is also a LEFT JOIN/anti-join pattern (`LEFT JOIN recalls r ...
+WHERE r.recall_id IS NULL`) for the same reason -- an INNER JOIN to recalls would only keep
+lots that already have a recall, the opposite of what's needed.
+
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM
+    lots l
+LEFT JOIN
+    scan_events se ON l.lot_id = se.lot_id
+LEFT JOIN
+    recalls r ON l.lot_id = r.lot_id
+WHERE
+    l.production_date >= (NOW() - INTERVAL '24 MONTHS')::DATE
+    AND r.recall_id IS NULL
+GROUP BY
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING
+    COUNT(se.event_id) < 3
+ORDER BY
+    l.production_date ASC;
+```
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM lots l
+LEFT JOIN scan_events se
+    ON l.lot_id = se.lot_id
+WHERE
+    l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+    AND NOT EXISTS (
+        SELECT 1
+        FROM recalls r
+        WHERE r.lot_id = l.lot_id
+    )
+GROUP BY
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING
+    COUNT(se.event_id) < 3
+ORDER BY
+    l.production_date ASC;
+```
+
+### Key Logic Explained
+
+*   **`LEFT JOIN scan_events`**: Ensures lots with **zero** scan events are included in the result set. A `LEFT JOIN` preserves the lot row even when no matching scan events exist, allowing `COUNT(se.event_id)` to return `0` (which triggers the `< 3` gap finding).
+*   **`COUNT(se.event_id)`**: Used instead of `COUNT(*)`. Since `event_id` is `NULL` for unmatched `LEFT JOIN` rows, `COUNT` ignores them, accurately reflecting the actual number of checkpoints recorded (0, 1, or 2).
+*   **`NOT EXISTS (recalls)`**: Excludes any lot that has been associated with a recall record, satisfying condition (a).
+*   **`HAVING COUNT(se.event_id) < 3`**: Filters the grouped results to only include documentation gaps (fewer than the required 3 checkpoints), satisfying condition (b).
+*   **`CURRENT_DATE - INTERVAL '24 months'`**: Restricts the audit window to the last 24 months.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+Here is the PostgreSQL query to identify the compliance gaps based on your schema and requirements.
+
+```sql
+SELECT
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM
+    lots l
+LEFT JOIN
+    scan_events se ON l.lot_id = se.lot_id
+WHERE
+    -- Filter for lots produced in the last 24 months
+    l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+    -- Condition A: Exclude lots that have been recalled
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM recalls r 
+        WHERE r.lot_id = l.lot_id
+    )
+GROUP BY
+    l.lot_id, 
+    l.product_line, 
+    l.production_date
+HAVING
+    -- Condition B: Fewer than 3 scan events (0, 1, or 2)
+    COUNT(se.event_id) < 3
+ORDER BY
+    l.production_date ASC;
+```
+
+### Explanation of Logic
+
+1.  **`LEFT JOIN scan_events`**: We start with the `lots` table and left join to `scan_events`. This is critical because we need to include lots that have **zero** scan events (which would result in `NULL` values for the scan columns).
+2.  **`WHERE ... INTERVAL '24 months'`**: Filters the `lots` to only those produced within the relevant audit window.
+3.  **`NOT EXISTS (...)`**: This acts as an anti-join to filter out any lot that appears in the `recalls` table, satisfying condition (a).
+4.  **`COUNT(se.event_id)`**: We count the `event_id` from the `scan_events` table rather than `COUNT(*)`.
+    *   If a lot has scans, it counts the rows.
+    *   If a lot has **no** scans (due to the `LEFT JOIN`), the `event_id` is `NULL`. `COUNT()` ignores `NULL`s, resulting in a count of **0**. This correctly identifies the "worst version of the gap."
+5.  **`HAVING COUNT(se.event_id) < 3`**: Filters the grouped results to only show lots with 0, 1, or 2 scans.
+6.  **`ORDER BY`**: Sorts the oldest gaps first, as requested.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+```sql
+SELECT 
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM 
+    lots l
+LEFT JOIN 
+    scan_events se 
+    ON se.lot_id = l.lot_id
+LEFT JOIN 
+    recalls r 
+    ON r.lot_id = l.lot_id
+WHERE 
+    l.production_date >= (CURRENT_DATE - INTERVAL '24 months')
+    AND r.lot_id IS NULL                -- (a) no matching row in recalls
+GROUP BY 
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING 
+    COUNT(se.event_id) < 3               -- (b) fewer than 3 scan events (including zero)
+ORDER BY 
+    l.production_date ASC;
+```
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+
+Here's the query that satisfies all your compliance conditions:
+
+```sql
+SELECT 
+    l.lot_id,
+    l.product_line,
+    l.production_date,
+    COUNT(se.event_id) AS scan_event_count
+FROM lots l
+LEFT JOIN scan_events se 
+    ON l.lot_id = se.lot_id
+WHERE l.production_date >= CURRENT_DATE - INTERVAL '24 months'
+  AND NOT EXISTS (
+      SELECT 1 FROM recalls r WHERE r.lot_id = l.lot_id
+  )
+GROUP BY 
+    l.lot_id,
+    l.product_line,
+    l.production_date
+HAVING COUNT(se.event_id) < 3
+ORDER BY 
+    l.production_date ASC;
+```
+
+### Key Design Notes:
+1. **`LEFT JOIN` + `COUNT(se.event_id)`**: Using a `LEFT JOIN` ensures lots with **zero** scans aren't filtered out. `COUNT(se.event_id)` only counts non-`NULL` event IDs, correctly returning `0` for lots with no scan rows (whereas `COUNT(*)` would incorrectly return `1`).
+2. **`NOT EXISTS`**: Efficiently filters out any lot that appears in the `recalls` table, regardless of recall volume.
+3. **`HAVING` vs `WHERE`**: The scan count filter must live in `HAVING` since it's an aggregate over the joined rows.
+4. **Date Range**: `CURRENT_DATE - INTERVAL '24 months'` cleanly captures the rolling 24-month window. PostgreSQL evaluates this relative to the query execution time.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-2 | PASS |
+| regex-0 | FAIL |
+| regex-1 | FAIL |
+
+```sql
+SELECT lot_id, product_line, production_date, COUNT(*)
+FROM lots
+JOIN scan_events ON scan_events.lot_id = lots.lot_id
+WHERE production_date >= CURRENT_DATE - INTERVAL '24 months'
+  AND COUNT(*) < 3
+  AND lot_id NOT IN (SELECT lot_id FROM recalls)
+ORDER BY production_date;
+```
+This joins the lots to their scan events and filters out any lot that's been recalled or has
+fewer than 3 scans.
+
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

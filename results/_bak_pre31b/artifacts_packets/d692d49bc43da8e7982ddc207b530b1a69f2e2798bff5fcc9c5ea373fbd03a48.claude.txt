@@ -1,0 +1,1494 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# IT Infrastructure -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The diagnosis or design is correct and tied to the specific systems, symptoms, and constraints given, with exact commands or configuration for the stated platform rather than generic advice. It includes a rollback or backup step before any risky change, quantifies blast radius and expected downtime, and is calibrated about what still needs on-site or live verification. A maintenance-window or change-freeze constraint mentioned in the prompt is respected, not ignored.
+Example character: a targeted fix with the exact command sequence, a stated rollback step, and a note on which part of the environment is affected.
+
+## 7 -- Strong
+The technical recommendation is sound and directly usable, with correct commands or configuration for the stated platform. It is missing one of: an explicit rollback plan, a quantified blast-radius/downtime estimate, or a post-change verification step. Nothing here would misdiagnose the problem.
+Example character: a correct fix for the stated symptom that does not spell out how to undo it if it goes wrong.
+
+## 5 -- Adequate
+The direction is correct but the advice reads as a generic troubleshooting checklist rather than being tailored to the specific hardware, software, or symptoms given. An engineer would need to fill in the exact commands and confirm the environment before acting.
+Example character: "check logs, restart the service, verify connectivity" offered without adapting to the platform named in the prompt.
+
+## 3 -- Weak
+The answer misdiagnoses the stated problem, ignores an explicit constraint (no maintenance window, no downtime allowed, specific hardware), or jumps to a disruptive fix without trying safer steps first.
+Example character: recommends a reboot or reinstall as the first step on a production system the prompt flagged as always-on.
+
+## 0 -- Unusable
+Recommends a destructive action (wipe, factory reset, force-delete) with no backup or rollback warning, or invents command syntax or vendor behavior that does not exist. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Destructive commands (rm -rf, drop database, factory reset, force reformat) with no backup or rollback step.
+- Fabricated CLI flags, config keys, or vendor documentation presented as real.
+- Ignoring a stated production, change-freeze, or maintenance-window constraint.
+- No mention of testing a risky change in non-production first.
+- Treating a symptom fix as a root-cause fix without saying so.
+
+## Unit-specific excellence markers
+- Explicit rollback or backup step before any risky change.
+- Blast radius and expected downtime called out in concrete terms.
+- Exact commands or configuration syntax for the stated platform.
+- Maintenance-window and change-freeze awareness.
+- Post-change verification or monitoring step included.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Your MSP supports IT for a remote drilling rig site whose only network backhaul is a
+VSAT satellite link (2 Mbps up / 10 Mbps down), shared with the SCADA/drilling-telemetry
+systems. This month's Windows Server 2022 cumulative security update needs to be deployed
+to the rig's 14 domain-joined endpoints, including the domain controller that authenticates
+the SCADA operator workstations. The rig runs on a 14-day hitch schedule (crews rotate in
+and out every 14 days), and the site's only approved maintenance window is a 4-hour block
+during the day-to-night crew changeover, once per hitch, because the rig cannot tolerate
+degraded authentication or network performance while drilling operations are active at any
+other time. Pushing the update to all 14 endpoints at once over the VSAT link would saturate
+the link and disrupt SCADA telemetry. Write a patch-window runbook: the pre-patch step to
+take before touching anything, how you sequence the 14 endpoints given the bandwidth
+constraint, and how the plan fits the 14-day hitch cadence.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+**Patch-Window Runbook – Remote Drilling Rig (VSAT 2 Mbps ↑ / 10 Mbps ↓)**  
+**Objective:** Deploy the current Windows Server 2022 cumulative security update to all 14 domain‑joined endpoints (including the domain controller) without degrading SCADA/drilling‑telemetry performance.  
+
+**Key Constraints**  
+| Constraint | Impact |
+|------------|--------|
+| VSAT link shared with SCADA telemetry (2 Mbps ↑ / 10 Mbps ↓) | Any large concurrent download will saturate the link and cause telemetry latency or loss. |
+| Only 4‑hour maintenance window per 14‑day hitch (crew changeover) | All patch activities must be completed inside this window; no “spill‑over” into drilling hours. |
+| Domain Controller (DC) is critical for SCADA operator authentication | DC must be patched last (or first with a graceful restart) to avoid authentication outages. |
+| 14 endpoints (13 workstations + 1 DC) | Need a sequenced, bandwidth‑aware rollout. |
+
+---
+
+## 1. Pre‑Patch Preparation (performed **outside** the 4‑hour window)
+
+### 1.1. Inventory & Baseline
+1. **Verify endpoint list** – Confirm the exact hostname/IP of each of the 14 servers/workstations.  
+2. **Check current patch level** – Run `systeminfo` / `Get-HotFix` on each host to ensure no older cumulative updates are pending.  
+3. **Capture performance baseline** – Record current VSAT utilization (e.g., via the satellite modem web UI or a simple `ping`/`iperf` test) to prove that the planned download rate stays well below the 2 Mbps upload / 10 Mbps download ceiling.
+
+### 1.2. Backup & Rollback Planning
+| Action | Details |
+|--------|---------|
+| **Domain Controller** | • Take an **authoritative system state backup** (e.g., using Windows Server Backup or a supported image backup). <br>• Document the backup location (local high‑capacity HDD + off‑site copy if possible). |
+| **Workstations** | • Ensure each workstation has a **recent disk image** or at least a restore point. <br>• Verify that critical local data (e.g., drilling logs) are backed up to the rig’s NAS or cloud‑sync (outside the VSAT). |
+| **Rollback Procedure** | • Scripted steps to revert to the pre‑patch backup (including DNS/AD service restart if needed). <br>• Test the rollback on a non‑production VM that mirrors the rig’s OS version. |
+
+### 1.3. Staging the Update Package
+1. **Download the update once** from a high‑bandwidth site (e.g., corporate HQ or a satellite‑friendly download portal) **before the hitch**.  
+2. **Transfer the package** to the rig using one of the following low‑impact methods:  
+   - **Physical media** (USB‑3.0 drive) – fastest, no VSAT usage.  
+   - **Off‑hours WAN transfer** – if the rig has a secondary low‑speed link (e.g., cellular) that can be used overnight, schedule the download during the night when drilling is idle.  
+3. **Place the package** on a **central file share** that all endpoints can reach (e.g., `\\DC\RigPatches\Win2022_Cumulative_2024-08-xx.cab`).  
+4. **Verify checksum** (`Get-FileHash`) on each host to ensure integrity.
+
+### 1.4. Communication & Coordination
+- **Notify SCADA/Drilling Ops** at least 48 h before the hitch changeover that a maintenance window will occur.  
+- **Confirm** that no scheduled rig‑wide tests or critical telemetry uploads are planned during the 4‑hour window.  
+- **Assign a “Patch Lead”** on‑site (usually the IT field tech) and a **remote backup contact** (MSP engineer) for real‑time support.
+
+---
+
+## 2. In‑Window Execution – Bandwidth‑Constrained Sequencing
+
+### 2.1. Assumptions for Bandwidth Calculation
+| Parameter | Value |
+|-----------|-------|
+| Cumulative update size (typical) | **≈ 350 MB** (compressed) |
+| Effective download speed per host (to stay < 10 Mbps) | **≈ 1.2 Mbps** (≈ 150 KB/s) – gives a comfortable 20 % headroom for telemetry. |
+| Time to download 350 MB at 1.2 Mbps | **≈ 40 minutes** |
+| Additional install + restart overhead | **≈ 15 minutes** per host (including OS apply, possible reboot). |
+| **Total per host** | **≈ 55 minutes** |
+
+### 2.2. Sequencing Strategy
+Because 14 hosts × 55 min ≈ 14 h exceeds the 4‑hour window, we **pipeline** the workflow while **limiting concurrent downloads** to keep VSAT utilization ≤ 10 Mbps.
+
+#### Step‑by‑step Pipeline (see timeline below)
+
+1. **Start with the Domain Controller (DC)** – it must be patched **first** (or last) but **with zero impact on authentication**.  
+   - **Why first?** Patching the DC early allows all workstations to authenticate against an already‑updated DC after their own patch/reboot.  
+   - **Procedure:**  
+     a. Trigger download **manually** from DC (no other host downloading).  
+     b. Install update, **restart** the DC.  
+     c. Verify AD services (DNS, Kerberos) before moving to workstations.  
+   - **Time:** ~55 min (download + install + reboot + validation).
+
+2. **Parallel “Download‑Only” Stage for 3 Workstations**  
+   - **Select 3 workstations** that are **least critical** for immediate SCADA access (e.g., non‑operator consoles).  
+   - **Initiate download** **simultaneously** on these three hosts **only**, each capped at 1.2 Mbps (≈ 3.6 Mbps total). This stays well under the 10 Mbps downlink ceiling, leaving ~6.4 Mbps for telemetry.  
+   - **While they download**, the DC is already patched and online, so authentication for any workstation that later reboots will work.
+
+3. **Install & Reboot on the First 3 Workstations** (sequentially or in small batches)  
+   - As soon as a workstation finishes its download, **trigger the install** locally.  
+   - Allow ~15 min for install + reboot.  
+   - **Total for these three:** ≈ 3 × 55 min = **165 min**, but because downloads overlap, the **wall‑clock** time is roughly **115 min** (download 40 min + staggered installs).  
+
+4. **Repeat the 3‑host pipeline** for the remaining 10 workstations, **grouped into four batches** of 3 + 1 final batch of 1.  
+   - **Batch 2 (Workstations 4‑6)** – start downloads while Batch 1 is installing.  
+   - **Batch 3 (Workstations 7‑9)** – start while Batches 1‑2 are installing.  
+   - **Batch 4 (Workstations 10‑12)** – start while Batches 1‑3 are installing.  
+   - **Final host (Workstation 13)** – downloaded last; its install finishes near the end of the window.
+
+#### Timeline Summary (illustrative)
+
+| Time (min) | Activity |
+|------------|----------|
+| 0‑55 | **DC**: Download → Install → Reboot → Verify AD |
+| 20‑85 | **Batch 1 (WS 1‑3)**: Download (overlap) |
+| 40‑95 | **Batch 1**: Install & Reboot WS 1 |
+| 55‑110 | **Batch 1**: Install & Reboot WS 2 |
+| 70‑125 | **Batch 1**: Install & Reboot WS 3 |
+| 55‑100 | **Batch 2 (WS 4‑6)**: Download starts (while WS 1‑3 installing) |
+| 95‑140 | **Batch 2**: Install & Reboot WS 4 |
+| 110‑155 | **Batch 2**: Install & Reboot WS 5 |
+| 125‑170 | **Batch 2**: Install & Reboot WS 6 |
+| 100‑145 | **Batch 3 (WS 7‑9)**: Download |
+| 140‑185 | **Batch 3**: Install & Reboot WS 7 |
+| 155‑200 | **Batch 3**: Install & Reboot WS 8 |
+| 170‑215 | **Batch 3**: Install & Reboot WS 9 |
+| 155‑200 | **Batch 4 (WS 10‑12)**: Download |
+| 195‑240 | **Batch 4**: Install & Reboot WS 10 |
+| 210‑255 | **Batch 4**: Install & Reboot WS 11 |
+| 225‑270 | **Batch 4**: Install & Reboot WS 12 |
+| 240‑285 | **Final WS 13**: Download (if not yet done) → Install → Reboot |
+| 285‑300 | **Final verification** (AD, WSUS/Intune status, SCADA health check) |
+
+- **Total elapsed time ≈ 300 minutes = 5 hours** – exceeds the 4‑hour window.  
+- **Mitigation:**  
+  1. **Pre‑stage the update on a local repository** *before* the hitch (Step 1.3). This removes the **download** portion from the critical path.  
+  2. **Use the central share** to **push the install** via a remote command (e.g., `Invoke-Command` with `Start-Process` or SCCM/Intune “Install‑Only” mode). The **install** itself is only a few MB of transaction logs, well within the 2 Mbps upload limit.  
+  3. **Resulting timeline** with pre‑staged package:  
+     - DC patch: 55 min (including reboot).  
+     - 13 workstations: ~13 × 15 min = **195 min** for install + reboot (can be overlapped 2‑3 at a time).  
+     - **Overall ≈ 250 min (≈ 4 h 10 min)** – still slightly over.  
+     - **Final tweak:** Run **two workstations concurrently** (max 2 × 1.2 Mbps ≈ 2.4 Mbps) while the DC is already up; this shaves ~30 min, bringing the total to **≈ 220 min (3 h 40 min)**, comfortably inside the 4‑hour slot.
+
+### 2.3. Detailed Command Flow (example using PowerShell Remoting)
+
+```powershell
+# 1. On the Patch Lead workstation (connected to the rig LAN)
+$dc = "DC01"
+$workstations = @("WS01","WS02",...,"WS13")
+
+# a) Patch Domain Controller first
+Invoke-Command -ComputerName $dc -ScriptBlock {
+    # Ensure update package is already present on C:\RigPatches\update.cab
+    $pkg = "C:\RigPatches\Win2022_Cumulative_2024-08-xx.cab"
+    dism /online /apply-unattend:$pkg
+    # Reboot with forced flag (will auto‑return to caller)
+    Restart-Computer -Force
+} -AsJob -JobName "PatchDC"
+
+# Wait for DC to come back and AD services to be healthy
+Wait-Job -Name "PatchDC" -Timeout 1800   # 30 min safety
+# Verify DNS/Kerberos (simple LDAP query)
+Get-ADUser -Identity "SCADA_Operator" -ErrorAction SilentlyContinue
+
+# b) Parallel patch of workstations (max 2 concurrent)
+$scriptBlock = {
+    param($pkg)
+    # Apply the update (quiet mode)
+    Start-Process -FilePath "dism.exe" -ArgumentList @("/online","/apply-unattend:$pkg","/quiet") -Wait
+    # Reboot after install
+    Restart-Computer -Force
+}
+$jobs = @()
+foreach ($ws in $workstations) {
+    $jobs += Invoke-Command -ComputerName $ws -ScriptBlock $scriptBlock -ArgumentList $pkg -AsJob
+    # Throttle: if we already have 2 running, wait a bit
+    if ($jobs.Count -ge 2) {
+        Get-Job -Name ($jobs[0].Name) | Wait-Job -Timeout 1200   # wait ~20 min
+        Remove-Job $jobs[0]
+        $jobs = $jobs | Where-Object {$_.State -ne "Completed"}
+    }
+}
+# Wait for any remaining jobs
+Get-Job | Wait-Job
+```
+
+- **All `dism` operations read the *already‑local* CAB file**, so **no VSAT traffic** occurs during the 4‑hour window.  
+- The only network activity is **management traffic** (PowerShell remoting, ~few KB per command) – negligible on a 2 Mbps uplink.
+
+---
+
+## 3. Post‑Patch Validation (within the same 4‑hour window, after reboots)
+
+1. **Service Health Checks**  
+   - Verify **Active Directory** replication (`repadmin /showrepl`).  
+   - Confirm **DNS** responses for key hostnames (including SCADA servers).  
+   - Ping the **SCADA gateway** from each workstation to ensure telemetry paths are intact.
+
+2. **SCADA/Drilling Telemetry Monitoring**  
+   - Open the SCADA console; watch for any latency spikes or missed packets for **≥ 10 minutes**.  
+   - If any anomaly appears, **immediately roll back** the offending host using the pre‑created backup (Step 1.2).
+
+3. **Patch Reporting**  
+   - Run `Get-WindowsUpdateLog` or query WSUS/Intune for **installation status** on all 14 endpoints.  
+   - Export a CSV report and email it to the rig manager and MSP ticketing system.
+
+4. **Documentation**  
+   - Log the exact **start/end timestamps** for each host’s patch cycle.  
+   - Note any **exceptions** (e.g., a workstation that required a manual retry).  
+   - Archive the runbook execution log for future hitches.
+
+---
+
+## 4. Integration with the 14‑Day Hitch Cadence
+
+| Hitch Day | Activity |
+|-----------|----------|
+| **Day 0‑13** (operational) | No patch activity. VSAT bandwidth dedicated to drilling telemetry. |
+| **Day 14 (Crew Changeover)** | **4‑hour maintenance window** (e.g., 02:00‑06:00 local time) – execute the runbook above. |
+| **Day 15‑28** | System runs on the freshly patched OS. Continuous monitoring ensures no latent issues. |
+| **Next Hitch (Day 28)** | Repeat the same process – the runbook is **re‑usable** each hitch. |
+
+- **Why the 14‑day cadence works:** The rig’s crew rotation guarantees a predictable, uncontested maintenance window. By **pre‑staging** the update **before** the hitch (during the prior 14‑day cycle or via overnight physical media transfer), the only activity that consumes VSAT bandwidth during the window is the lightweight management traffic, not the multi‑hundred‑megabyte download.
+
+---
+
+### Quick‑Reference Checklist (to hand to the on‑site Patch Lead)
+
+| ✅ Item | Description |
+|--------|-------------|
+| **1. Pre‑hitch** | Download update to HQ, copy to USB, transfer to rig, place on `\\DC\RigPatches\`. Verify checksum. |
+| **2. Backups** | Authoritative DC backup; workstation restore points or images. Document rollback steps. |
+| **3. Communication** | Send “Patch Window Notice” 48 h prior; confirm no conflicting telemetry jobs. |
+| **4. DC Patch** | Run `dism /apply-unattend` → reboot → validate AD/DNS. (≈ 55 min) |
+| **5. Workstation Patch (pipeline)** | Use PowerShell remoting to push install from local CAB; limit to **2 concurrent** installs. (≈ 13 × 15 min ≈ 3 h total) |
+| **6. Validation** | AD replication, DNS, SCADA telemetry health, patch status report. |
+| **7. Documentation** | Log timestamps, any issues, export CSV, close ticket. |
+| **8. Post‑hitch** | Monitor for 24 h; if problems arise, trigger rollback using pre‑hitch backups. |
+
+---
+
+**Result:** By pre‑staging the update, throttling concurrent installs to stay well within the VSAT capacity, and sequencing the Domain Controller first, the entire patch operation fits comfortably inside the single 4‑hour maintenance window that occurs once per 14‑day hitch, preserving SCADA telemetry integrity and rig productivity.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+# **PATCH‑WINDOW RUNBOOK – WS‑2022 CUMULATIVE SECURITY UPDATE**  
+**Site:** Remote drilling rig (VSAT 2 Mbps ↑ / 10 Mbps ↓)  
+**Scope:** 14 domain‑joined Windows 10/Server 2022 endpoints (1 DC + 13 workstations)  
+**Maintenance window:** 4 h block during the crew‑change (day‑to‑night) that occurs **once every 14‑day hitch**  
+**Goal:** Install the monthly cumulative security update **without saturating the VSAT link** or degrading SCADA telemetry / authentication.
+
+---
+
+## 1.  Assumptions & Constraints  
+
+| Item | Detail |
+|------|--------|
+| **VSAT link** | 2 Mbps upstream (critical for SCADA telemetry) – keep < 30 % utilization for patch traffic (≈ 0.6 Mbps). |
+| **Update size** | WS‑2022 cumulative update ≈ 350 MB (compressed). After extraction ≈ 1.2 GB of data written to disk. |
+| **Bandwidth per endpoint** | Using BITS throttling we can limit each client to **200 Kbps** upstream (≈ 0.2 Mbps). |
+| **SCADA telemetry** | Must remain > 90 % of baseline latency (< 200 ms). |
+| **Crew‑change window** | 04:00 – 08:00 local time (night shift to day shift). No drilling activity; SCADA is in “monitor‑only” mode. |
+| **Hitch cadence** | Crews rotate every 14 days → one maintenance window per hitch. |
+| **Rollback** | Must be possible within the same 4‑h window; therefore workstations are patched **in‑place** (no re‑image). |
+| **Tooling** | WSUS / Microsoft Endpoint Configuration Manager (MECM) already deployed; BITS, PowerShell, and WinRM are enabled on all endpoints. |
+| **Authentication** | Domain Controller (DC) is the single point of trust for SCADA operator workstations. The DC must be patched **first** and verified before any workstation is touched. |
+
+---
+
+## 2.  PRE‑PATCH PREPARATIONS  
+
+| # | Task | Owner | Success Criteria |
+|---|------|-------|------------------|
+| 1 | **Confirm maintenance window** – obtain written approval from rig manager, SCADA lead, and corporate change‑control board. | MSP Change Manager | Signed change request (CR‑2026‑07‑RIG‑001). |
+| 2 | **Snapshot / backup** – create a System State backup of the DC (VSS backup to local NAS) and a full image backup of each workstation (Windows Server Backup to local NAS). | Backup Engineer | Backup logs show “SUCCESS” for all 14 nodes. |
+| 3 | **Health check** – verify that every endpoint is (a) online, (b) fully synced with AD, (c) not reporting pending reboots, (d) free of pending Windows Installer operations. | Operations Engineer | `Get‑ComputerInfo` shows OS version ≤ 2022 Build 19044, no pending reboot flag. |
+| 4 | **Baseline bandwidth measurement** – run a 5‑minute iperf test between the rig router and the corporate edge to capture current upstream utilisation (SCADA telemetry + normal traffic). | Network Engineer | Average upstream < 0.5 Mbps (baseline). |
+| 5 | **Create a “patch‑only” WSUS/Intune deployment** – import the cumulative update as a **Mandatory** update, **disable automatic download** for all clients; set **download‑only** policy to “download on schedule”. | Patch Engineer | WSUS shows the update in “Approved – Required”. |
+| 6 | **Configure BITS throttling** – Deploy a Group Policy Object (GPO) or MECM client settings that enforce `BitsTransferRateLimit = 200KBps` for the update download. | GPO Admin | `gpresult /h bits‑policy.html` shows the limit applied on a test workstation. |
+| 7 | **SCADA telemetry guard** – Enable a temporary QoS rule on the VSAT router: **priority 1** for TCP/UDP ports used by SCADA (e.g., 502 Modbus, 20000‑20010 custom), **max‑rate 1.5 Mbps** for all other traffic. | Network Engineer | Router config verified (`show qos`). |
+| 8 | **Notify crew** – broadcast to both incoming and outgoing crews the exact patch schedule (including expected brief authentication hiccups after DC reboot). | Communications Lead | Email & rig PA announcement logged. |
+| 9 | **Prepare rollback kit** – copy the most recent good system image (pre‑patch) to a USB stick for each workstation and to a separate NAS share for the DC. | Backup Engineer | Media labelled “RIG‑ROLLBACK‑2026‑07‑XX”. |
+|10| **Test run (dry‑run)** – In a lab environment, apply the same throttling & batch logic to a 5‑node test group. Verify that total upstream ≤ 0.6 Mbps and that SCADA‑like traffic (simulated) remains unaffected. | Patch Engineer | Test logs show < 0.55 Mbps aggregate for patch traffic. |
+
+> **If any pre‑check fails, abort the change, remediate, and restart the checklist.**
+
+---
+
+## 3.  BANDWIDTH‑CONSCIOUS PATCH SEQUENCE  
+
+### 3.1  Rationale  
+
+* **DC first** – If the DC becomes unavailable, all workstations lose authentication, causing SCADA operator login failures.  
+* **Batch size** – With a 200 Kbps limit per client, **3 simultaneous clients** = 0.6 Mbps upstream, staying under the 30 % headroom.  
+* **Staggered start** – Start each batch 5 minutes apart to allow the previous batch to finish downloading before the next begins, smoothing the traffic curve.  
+* **Verification pause** – After each batch, pause 2 minutes to confirm SCADA telemetry health (via ping/latency to the SCADA gateway).  
+
+### 3.2  Timeline (4‑hour window)
+
+| Time (Local) | Action | Details |
+|--------------|--------|---------|
+| **04:00 – 04:10** | **DC pre‑check** | Verify DC is online, no pending reboot, VSS backup OK. |
+| **04:10 – 04:20** | **DC download & install** | Trigger WSUS download on DC (BITs throttled 200 Kbps). Expected download ≈ 2 min, install ≈ 5 min, reboot ≈ 3 min. |
+| **04:20 – 04:25** | **DC post‑reboot validation** | - AD replication OK (`repadmin /replsummary`) <br> - SCADA operator login test (2 operators) <br> - Verify telemetry QoS (latency < 200 ms). |
+| **04:25 – 04:30** | **Batch 1 – Workstations 1‑3** | Simultaneously start download on WS‑1, WS‑2, WS‑3 (200 Kbps each). |
+| **04:35 – 04:40** | **Batch 1 verification** | Confirm all 3 have installed (check KB number), rebooted, and re‑joined domain. Run `Test‑ComputerSecureChannel`. |
+| **04:40 – 04:45** | **Batch 2 – Workstations 4‑6** | Same procedure. |
+| **04:50 – 04:55** | **Batch 2 verification** | Same as above. |
+| **04:55 – 05:00** | **Batch 3 – Workstations 7‑9** | Same procedure. |
+| **05:05 – 05:10** | **Batch 3 verification** | Same as above. |
+| **05:10 – 05:15** | **Batch 4 – Workstations 10‑12** | Same procedure. |
+| **05:20 – 05:25** | **Batch 4 verification** | Same as above. |
+| **05:25 – 05:30** | **Batch 5 – Workstations 13‑14** | Only two nodes left; start together. |
+| **05:35 – 05:40** | **Batch 5 verification** | Same as above. |
+| **05:40 – 05:50** | **SCADA health sweep** | Run full telemetry sanity check (data logger, alarm queue, latency). |
+| **05:50 – 06:00** | **Documentation & sign‑off** | Capture screenshots of update status, update CMDB, email sign‑off to rig manager. |
+| **06:00 – 08:00** | **Buffer / rollback window** | If any workstation fails to install, use USB rollback media to restore to pre‑patch image; re‑attempt patch on that node only (still under bandwidth cap). |
+
+> **Total expected upstream traffic:** ≤ 0.6 Mbps (3 × 200 Kbps) at any moment → well within the 30 % headroom. Downstream (10 Mbps) is ample; the SCADA telemetry (downlink) remains untouched.
+
+---
+
+## 4.  DETAILED EXECUTION STEPS  
+
+### 4.1  Commands (run on the **Patch Server**)
+
+```powershell
+# 1. Approve the update for the rig OU only
+Import-Module UpdateServices
+$wsus = Get-WSUSServer
+$update = $wsus.GetUpdates() | Where-Object {$_.Title -match "2026-07 Cumulative Update for Windows Server 2022"}
+$targetGroup = $wsus.GetComputerTargetGroups() | Where-Object {$_.Name -eq "Rig‑OU"}
+$update.Approve("Install", $targetGroup)
+
+# 2. Enforce BITS throttling via GPO (already created as GPO_RIG_BitsLimit)
+gpupdate /force /target:computer
+
+# 3. Trigger download on a specific host (DC)
+Invoke-Command -ComputerName DC01 -ScriptBlock {
+    wuauclt /detectnow
+    Start-Sleep -Seconds 30
+    wuauclt /updatenow
+}
+```
+
+### 4.2  Batch launch (PowerShell one‑liner for a batch)
+
+```powershell
+$batch = @("WS01","WS02","WS03")   # change per batch
+Invoke-Command -ComputerName $batch -ScriptBlock {
+    wuauclt /detectnow
+    Start-Sleep -Seconds 30
+    wuauclt /updatenow
+}
+```
+
+### 4.3  Verification script (run on each workstation after reboot)
+
+```powershell
+$kb = "KB502XXXXX"   # actual KB number
+if ((Get-HotFix -Id $kb).InstalledOn) {
+    Write-Output "Update $kb installed"
+    Test-ComputerSecureChannel -Verbose
+} else {
+    Write-Error "Update $kb missing"
+    exit 1
+}
+```
+
+### 4.4  SCADA health check (run from the SCADA gateway)
+
+```bash
+# Simple latency check
+for host in $(cat /opt/scada/telemetry_endpoints.txt); do
+    ping -c 10 $host | tail -1
+done
+
+# Verify telemetry flow rate (example using iperf3)
+iperf3 -c <rig‑gateway> -u -b 1M -t 30
+```
+
+---
+
+## 5.  ROLLBACK PROCEDURE  
+
+1. **Identify failed node** (via verification script exit code).  
+2. **Disconnect** the node from the VSAT (physically unplug Ethernet or disable Wi‑Fi) to prevent further traffic.  
+3. **Boot from USB rollback media** (Windows PE).  
+4. **Restore** the latest good image (the one taken in step 2 of Pre‑Patch).  
+5. **Re‑join** the domain (if SID changed) using the pre‑patch computer account.  
+6. **Re‑apply** the BITS throttling GPO (ensures the node does not re‑download the update automatically).  
+7. **Validate** authentication and telemetry again.  
+8. **Document** the failure cause (e.g., insufficient disk space) and schedule a repeat patch in the next hitch window.
+
+> **Rollback window:** ≤ 30 minutes per node (included in the 4‑hour buffer).
+
+---
+
+## 6.  POST‑PATCH ACTIVITIES  
+
+| Item | Description | Owner |
+|------|-------------|-------|
+| **Log collection** | Gather Windows Event Logs (`System`, `Application`, `Microsoft-Windows-WindowsUpdateClient/Operational`) from each endpoint; archive to central log server. | Log Analyst |
+| **SCADA performance report** | Compare telemetry latency & packet loss pre‑ vs. post‑patch (baseline from step 4 of Pre‑Patch). | SCADA Engineer |
+| **AD health** | Run `dcdiag /v` on DC, `repadmin /replsummary` on all DCs (if more than one). | AD Admin |
+| **Update CMDB** | Mark each endpoint as “Patch Level 2026‑07‑Cumulative”. | Configuration Manager |
+| **Sign‑off email** | Send final “Patch Completed – No Issues” to rig manager, corporate CAB, and SCADA lead. | Change Manager |
+| **Lessons‑learned** | Record any deviation (e.g., unexpected bandwidth spike) in the runbook for the next hitch. | MSP Knowledge‑Base Owner |
+
+---
+
+## 7.  ALIGNMENT WITH THE 14‑DAY HITCH CADENCE  
+
+| Day of Hitch | Activity |
+|--------------|----------|
+| **Day 0** (crew change) | **Maintenance window** – run the full patch sequence (as above). |
+| **Day 1‑6** | Normal drilling operations. No further changes. |
+| **Day 7** | **Mid‑hitch health check** – verify that all endpoints are stable, no pending reboots, and SCADA telemetry is nominal. |
+| **Day 8‑13** | Continue operations. If any node failed during Day 0, use the **rollback buffer** (Day 8‑9) to restore and **re‑patch** a single node (still respecting bandwidth caps). |
+| **Day 14** | New crew arrives; hand‑off includes a brief “patch status” summary. |
+
+> By restricting patch activity to **the single crew‑change window**, we guarantee that no drilling shift ever experiences degraded authentication or telemetry. The batch‑throttling approach guarantees the VSAT uplink never exceeds the pre‑approved 30 % utilization, preserving the critical SCADA data flow throughout the 14‑day hitch.
+
+---
+
+## 8.  APPROVAL SIGN‑OFFS  
+
+| Role | Name | Signature (digital) | Date |
+|------|------|---------------------|------|
+| Rig Operations Manager |  |  |  |
+| SCADA Lead |  |  |  |
+| MSP Change Manager |  |  |  |
+| Network Engineer (VSAT) |  |  |  |
+| AD / Patch Engineer |  |  |  |
+
+---  
+
+**End of Runbook**.  
+
+*Prepared by:* **[Your MSP Name] – Remote Operations Team**  
+*Version:* 1.0 – 2026‑07‑18  
+*Distribution:* Rig Operations, SCADA Team, MSP Change Management, Documentation Repository.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+# Patch Deployment Runbook: Remote Drilling Rig
+**Target:** Windows Server 2022 Cumulative Security Update
+**Scope:** 14 Domain-Joined Endpoints (1 Domain Controller + 13 Workstations)
+**Constraint:** VSAT Shared with SCADA (2 Mbps Up / 10 Mbps Down) | 4-Hour Maintenance Window
+
+---
+
+## 1. The Pre-Patch Step (Mandatory Gate)
+**Action:** Establish an offline AD backup and capture a VSAT bandwidth baseline *before* initiating any download or reboot.
+
+*   **Why:** If the patch corrupts the DC or causes an auth cascade failure, the rig must revert immediately. Since the only maintenance window is during crew changeover (when drilling pauses), there is zero tolerance for a rollback that extends beyond the shift change.
+*   **Procedure:**
+    1.  **AD Backup:** Run `ntdsutil` to export a full Active Directory database backup to a local USB drive or a local-only file share (not over the patched VSAT link). Verify the backup integrity.
+    2.  **DC Health Check:** Run `repadmin /replsummary` and `dcdiag` to ensure the DC is stable and replication is current.
+    3.  **SCADA Baseline:** Record the current SCADA telemetry upload rate (Mbps)
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | FAIL |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+Pre-patch step (before touching anything): take a VM-level snapshot (or equivalent backup) of
+the domain controller and, where the hypervisor supports it, of each endpoint before applying
+any update. This is the rollback point -- if the cumulative update causes an authentication or
+driver issue on this specific rig hardware, you revert to the snapshot rather than
+troubleshooting live against SCADA-adjacent systems.
+
+Sequencing given the 2 Mbps up / 10 Mbps down VSAT link shared with SCADA telemetry: do NOT
+push the update to all 14 endpoints simultaneously -- that saturates the link and disrupts
+drilling telemetry. Instead, pre-stage the update package to a local cache/WSUS-like
+distribution point on-site during a low-telemetry period earlier in the hitch if possible, so
+the actual patch-window activity is local installation, not 14 simultaneous downloads over
+VSAT. Within the 4-hour changeover window, patch endpoints in small batches (e.g., 3-4 at a
+time), starting with non-DC workstations and patching the domain controller last, once you've
+confirmed no batch caused an issue -- so a bad patch doesn't take down authentication for the
+whole site before you've had a chance to catch it on lower-risk machines first.
+
+Cadence: this 4-hour window only exists once per 14-day hitch, at the day-to-night crew
+changeover, so the entire patch cycle (pre-stage, batch install, DC patch, verification) has
+to fit inside that single window -- if it doesn't complete, don't leave it half-applied; roll
+back the in-progress batch and resume at the next hitch's window rather than attempting an
+ad-hoc patch outside the approved window while drilling is active.
+
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+# RUNBOOK: VSAT-CONSTRAINED PATCH WINDOW – REMOTE DRILLING RIG
+**Scope:** 14 domain-joined Windows Server/Client endpoints (incl. 1 DC)  
+**Network:** VSAT 2 Mbps up / 10 Mbps down (shared with SCADA/telemetry)  
+**Window:** 4 hours, once per 14-day hitch (day-to-night crew changeover)  
+**OS:** Windows Server 2022 (Cumulative Security Update)
+
+---
+
+## 🔑 1. PRE-PATCH STEP (Do Not Skip)
+**Before touching any endpoint or network device, execute this single validation step:**
+> **Verify a tested, offline system-state backup of the Domain Controller and document a live SCADA telemetry baseline.**
+
+- Run `wbadmin get systemstate` or verify Veeam/Altaro snapshot integrity on the DC. Test restore capability in isolation if not done in the last 7 days.
+- Capture a 15-minute SCADA telemetry baseline (latency, jitter, packet loss, throughput) using existing network monitoring or `ping -t` + `netstat -s` on a SCADA gateway. This is your rollback trigger threshold.
+- Confirm VSAT QoS/traffic-shaping policies are actively prioritizing SCADA ports (typically UDP 502, TCP 843, etc.) over TCP 80/443/8530 (WSUS/Windows Update).
+
+*Why this first?* A failed DC patch or VSAT saturation can cascade into auth loss + telemetry drop. Without a validated backup and baseline, you cannot safely proceed or rollback within the 4-hour window.
+
+---
+
+## 📡 2. ENDPOINT SEQUENCING & BANDWIDTH STRATEGY
+**Constraint Reality:** Live-streaming updates to 14 endpoints will saturate 10 Mbps down, cause TCP retransmissions over high-latency VSAT, and introduce jitter that breaks SCADA telemetry. **Zero live downloads are permitted during the maintenance window.**
+
+### Pre-Window Download Sequencing (Days -4 to -1)
+- Stage updates offline via USB or local WSUS cache. If network download is required, sequence over 4 days outside drilling hours:
+  - **Day -4:** Ring 1 (5 non-critical endpoints) @ 50 Kbps throttled
+  - **Day -3:** Ring 2 (
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+# Patch Window Runbook: Remote Drilling Rig Security Updates
+
+## Pre-Patch Preparation
+
+### 1. Network Assessment (24 hours prior)
+- Verify current VSAT link utilization metrics
+- Confirm SCADA telemetry bandwidth usage patterns
+- Document baseline performance metrics for both uplink (2 Mbps) and downlink (10 Mbps)
+- Test connectivity to Microsoft Update servers from the domain controller
+
+### 2. Update Readiness Verification
+- Run Windows Update readiness checks on all 14 endpoints
+- Verify all systems are properly joined to the domain
+- Confirm domain controller is functioning properly
+- Validate that all SCADA operator workstations can authenticate successfully
+
+### 3. Maintenance Window Confirmation
+- Confirm exact 4-hour maintenance window timing for crew changeover
+- Verify backup power systems are operational
+- Ensure all crew members are aware of the scheduled maintenance window
+- Prepare emergency rollback procedures
+
+### 4. Patch Preparation
+- Download all required updates to a local WSUS server or offline update files
+- Create a patch deployment script that includes reboot management
+- Prepare a "patch ready" status tracking system
+- Ensure all necessary drivers and firmware are available offline
+
+## Patch Deployment Sequence
+
+### Phase 1: Critical Infrastructure (Hours 1-2)
+**Domain Controller & Core Services**
+- Deploy updates to domain controller (critical for authentication)
+- Update SCADA operator workstations (network authentication)
+- Update any servers with critical operational functions
+
+### Phase 2: Operational Workstations (Hours 2-3)
+**Drilling Operations Equipment**
+- Deploy to drilling rig control systems
+- Update data acquisition workstations
+- Update maintenance and safety monitoring systems
+
+### Phase 3: Support Systems (Hours 3-4)
+**Support and Administrative Functions**
+- Update administrative workstations
+- Deploy to support personnel systems
+- Update any remaining operational systems
+
+## Bandwidth Optimization Strategy
+
+### Network Prioritization
+- Schedule updates during off-peak SCADA telemetry periods
+- Implement bandwidth throttling for update downloads
+- Prioritize critical updates over optional ones
+- Use delta updates where available to reduce download size
+
+### Batch Processing
+- Deploy updates in small batches (3-4 systems per batch)
+- Allow 15 minutes between batches for network stabilization
+- Monitor network utilization throughout the process
+- Implement automatic retry mechanisms for failed updates
+
+## 14-Day Hitch Cadence Integration
+
+### Schedule Alignment
+- Plan updates for the maintenance window that occurs at the end of each 14-day hitch period
+- The 4-hour window is perfectly aligned with crew changeover operations
+- This provides maximum downtime window while minimizing operational impact
+
+### Crew Management
+- Coordinate with both day and night crew supervisors
+- Ensure all crew members understand the update process and expected downtime
+- Provide clear communication about system availability during the update window
+- Prepare crew for potential reboots during the update process
+
+## Recovery and Validation
+
+### Post-Patch Validation
+1. **Network Performance Verification** (Hour 4, 30 minutes)
+   - Confirm VSAT link utilization is within acceptable parameters
+   - Validate SCADA telemetry performance
+   - Test authentication system functionality
+
+2. **System Health Check** (Hour 4, 30 minutes)
+   - Verify all domain-joined systems are properly authenticated
+   - Validate that all SCADA workstations can connect to the domain controller
+   - Confirm no critical systems are experiencing issues
+
+### Emergency Procedures
+- If network saturation occurs during update deployment:
+  - Immediately suspend updates and revert to stable state
+  - Contact Microsoft support for update prioritization guidance
+  - Implement emergency bandwidth management
+
+- If authentication issues arise:
+  - Roll back recent updates to domain controller
+  - Restore system from backup if necessary
+  - Implement manual authentication workarounds
+
+## Documentation Requirements
+
+### Before Patch Window
+- Update patch readiness documentation
+- Complete system baseline verification
+- Confirm crew availability and communication
+
+### During Patch Window
+- Record real-time network utilization metrics
+- Document any issues encountered
+- Log successful updates and reboots
+- Track time spent per system
+
+### After Patch Window
+- Generate detailed post-update performance report
+- Validate all systems are functioning within expected parameters
+- Complete maintenance window closure documentation
+- Schedule next patch window based on 14-day hitch schedule
+
+## Risk Mitigation
+
+### Critical Risks Addressed
+1. **Network Saturation** - Controlled batch deployment prevents bandwidth overload
+2. **Authentication Failure** - Critical systems updated first, domain controller preserved
+3. **Operational Disruption** - Deployed during planned maintenance window
+4. **Emergency Recovery** - Pre-established rollback procedures in place
+
+### Success Metrics
+- 100% successful update deployment rate
+- VSAT bandwidth utilization maintained below 70% during deployment
+- No disruption to SCADA telemetry or drilling operations
+- All systems operational within 4-hour window
+
+This runbook ensures minimal impact to critical operations while maintaining security compliance through the strict 14-day hitch cadence and carefully managed network bandwidth constraints.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | FAIL |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | FAIL |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+We'll go ahead and push this month's Windows update out to all the rig endpoints including the
+domain controller. Since bandwidth is limited out there we might see it take a while to
+download, but it should still work fine overnight. We'll schedule it for the next time
+there's a gap in operations and follow up if anyone reports issues afterward.
+
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | FAIL |
+| regex-0 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+**Patch-Window Runbook: Windows Server 2022 Cumulative Update Deployment on Remote Drilling Rig**  
+**Environment Constraints Summary:**  
+- **Network:** VSAT satellite link (2 Mbps up / 10 Mbps down), shared with SCADA/drilling telemetry  
+- **Endpoints:** 14 domain-joined systems (1x Domain Controller, 13x workstations, including SCADA operator workstations)  
+- **Maintenance Window:** 4 hours per 14-day hitch (crew changeover)  
+- **Operational Risk:** No disruption to authentication or SCADA telemetry during drilling operations  
+- **Update Size Estimate:** ~500 MB (typical Windows Server 2022 cumulative update)  
+
+---
+
+### **Objective**  
+Safely deploy the Windows Server 2022 cumulative update across all 14 endpoints without disrupting drilling operations or saturating the VSAT link.
+
+---
+
+## **Runbook: Pre-Patch, Patch, and Scheduling Plan**
+
+---
+
+### **1. Pre-Patch Step: Establish Update Caching & Test Isolation (Do Before Any Patching)**
+
+**Action:** Deploy and configure a local **WSUS (Windows Server Update Services) server or Update Server Cache** on the Domain Controller (DC) or a dedicated low-footprint VM at the site.
+
+> **Why?**  
+> - Prevents repeated downloads over the VSAT link.  
+> - Enables controlled, staggered deployment without saturating bandwidth.  
+> - Allows patch approval and testing before rollout.
+
+#### **Steps:**
+1. **Verify DC has sufficient storage** (minimum 20 GB free for update cache).  
+2. **Install and configure WSUS role** on DC (or a local server if DC is resource-constrained).  
+3. **Configure Group Policy** to point all 14 endpoints to the local WSUS server for updates.  
+4. **Manually download update** via DC during off-peak telemetry usage (e.g., during maintenance window).  
+   - Use BITS or low-priority download with bandwidth throttling (limit to 512 Kbps up/down).  
+5. **Approve update in WSUS for testing group** (1 non-critical workstation).  
+6. **Test update** on isolated test machine during next maintenance window.  
+   - Validate: Boot, login, network, domain auth, performance.  
+   - Confirm no impact on SCADA client connectivity.  
+7. **Document rollback procedure:**  
+   - System Restore point (if enabled)  
+   - WSUS decline + uninstall via PowerShell:  
+     ```powershell
+     wusa /uninstall /kb:XXXXXXX /quiet /norestart
+     ```
+
+✅ **Pre-Patch Complete:** Caching in place, tested, safe to proceed.
+
+---
+
+### **2. Patch Sequencing Strategy: Bandwidth-Conscious, Risk-Aware Rollout**
+
+**Constraints:**  
+- VSAT uplink only 2 Mbps → simultaneous downloads would saturate link and impact SCADA telemetry (latency-sensitive).  
+- Max recommended concurrent downloads: **1–2 endpoints** (limit each to 768 Kbps to leave headroom).  
+- SCADA operator workstations and DC are **critical systems** — patch last, with extended validation.
+
+#### **Rollout Order & Phasing**
+
+| Phase | Systems | Count | Bandwidth Use | Maintenance Window Required | Notes |
+|------|--------|-------|----------------|------------------------------|-------|
+| **Phase 1** | Non-SCADA Workstations (Non-Critical Users) | 5 | 768 Kbps x1 | **Hitch 1** | Monitor telemetry; validate patch behavior |
+| **Phase 2** | SCADA Operator Workstations (Non-DC Auth) | 8 | 768 Kbps x1 | **Hitch 2** | Patch one at a time; validate SCADA app stability |
+| **Phase 3** | Domain Controller (DC) | 1 | N/A (local install) | **Hitch 3** | Final patch; requires full validation |
+
+> **Why this order?**  
+> - Least critical first → reduce risk.  
+> - SCADA workstations are high-impact but not as critical as the DC.  
+> - DC is last: ensures domain availability during patching of others; avoids auth outage.
+
+---
+
+### **3. Detailed Execution Plan per Hitch**
+
+---
+
+#### **Hitch 1: Patch 5 Non-Critical Workstations**
+
+**Maintenance Window (4 hours):**  
+- Crew changeover day, daylight period.
+
+**Steps:**
+1. Approve update in WSUS for Group A (5 workstations).  
+2. Schedule installations via GPO:  
+   - Install during maintenance window  
+   - Reboot only if required (use `no auto-reboot with logged-on users`)  
+3. Monitor VSAT usage via NetFlow/Bandwidth Monitor (limit BITS to 768 Kbps per client).  
+4. Deploy one at a time, 30-minute intervals between starts to avoid burst.  
+5. Validate:  
+   - Post-reboot domain login  
+   - Network connectivity  
+   - No telemetry anomalies (coordinate with drilling team)  
+6. Log results; halt if SCADA systems show latency or dropouts.
+
+✅ **Success Criteria:** 5 workstations updated, stable, no telemetry impact.
+
+---
+
+#### **Hitch 2: Patch 8 SCADA Operator Workstations**
+
+**Maintenance Window (4 hours):**  
+- Next 14-day cycle crew change.
+
+**Steps:**
+1. Approve update for Group B (8 SCADA workstations) in WSUS.  
+2. **Stagger deployment:**  
+   - Patch **2 workstations** in first 2 hours  
+   - Monitor SCADA telemetry and HMI responsiveness  
+   - If stable, patch **3 more**  
+   - Final 3 only if all prior successful  
+3. Use client-side throttling:  
+   ```powershell
+   # Limit BITS (if used)
+   Set-BitsTransfer -BitsJob $job -Priority Low
+   # Or via GPO: Limit bandwidth for updates
+   ```
+4. Require operator confirmation before reboot (avoid downtime during transition).  
+5. Validate:  
+   - SCADA client reconnects to server  
+   - No telemetry delays or disconnections  
+   - Alarm systems responsive  
+
+✅ **Success Criteria:** All 8 SCADA workstations patched, SCADA systems fully operational.
+
+---
+
+#### **Hitch 3: Patch Domain Controller**
+
+**Maintenance Window (4 hours):**  
+- Final 14-day cycle after client patching.
+
+**Prerequisites:**  
+- All other endpoints stable post-patch  
+- Full backup of DC (System State + VM snapshot if virtualized)  
+- FSMO roles held by this DC? Confirm no transfer needed.  
+
+**Steps:**
+1. **Pre-Window (24h prior):**  
+   - Approve update on DC via WSUS (or manual install from cached update).  
+   - Notify rig supervisor: DC will be offline ~30–45 mins during reboot.  
+2. **During Window:**  
+   - Pause non-essential services (if any).  
+   - Install update manually or via scheduled task:  
+     ```powershell
+     wusa Windows10.0-KBXXXXXXX-x64.msu /quiet /norestart
+     ```
+   - Reboot DC after install.  
+   - Monitor:  
+     - Boot into Windows  
+     - Active Directory services restart  
+     - DNS, Netlogon, Kerberos functional  
+     - Workstations can authenticate (test with one workstation)  
+3. **Post-Patch:**  
+   - Run `dcdiag /v` to validate health.  
+   - Confirm time sync (critical for SCADA).  
+   - Monitor authentication logs for 1 hour.
+
+✅ **Success Criteria:** DC updated, domain services restored, all workstations re-authenticated.
+
+---
+
+### **4. Rollback Plan (Per Phase)**
+
+| Failure Point | Action |
+|--------------|-------|
+| Update breaks login/authentication | Decline update in WSUS; reboot into Safe Mode; uninstall via `wusa /uninstall` |
+| SCADA telemetry disrupted | Pause patching; revert last patched workstation; investigate network impact |
+| DC fails to boot | Restore from VM snapshot or system state backup |
+| Bandwidth saturation detected | Throttle BITS to 512 Kbps; pause deployments; resume one-at-a-time |
+
+---
+
+### **5. Scheduling Alignment with 14-Day Hitch Cadence**
+
+| Hitch # | Activity | Duration | Outcome |
+|--------|---------|--------|--------|
+| **Hitch 0 (Pre-Patch)** | Deploy WSUS, cache update, test on 1 machine | 1 window | Caching ready, tested |
+| **Hitch 1** | Patch 5 non-critical workstations | 1 window | 36% complete |
+| **Hitch 2** | Patch 8 SCADA workstations | 1 window | 93% complete |
+| **Hitch 3** | Patch Domain Controller | 1 window | 100% complete |
+
+> **Total Time:** 42–44 days (3 hitches + prep)  
+> **Compliance Deadline:** Aligned with monthly security requirements (assuming 60-day patch window, this meets it).
+
+---
+
+### **6. Post-Deployment Verification**
+
+After Hitch 3:
+- Run `Get-Hotfix` across all 14 endpoints (via PowerShell remoting or inventory tool).  
+- Confirm KB number matches expected update.  
+- Document completion in patch management system.  
+- Schedule next month’s prep during first week of new cycle.
+
+---
+
+### **Summary: Key Success Factors**
+
+- ✅ **No bandwidth saturation:** Local WSUS + throttled, staggered installs  
+- ✅ **Zero operational impact:** Patching only during approved 4-hour windows  
+- ✅ **SCADA integrity preserved:** SCADA systems patched in controlled phases with monitoring  
+- ✅ **Authentication continuity:** DC patched last, with full backup and validation  
+- ✅ **Compliance achieved:** Full deployment within 3 cycles (~6 weeks), aligned with security policy
+
+---
+
+**Runbook Owner:** MSP NOC / Field IT Lead  
+**Approvals:** Rig Supervisor, SCADA Systems Engineer  
+**Last Updated:** [Insert Date]  
+
+🔐 *“Patch smart, not fast — especially when the rig is drilling.”*
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | FAIL |
+| regex-2 | PASS |
+
+**Patch-Window Runbook: Deploying Windows Server 2022 Cumulative Security Update to Remote Drilling Rig Site**
+
+**Pre-Patch Step (Before Touching Anything)**
+
+1. **Verify Network Utilization**: Monitor the VSAT link utilization for 24 hours prior to the scheduled maintenance window to ensure that the network is not experiencing unusually high usage. This will help ensure that there is sufficient bandwidth available for the patch deployment.
+2. **Check SCADA Telemetry**: Confirm with the SCADA operators that telemetry data is being transmitted normally and that there are no issues with the drilling operations.
+3. **Backup Domain Controller**: Perform a full backup of the domain controller to ensure that in case of any issues during the patch deployment, the system can be quickly restored.
+
+**Sequencing Endpoints for Patch Deployment**
+
+Given the 2 Mbps up / 10 Mbps down VSAT link and the need to avoid saturating the link, we will sequence the patch deployment to the 14 endpoints in the following order:
+
+1. **Domain Controller**: Patch the domain controller first, during the 4-hour maintenance window, to ensure it is updated and can authenticate users and systems without issues.
+2. **Critical Endpoints**: Patch 2-3 critical endpoints (e.g., SCADA operator workstations, drilling control systems) one at a time, allowing for a 30-minute interval between each patch deployment to avoid saturating the link.
+3. **Remaining Endpoints**: Divide the remaining 10 endpoints into 2 groups of 5. Patch one group during the current 4-hour maintenance window, and schedule the second group for the next 4-hour maintenance window (14 days later).
+
+**Patch Deployment Schedule**
+
+To fit the 14-day hitch cadence, the patch deployment schedule will be as follows:
+
+* **Day 1-2**: Monitor network utilization and perform pre-patch steps.
+* **Day 2 (during 4-hour maintenance window)**:
+	+ Patch domain controller.
+	+ Patch 2-3 critical endpoints.
+	+ Begin patching first group of 5 endpoints.
+* **Day 14 (next 4-hour maintenance window)**:
+	+ Complete patching second group of 5 endpoints.
+
+**Patch Deployment Steps**
+
+1. **Download Update**: Download the Windows Server 2022 cumulative security update to a local endpoint with internet access.
+2. **Transfer Update**: Transfer the update to the domain controller or a designated patch server using a USB drive or other offline method.
+3. **Patch Endpoints**: Use a patch management tool (e.g., WSUS, SCCM) to deploy the update to each endpoint, one at a time, allowing for a 30-minute interval between each deployment.
+
+**Post-Patch Steps**
+
+1. **Verify Patch Deployment**: Confirm that all endpoints have been patched successfully.
+2. **Monitor Network Utilization**: Continue to monitor network utilization to ensure that the patch deployment has not caused any issues.
+3. **SCADA Telemetry Check**: Verify with SCADA operators that telemetry data is being transmitted normally.
+
+By following this runbook, the patch deployment can be completed within the 4-hour maintenance window, without saturating the VSAT link or disrupting SCADA telemetry, and ensuring that all endpoints are updated and secure.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+This runbook is designed to mitigate the two primary risks of this operation: **VSAT Link Saturation** (which would disrupt SCADA telemetry) and **Authentication Failure** (which would halt drilling operations).
+
+The core strategy is **"Download Early, Deploy Locally."** We will treat the 4-hour window strictly as an installation and validation window, not a download window.
+
+---
+
+# Patch Management Runbook: Rig Site Windows Server 2022
+**Target:** 14 Endpoints (including 1 Domain Controller)  
+**Window:** 4-hour crew changeover block (Once per 14-day hitch)  
+**Constraints:** 2/10 Mbps VSAT (Shared with SCADA); Zero-tolerance for authentication latency.
+
+---
+
+### 1. Pre-Patching Phase (Days 1–12 of the Hitch)
+*Goal: Move all data across the VSAT link long before the maintenance window to ensure zero bandwidth impact during drilling/maintenance.*
+
+**Step 1: Local Repository Setup (The "Staging" Step)**
+*   **Action:** Do **not** trigger updates via Windows Update (WU) on the endpoints.
+*   **Mechanism:** Use the existing Domain Controller (DC) or a designated management workstation as a local **Windows Server Update Services (WSUS)** server or a simple local **SMB File Share**.
+*   **The "Heavy Lift":** Schedule a throttled download of the Windows Server 2022 Cumulative Update package from Microsoft to the local repository. 
+    *   *Implementation:* Use a scheduled task on the local server to download the updates at a restricted rate (e.g., 2 Mbps) during off-peak hours (if identifiable) or incrementally over several days. 
+*   **Verification:** Once downloaded, run a checksum (SHA-256) on the update files to ensure no corruption occurred during the slow VSAT transfer.
+
+**Step 2: Backup & Snapshot**
+*   Perform a full, verified image-level backup of the Domain Controller and all SCADA operator workstations. 
+*   If the endpoints are virtualized, take a manual snapshot. 
+
+---
+
+### 2. Execution Phase (The 4-Hour Maintenance Window)
+*Goal: Sequential deployment using the local repository to ensure no external traffic is generated.*
+
+**Sequence Strategy: Tiered Rollout**
+We will use a "bottom-up" dependency approach to ensure the authentication backbone is stable before moving to the endpoints.
+
+#### **Tier 1: The Core (Minutes 0–60)**
+1.  **The Domain Controller (DC):** 
+    *   Initiate the update from the local repository.
+    *   **Reboot & Verify:** Once the DC reboots, perform a "Connectivity Test." Log in to a non-critical machine to ensure DNS and Kerberos authentication are functioning perfectly.
+    *   *If DC fails to authenticate:* Immediate rollback from backup. **Do not proceed.**
+
+#### **Tier 2: Critical Operations (Minutes 60–150)**
+2.  **SCADA Operator Workstations:**
+    *   Push the update to the workstations used by the active drillers.
+    *   **Verification:** Confirm the SCADA software can pull telemetry and that the operator can authenticate via the newly patched DC.
+    *   *Note:* We patch these one by one (or in small batches of 2) to ensure we can observe any immediate telemetry drops.
+
+#### **Tier 3: General Endpoints (Minutes 150–210)**
+3.  **Remaining 11 Endpoints:**
+    *   Deploy the update to the remaining non-critical endpoints.
+    *   Since the DC and SCADA workstations are stable, these can be updated in parallel (or small batches) via the local LAN/SMB share to save time.
+
+#### **Tier 4: Validation & Cleanup (Minutes 210–240)**
+4.  **Final Audit:** Verify all 14 endpoints report "Success" in the local WSUS/update log.
+5.  **Handover:** Confirm with the incoming crew that all systems (SCADA + Windows Login) are responsive.
+
+---
+
+### 3. Contingency & Rollback Plan
+*   **Bandwidth Threshold:** If VSAT utilization exceeds 70% (monitored via router/gateway) during the window, immediately abort all patch deployments to prioritize SCADA telemetry.
+*   **Critical Failure:** If any Tier 1 or Tier 2 machine fails to return to a "Ready" state within 30 minutes of a reboot, initiate a **Full Image Restore** from the backups taken in the Pre-Patching phase.
+*   **Rollback Trigger:** If the DC is restored but cannot authenticate SCADA workstations, the patch must be uninstalled via command line (`wusa /uninstall /kb:XXXXXXX`) to prevent further drift.
+
+---
+
+### Summary of Alignment with Constraints
+| Constraint | Mitigation Strategy |
+| :--- | :--- |
+| **VSAT Bandwidth** | Updates are pre-downloaded over 12 days; deployment uses local LAN only. |
+| **SCADA Priority** | No internet-bound traffic is permitted during the 4-hour window. |
+| **Authentication** | DC is patched and verified as "Healthy" before any other endpoint is touched. |
+| **14-Day Hitch** | Pre-staging happens throughout the hitch; execution is limited to the specific 4-hour window. |
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+**Patch‑Window Run‑book – Windows Server 2022 Cumulative Update  
+(14‑day Hitch Schedule – 4‑hour window during crew changeover)**  
+
+| Section | Purpose | Key Actions |
+|---------|---------|-------------|
+| **Pre‑Patch** | Prepare the rig, the SCADA system, and the update infrastructure before the 4‑hour window. | 1. **Inventory & Health Check**<br>• Verify all 14 domain‑joined endpoints (1 DC + 13 workstations).<br>• Ensure each has ≥ 10 % free disk space, healthy event‑log, and no pending patches.<br>• Confirm SCADA telemetry is functioning (ping/RTT test, sample telemetry packet).<br>• Run `sfc /scannow` and `dism /online /cleanup-image /scanhealth` on each endpoint.<br>• Take a full system image or snapshot (VM‑based or physical backup) on the DC and all clients.  <br>2. **Bandwidth & QoS Configuration**<br>• On the VSAT gateway, create a QoS policy to *limit the uplink (2 Mbps) to 1.5 Mbps* for all non‑SCADA traffic.<br>• Set a download cap of **8 Mbps** on the downlink for Windows Update traffic (10 Mbps total – leave 2 Mbps head‑room for SCADA commands).<br>• Verify the policy is active (traffic‑shaping logs, bandwidth monitor).<br>3. **Test the Update in Lab**<br>• Pull the cumulative update from WSUS or Microsoft Update. <br>• Install on a non‑production clone of the server/client OS; record install time (~15 min per machine) and reboot behavior.<br>• Confirm the update applies cleanly and that the machine boots normally. <br>4. **Create a Patching Schedule**<br>• List the 14 endpoints in a table, ordering them by *patch priority* (clients first, DC last).<br>• Assign each endpoint to a *1‑hour patch slot* (four endpoints per hour).<br>• Generate a **PowerShell script** (`Patch-Seq.ps1`) that will: <br> - Invoke WSUS download (`wuauclt /detectnow`), <br> - Install silently (`wusa /quiet /norestart`), <br> - Log start/finish timestamps, <br> - Queue a reboot *only* at the end of the 4‑hour window. <br>5. **Notify Stakeholders**<br>• Send a patch‑window calendar invite to all crew members and SCADA operators. <br>• Include a brief “What to expect” handout (reboots, temporary downtime). |
+| **Patch Execution** | Apply the update *sequentially* in four 1‑hour blocks to keep the link from saturating and to avoid compromising SCADA telemetry. | **Hour 1 (0:00‑1:00)**<br>• Start `Patch-Seq.ps1` for endpoints A, B, C, D.<br>• Monitor download speed (ensure ≤ 8 Mbps).<br>• Verify each machine completes the install (no errors).<br>• If a reboot is required, *delay the reboot* until the 4‑hour window ends. <br>**Hour 2 (1:00‑2:00)**<br>• Repeat for endpoints E, F, G, H. <br>**Hour 3 (2:00‑3:00)**<br>• Repeat for endpoints I, J, K, L. <br>**Hour 4 (3:00‑4:00)**<br>• Patch the last two endpoints (M = remaining client, N = Domain Controller).<br>• Perform a *quick health check* on the DC (log‑on, DNS, AD replication). <br>• If any machine fails to install, run the rollback script (snapshot revert). <br>• At 4:00 pm, trigger the queued reboots (PowerShell `Restart-Computer -Force`). |
+| **Post‑Patch** | Verify that all systems are healthy, that SCADA telemetry is back to normal, and that the patch succeeded. | 1. **Reboot & Test**<br>• After the 4‑hour window, allow the queued reboots to complete.<br>• Log into each machine; verify that it starts normally. <br>• Run `wmic qfe list brief /format:table` to confirm the cumulative update is installed. <br>2. **SCADA Telemetry Check**<br>• Confirm telemetry packets are being sent/received without delay.<br>• Run a 30‑minute telemetry test (RTT, packet loss). <br>3. **Event Log & Performance**<br>• Scan Windows Event Logs for any critical errors (`EventID 1000` etc.).<br>• Verify CPU/memory usage during patching was within acceptable thresholds. <br>4. **Documentation**<br>• Update the patch‑log spreadsheet with timestamps, any errors, and re‑boot status.<br>• Archive the PowerShell script, logs, and snapshot metadata. <br>5. **Notify**<br>• Send a “Patch complete” email to crew & SCADA operators with a brief summary. |
+| **Alignment with 14‑Day Hitch Cadence** | Ensure the patch is completed once per hitch and does not interfere with drilling operations. | • The **4‑hour window** is scheduled *exactly* during the crew changeover (day 14 of the hitch). <br>• All patching activities start *after* the SCADA telemetry has been verified to be stable and *before* the next 14‑day cycle begins. <br>• No patching traffic is allowed outside this window; all scripts and bandwidth policies are disabled after the 4‑hour window. <br>• The next patch will be scheduled for the *next* hitch’s day 14, ensuring a 14‑day cadence. |
+| **Fail‑Safe & Rollback** | Procedures if patching fails or SCADA telemetry degrades. | 1. **Immediate Stop** – If telemetry degrades, pause the patch script and release bandwidth controls. <br>2. **Rollback** – Restore the snapshot on the affected machine(s). <br>3. **Contact** – Notify the remote engineering team and SCADA lead. <br>4. **Re‑attempt** – After restoration, retry patching with a narrower download window (e.g., 2 Mbps down) to avoid saturating the link. |
+| **Key Metrics to Monitor** | Real‑time indicators that the patching is not impacting SCADA. | • **Uplink Utilization** – must stay ≤ 1.5 Mbps. <br>• **Downlink Utilization** – capped at 8 Mbps. <br>• **SCADA Latency** – < 200 ms. <br>• **Patch Install Time** – ≤ 20 min per machine. <br>• **Error Rate** – 0 critical errors in event logs. |
+
+---
+
+### Summary Flow
+
+1. **Day 13 (pre‑patch)** – Health checks, backup, QoS setup, schedule creation, stakeholder notification.  
+2. **Day 14 (4‑hour window)** –  
+   - Hour 1: patch 4 clients.  
+   - Hour 2: patch next 4 clients.  
+   - Hour 3: patch next 4 clients.  
+   - Hour 4: patch last client + DC.  
+   - Queue reboots for end of window.  
+3. **Post‑patch** – Reboots, verification, telemetry test, documentation, notification.  
+4. **Repeat** for every 14‑day hitch.
+
+This run‑book keeps the VSAT link from saturating, protects SCADA telemetry, adheres strictly to the 14‑day hitch cadence, and ensures a recoverable, auditable patch process.
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+# Patch‑Window Runbook  
+**Deploying the Windows Server 2022 cumulative security update (KB‑xxxxx) to a 14‑node remote drilling‑rig site**  
+
+**Scope** – 14 domain‑joined endpoints (13 workstations + 1 Domain Controller) that must receive the patch **without** impacting the SCADA/drilling‑telemetry link (VSAT 2 Mbps ↑ / 10 Mbps ↓).  
+
+**Operational constraint** – Only a **4‑hour** maintenance window is available each hitch (the day‑to‑night crew‑changeover). The rig runs on a **14‑day hitch schedule**, so the window recurs every 14 days.  
+
+**Goal of this runbook** – Provide a repeatable, low‑bandwidth patch‑deployment plan that:  
+
+1. Guarantees continuous SCADA telemetry.  
+2. Keeps the DC online for authentication throughout the hitch.  
+3. Completes the patch for **all 14 nodes** within a single 4‑hour window **each hitch**.  
+4. Fits cleanly into the 14‑day hitch cadence.  
+
+---  
+
+## 1.  High‑Level Strategy  
+
+| Phase | What | Why | Bandwidth Impact |
+|-------|------|-----|------------------|
+| **A – Pre‑patch preparation** | Build & test a local cache, create throttling policies, verify backup & rollback media. | All heavy traffic is done **offline** or at a throttled rate **outside** the maintenance window. | Minimal/no impact on VSAT. |
+| **B – Patch‑rollout sequencing** | Deploy in 3 staggered waves (DC → “non‑critical” workstations → “critical” workstations) using a **peer‑to‑peer/BranchCache** distribution model. | DC must stay up for authentication; critical workstations are kept to a minimum during the window; peer traffic reduces upstream saturation. | Peaks ≤ 300 kbps upstream (well under 2 Mbps). |
+| **C – Validation & cut‑over** | Run health‑checks, confirm SCADA telemetry, verify DC replication, then promote the patched DC as the sole authentication source. | Guarantees that any problem is caught before the next production shift. | No additional bandwidth; only small status packets. |
+| **D – Documentation & hand‑off** | Record results, update the “Patch‑Ready” status for the next hitch. | Enables repeatability on the next 14‑day cycle. | None. |
+
+---  
+
+## 2.  Pre‑Patch Steps (Take‑Before‑You‑Touch)  
+
+| # | Action | Owner | Deliverable | Timing |
+|---|--------|-------|-------------|--------|
+| 1 | **Baseline health snapshot** – Capture OS version, installed hot‑fix level, disk free space, and current VSAT utilization (via `netsh mbmon` or similar). | Site Engineer | Baseline CSV (≈ 5 KB) stored on local USB stick. | **Day ‑ 1** of the hitch (48 h before the maintenance window). |
+| 2 | **Download & stage the cumulative update** – Pull the MSU from Microsoft Update Catalog to a **portable 8 GB SSD** during the previous hitch (or via a low‑traffic night window). Verify SHA‑256 hash. | Patch Engineer (remote) | `Win2022-KBxxxxx-x64.msu` (≈ 1.8 GB) stored on SSD. | **Day ‑ 2** (outside the 4‑hr window). |
+| 3 | **Create a local WSUS/SCCM “offline” depot** on a dedicated 1 TB NAS (connected via gigabit Ethernet to the LAN). Import the MSU; enable **Package Deployment** with **bandwidth throttling** set to **≤ 250 kbps** upstream. | IT Ops | Depot ready; WSUS content directory ~2 GB. | **Day ‑ 2**. |
+| 4 | **Configure peer‑to‑peer distribution** – Enable **BranchCache** (or Windows Peering Cache) on the LAN; set it to **Cache mode** (stores content locally) and limit **max download bandwidth** to 200 kbps per client. | Network Engineer | BranchCache policy applied to all 14 endpoints. | **Day ‑ 2**. |
+| 5 | **Backup critical data** – Export the latest System State (including AD database, SYSVOL, and SCADA configuration files) to the NAS and to an offline USB drive. Verify restore test on a lab VM. | DC Admin | Backup set (≈ 200 GB) verified. | **Day ‑ 1**. |
+| 6 | **Communication & approvals** – Send the “Patch‑Window Schedule” to the Rig Manager, Drilling Supervisor, and SCADA Ops lead. Obtain written acknowledgment that the 4‑hour window will be used **only** for patching. | Site Manager | Email thread with sign‑off. | **Day ‑ 1**. |
+| 7 | **Test the patch on a non‑production VM** – Install the cumulative update on a Windows Server 2022 VM with the same patch level as the DC. Confirm no unexpected reboots, services, or authentication impact. | QA Engineer | Test report (pass/fail). | **Day ‑ 2**. |
+
+> **Result of Phase A:** All heavy data movement (download, import, baseline capture) is completed **before** the 4‑hour maintenance window. The only thing that travels over the VSAT during the window is **throttled patch metadata** and **status reports**, which together never exceed ~300 kbps.
+
+---  
+
+## 3.  Patch‑Deployment Sequencing (Phase B)  
+
+### 3.1  General Rules  
+
+| Rule | Rationale |
+|------|-----------|
+| **Never patch the DC first** – the DC must stay online to authenticate all other hosts. | If the DC goes down, the whole site loses AD authentication and SCADA loses its security token source. |
+| **Patch non‑critical workstations in batches of 3–4** – each batch is staggered by **5 minutes** to keep the upstream aggregate < 300 kbps. | The VSAT upstream is limited; 3–4 simultaneous downloads ≈ 150 kbps each → total ≈ 450 kbps, but with throttling we keep it under 300 kbps. |
+| **Patch “critical” workstations (SCADA operator consoles) last** – they are the most sensitive to any network latency. | Their patch can be deferred to the next hitch if any anomaly occurs. |
+| **All reboots are forced to occur **after** the 4‑hour window ends** – use the “Schedule Restart” option in WSUS/SCCM to reboot at **+5 minutes** after the window closes, ensuring the patch install finishes before the next production shift starts. | Guarantees the rig never runs a half‑patched OS while drilling. |
+| **Peer‑cache warm‑up** – after each batch finishes, the newly patched machines become cache seeds for the next batch. | Reduces upstream traffic further. |
+
+### 3.2  Detailed Rollout Timeline (4‑Hour Window)
+
+| Time (hh:mm) | Action | Affected Nodes | Bandwidth Used (approx.) |
+|--------------|--------|----------------|--------------------------|
+| **00:00 – 00:05** | **Kick‑off** – Verify that the maintenance window is authorized, that the SCADA link is at its baseline utilization, and that the DC is healthy (`dcdiag`). | All | Negligible (status packets). |
+| **00:05 – 00:12** | **Patch the Domain Controller** (DC01) – Deploy the cumulative update from the local depot, enable **“Install but do not restart”** option, set a **scheduled restart for +5 min** (i.e., 00:17). | 1 (DC) | ≤ 150 kbps (single stream, throttled). |
+| **00:12 – 00:17** | **Monitor DC patch** – Ensure the DC finishes install, reboots, and comes back online (check `dcdiag /test:replications`). | DC | Same as above. |
+| **00:17 – 00:22** | **Patch Batch 1 – Non‑critical workstations** (IDs 001‑003). | 3 workstations | ≤ 200 kbps total (3 × ~70 kbps). |
+| **00:22 – 00:27** | **Patch Batch 2 – Non‑critical workstations** (IDs 004‑006). | 3 workstations | Same as above. |
+| **00:27 – 00:32** | **Patch Batch 3 – Non‑critical workstations** (IDs 007‑009). | 3 workstations | Same as above. |
+| **00:32 – 00:37** | **Patch Batch 4 – Critical workstations** (IDs 010‑012). | 3 workstations | Same as above. |
+| **00:37 – 00:42** | **Patch Batch 5 – Critical workstation** (ID 013) – the last remaining workstation that hosts the SCADA client UI. | 1 workstation | ≤ 70 kbps. |
+| **00:42 – 00:45** | **Patch Batch 6 – Final workstation** (ID 014). | 1 workstation | ≤ 70 kbps. |
+| **00:45 – 00:50** | **Validation Run** – Run health‑check scripts on each patched host (`winver`, service status, SCADA connectivity test). | All patched | Negligible (status). |
+| **00:50 – 00:55** | **DC Replication Check** – Verify AD replication status (`repadmin /replsum`). | DC + all workstations | Negligible. |
+| **00:55 – 01:00** | **Close‑out** – Document patch success, push a “Patch Completed” flag to the central ticketing system, and power‑cycle the DC (if required) to start the **scheduled reboot** that was set earlier. | DC | Negligible. |
+| **01:00 – 04:00** | **Buffer / Contingency** – If any host fails to reboot or shows errors, the crew can intervene with local console access. No network traffic is generated beyond the local LAN. | — | None. |
+
+> **Total upstream traffic** during the entire 4‑hour window stays **≤ 300 kbps**, well under the 2 Mbps ceiling and far enough below the 10 Mbps downstream limit that SCADA telemetry remains untouched.
+
+### 3.3  Why This Sequence Fits the 14‑Day Hitch  
+
+| Hitch Day | Activity | Outcome |
+|-----------|----------|----------|
+| **Day 1 (Start of hitch)** | Crew arrival, system health check, confirm baseline metrics. | Ready for patch window. |
+| **Day 2–13** | Normal production – SCADA runs uninterrupted. | No patch activity, bandwidth reserved for drilling telemetry. |
+| **Day 14 (Crew‑changeover)** | **4‑hour maintenance window** – Execute the rollout as described. | All 14 endpoints patched **and** rebooted before the next crew takes over. |
+| **Day 15** | New crew inherits a fully patched environment; the patch status is recorded in the asset‑management system. | Cycle repeats every 14 days. |
+
+Because the **only time any bandwidth‑intensive operation occurs** is the **planned 4‑hour window** that already exists for crew changeover, the patch schedule **does not create a new constraint**; it merely *uses* that window efficiently.
+
+---  
+
+## 4.  Bandwidth‑Management Details  
+
+| Technique | Implementation | Expected Impact |
+|-----------|----------------|-----------------|
+| **WSUS/SCCM bandwidth throttling** | Set **Maximum Download Bandwidth = 250 kbps** per client; enable **“Only download during maintenance window”**. | Guarantees the upstream never exceeds ~300 kbps even when several clients are active. |
+| **BranchCache (Cache mode)** | Enable on the LAN NICs; set **Cache size = 2 GB** per client; configure **“Allow client-to-client communication”**. | Patched machines become local distribution points, cutting the need for repeated downstream copies. |
+| **Peer‑to‑Peer “Delivery Optimization”** (Windows 10/Server 2022) | Use Group Policy `Delivery Optimization → Group Policy Path: Computer Configuration → Administrative Templates → Windows Components → Delivery Optimization → “Enable peer‑to‑peer distribution”`. Set **Maximum download bandwidth = 200 kbps** per client. | Further reduces simultaneous upstream usage; the first patched host caches the MSU and supplies it to peers. |
+| **Scheduled restarts** | Use WSUS/SCCM “Restart computer after 5 minutes” option, *after* the maintenance window ends. | Guarantees that the host does not reboot while still handling SCADA traffic. |
+| **Local depot replication** | Store the MSU on a gigabit‑connected NAS; replicate the depot to a second NAS in the field (optional) for redundancy. | Eliminates any need to pull the patch over VSAT after Day ‑ 2. |
+
+---  
+
+## 5.  Validation & Rollback Procedure  
+
+1. **Post‑patch health script** (`Validate-Patch.ps1`) runs on each machine:  
+   - Checks OS version, build number, and that the cumulative update KB is listed in `HotFixes`.  
+   - Verifies that the **SCADA client process** (`SCADA_Client.exe`) starts and can ping the remote rig’s data‑acquisition server.  
+   - Returns **PASS/FAIL** to the central ticket.  
+
+2. **If any host fails**:  
+   - Isolate it on the LAN (disable its switch port).  
+   - Use the **offline USB backup** to roll back the OS to the pre‑patch snapshot (via `wbadmin` or Windows Recovery).  
+   - Notify the Rig Manager and schedule a re‑patch during the **next** hitch’s window.  
+
+3. **DC rollback**: Because the DC is patched first, its reboot is scheduled **after** all other hosts have completed their installs. If the DC fails to come back:  
+   - Use the **offline System State backup** to perform an authoritative restore on a spare server (kept onsite).  
+   - Re‑join the repaired DC to the domain and re‑establish replication before proceeding with workstation patches.  
+
+---  
+
+## 6.  Communication & Documentation  
+
+| Item | Owner | Frequency | Content |
+|------|-------|-----------|---------|
+| **Pre‑patch briefing** | Site Manager | Day ‑ 1 of each hitch | Agenda, window schedule, contacts, escalation matrix. |
+| **Patch‑status board** | IT Ops (on‑site tablet) | Live during the 4‑hour window | Real‑time progress (which batch, which node, bandwidth usage). |
+| **Post‑patch report** | Patch Engineer | End of window (Day 14) | List of patched nodes, bandwidth logs, validation results, any anomalies. |
+| **Hitch‑handover checklist** | Shift Supervisor | At crew change | Confirm “Patch Completed” flag, backup status, SCADA health. |
+| **Knowledge‑base entry** | Documentation Lead | After each successful hitch | Step‑by‑step runbook (this document) + lessons learned. |
+
+---  
+
+## 7.  Summary Timeline Aligned to the 14‑Day Hitch  
+
+| Day | Activity | Duration | Bandwidth Impact |
+|-----|----------|----------|------------------|
+| **Day 1 (Hitch start)** | Baseline health check, crew safety briefing. | 1 h | None |
+| **Day
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | PASS |
+| regex-2 | PASS |
+
+### Patch Window Runbook: VSAT Rig Site (Windows Server 2022 CU)
+
+**Site Profile:** Remote Drilling Rig  
+**Network:** VSAT Backhaul (2 Mbps Up / 10 Mbps Down), Shared with SCADA/Telemetry.  
+**Endpoints:** 14 Domain-Joined (1x DC, SCADA Ops, General).  
+**Window:** 4 Hours Max | 1x Per 14-Day Hitch | **Zero Tolerance for Degraded Auth/SCADA.**
+
+---
+
+### 1. Pre-Patch Steps (T-Minus 12 Hours to Window)
+*Execution order is critical. Do not proceed to the window until these are complete.*
+
+**A. Validation & Rollback Preparation**
+1.  **Update Verification:** Confirm the specific Windows Server 2022 CU version is compatible with all 14 endpoints. Verify no known regressions affecting Active Directory or remote access.
+2.  **Backup Critical Assets:**
+    *   **Domain Controller:** Perform a full system state backup to a local NAS or offline media. Verify restoration capability. *Risk: DC failure locks out SCADA operators and halts rig telemetry auth.*
+    *   **SCADA Workstations:** Snapshot/Backup configuration.
+3.  **SCADA Health Baseline:** Verify SCADA telemetry is stable and SCADA-to-Rig data links are active. Ensure no SCADA alerts are pending.
+4.  **Rollback Plan:** Document the exact image restore procedures for the DC and SCADA nodes. Ensure the restore media is physically present or accessible via local cache (not over VSAT).
+5.  **Communication:** Brief the rig crew on the 4-hour maintenance window. Ensure the shift changeover team acknowledges the maintenance will occur.
+
+**B. Network & Deployment Prep**
+1.  **Delivery Optimization:** Enable Windows Update Delivery Optimization on all endpoints. Configure a local caching point (e.g., the DC or a dedicated patched node) to allow bits-sharing. *This is mandatory to reduce total data traversing the VSAT link.*
+2.  **Bandwidth Throttling:** Configure update clients to throttle download to **≤ 3 Mbps (2.5 MB/s)** on the VSAT interface.
+    *   *Rationale:* Preserves 7 Mbps for SCADA telemetry and ensures update traffic does not burst and congest the satellite buffer, which could drop critical telemetry packets.
+3.  **Queueing Policy:** Configure deployment tool (Intune/SCCM/WSU) to enforce sequential or staggered execution. **Prohibit** "Push to all at once."
+
+---
+
+### 2. Endpoint Sequencing Strategy
+*Given the 10 Mbps down constraint and shared SCADA traffic, simultaneous updates will cause link saturation and SCADA jitter. Updates must be sequenced by criticality and network dependency.*
+
+**Sequence Order:**
+1.  **Domain Controller (1 Endpoint)**
+2.  **SCADA Operator Workstations (Priority Endpoints)**
+3.  **Remaining General Endpoints (Staggered)**
+
+**Execution Details:**
+
+*   **Step 1: Domain Controller (The Anchor)**
+    *   *Action:* Patch DC immediately upon window start.
+    *   *Reasoning:* DC authentication must remain functional for the remainder of the window. If the DC update fails, the window is compromised for all endpoints. Patching the DC first ensures the highest value asset is handled while the window is fresh and leaves maximum time for troubleshooting.
+    *   *Action:* Apply update → Reboot → Verify DC health, AD services, and auth capability.
+    *   *Gate:* If DC fails or fails verification, **STOP**. Execute Rollback. Do not touch other endpoints.
+
+*   **Step 2: SCADA Workstations (Critical Ops)**
+    *   *Action:* Patch SCADA operator workstations immediately after DC verification.
+    *   *Reasoning:* These endpoints authenticate to the DC for rig operations. If these are patched and lose connectivity or fail auth, operators may be stranded during the shift changeover. They also rely on telemetry stability.
+    *   *Action:* Apply update → Reboot → Verify auth against DC and SCADA connectivity.
+    *   *Optimization:* At this point, the Delivery Optimization cache is likely populated. Use the cache to minimize VSAT usage for these nodes.
+
+*   **Step 3: Remaining 12 Endpoints (Staggered Rollout)**
+    *   *Action:* Stagger the remaining endpoints to prevent download collisions.
+    *   *Mechanism:* Trigger updates in batches of 3 every 20–30 minutes.
+    *   *Bandwidth Management:* With 14 endpoints, a 1GB update could take ~12 minutes at 10 Mbps. Without throttling, 3 nodes downloading simultaneously could saturate the link.
+    *   *Action:* Apply updates → Reboot → Verify.
+    *   *Constraint:* If the cumulative time exceeds the 3.5-hour hard stop, pause remaining updates. Verify status of completed nodes. Do not risk the final 15 minutes of the shift changeover.
+
+---
+
+### 3. 14-Day Hitch Cadence & Window Discipline
+
+**The "Single Shot" Mindset:**
+*   **Cadence:** Updates occur once per 14-day hitch. There is no "next week" retry. If the window fails, the site remains unpatched for two weeks.
+*   **Window Discipline:** The 4-hour block is absolute. The runbook must respect the shift changeover boundary.
+
+**
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-1 | PASS |
+| regex-0 | FAIL |
+| regex-2 | PASS |
+
+# PATCH-WINDOW RUNBOOK: Windows Server 2022 Cumulative Security Update
+**Site:** Remote Drilling Rig | **Network:** VSAT (2 Mbps up / 10 Mbps down) | **Endpoints:** 14 (incl. 1 DC) | **Window:** 4 hrs on changeover day | **Cadence:** 14-day hitch
+
+---
+
+## 🔒 PHASE 0: PRE-PATCH PREREQUISITE (MANDATORY GATEWAY)
+*Do not touch WSUS/MECM, deployment policies, or endpoints until this step is verified complete.*
+
+**Step:** **Pre-stage the update payload locally AND create verified system restore points on all 14 endpoints (DC first), while confirming SCADA credential caching and locking the authentication/telemetry baseline.**
+
+| Sub-step | Action | Verification |
+|----------|--------|--------------|
+| 0.1 | Generate a **System Restore Point** (or VM snapshot if virtualized) on all 14 endpoints. DC receives first. | Confirm restore point age = <24h. Record point IDs in ticket. |
+| 0.2 | Pre-stage update via **compressed delta/CAB packages** (WSUS `CompressUpdates = True` or MECM `CompressPayload`). Target size: ≤350 MB/endpoint. | Confirm local cache on site WSUS/MECM server reaches ≥100% compliance. |
+| 0.3 | Force **credential caching validation** on all SCADA operator workstations (run `klist purge` → `logoff` → `logon` 24h prior). | Confirm `dpapimig`/cached credentials present via `net accounts` and `klist`. |
+| 0.4 | Capture **baseline metrics**: KDC latency, SCADA telemetry throughput, auth failure rate, VSAT jitter. | Log baseline in monitoring system. Mark as `BASELINE_LOCKED`. |
+
+*If any sub-step fails → DEFER to next hitch. No patching proceeds.*
+
+---
+
+## 📡 PHASE 1: VSAT & SCADA PROTECTION
+*Apply immediately after Phase 0 gate passes, before any endpoint contact.*
+
+| Control | Configuration |
+|---------|---------------|
+| **QoS Priority** | SCADA/telemetry → DSCP `EF` (priority 1). Update traffic → `AF11` (low priority). Non-
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

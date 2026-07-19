@@ -1,0 +1,1009 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+This Python script summarizes SCADA pressure-sensor readings for a drilling rig's daily
+report. It has TWO distinct bugs: one you can find by comparing the code to the spec comment
+on line 3, and one that will not throw any error or crash, but silently corrupts output when
+the report covers more than one well in the same run. Find both, cite the line each one is
+on, and give the fix for each.
+
+```
+ 1  import statistics
+ 2
+ 3  ALERT_THRESHOLD_PSI = 4500  # engineering spec: flag any reading >= 4500 psi
+ 4
+ 5
+ 6  def load_readings(sensor_log):
+ 7      """sensor_log: list of (well_id, psi_reading) tuples from the SCADA feed."""
+ 8      readings_by_well = {}
+ 9      for well_id, psi in sensor_log:
+10          readings_by_well.setdefault(well_id, []).append(psi)
+11      return readings_by_well
+12
+13
+14  def flag_overpressure_events(readings, alerts=[]):
+15      """Return the list of psi readings that breach the over-pressure threshold."""
+16      for psi in readings:
+17          if psi > ALERT_THRESHOLD_PSI:
+18              alerts.append(psi)
+19      return alerts
+20
+21
+22  def summarize_well(well_id, readings):
+23      events = flag_overpressure_events(readings)
+24      avg = statistics.mean(readings)
+25      return {
+26          "well_id": well_id,
+27          "avg_psi": round(avg, 1),
+28          "overpressure_events": len(events),
+29          "max_psi": max(readings),
+30      }
+31
+32
+33  def generate_daily_report(sensor_log):
+34      """Called once per rig, once per day, over all wells reporting that day."""
+35      readings_by_well = load_readings(sensor_log)
+36      report = []
+37      for well_id, readings in readings_by_well.items():
+38          report.append(summarize_well(well_id, readings))
+39      return report
+```
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+Let's analyze the script step by step to identify the two bugs as described.
+
+---
+
+### 🔍 Bug 1: **Incorrect use of mutable default argument**
+
+#### 📍 Line: **14**
+```python
+def flag_overpressure_events(readings, alerts=[]):
+```
+
+#### ✅ **Bug Description:**
+The function `flag_overpressure_events` uses a **mutable default argument** (`alerts=[]`). In Python, default arguments are evaluated once at function definition time, not each time the function is called. This can lead to **shared state** between function calls.
+
+#### ❌ What happens:
+If you call `flag_overpressure_events` multiple times without explicitly passing `alerts`, the same list object is reused. So, for example:
+- First call adds values to `alerts`
+- Second call reuses the same list and continues appending to it.
+
+#### 🔧 **Fix:**
+Change the default argument to `None`, and create a new list inside the function if needed.
+
+```python
+def flag_overpressure_events(readings, alerts=None):
+    if alerts is None:
+        alerts = []
+    for psi in readings:
+        if psi > ALERT_THRESHOLD_PSI:
+            alerts.append(psi)
+    return alerts
+```
+
+---
+
+### 🔍 Bug 2: **Silent corruption when handling multiple wells**
+
+#### 📍 Line: **23**
+```python
+events = flag_overpressure_events(readings)
+```
+
+#### ✅ **Bug Description:**
+This line calls `flag_overpressure_events` **without passing `alerts`**, so it will use the default `alerts=[]`. Because of the previous bug (mutable default), this list is shared across all wells.
+
+Hence, for multiple wells, the list of overpressure events gets contaminated with data from all wells — especially if multiple wells have overpressure events.
+
+#### ❌ What happens:
+If one well has overpressure events and another one doesn't, the second well still modifies the same `alerts` list, causing incorrect data to appear in the final result.
+
+#### 🔧 **Fix:**
+Explicitly pass a fresh list for each well or ensure that `flag_overpressure_events` does not mutate any shared state.
+
+##### Option 1: Fix in `summarize_well` by creating a new list
+```python
+def summarize_well(well_id, readings):
+    events = flag_overpressure_events(readings, [])
+    avg = statistics.mean(readings)
+    return {
+        "well_id": well_id,
+        "avg_psi": round(avg, 1),
+        "overpressure_events": len(events),
+        "max_psi": max(readings),
+    }
+```
+
+> This ensures that every call to `flag_overpressure_events` operates on its own list.
+
+---
+
+### ✅ Summary
+
+| Bug # | Line | Description | Fix |
+|------|------|-------------|-----|
+| 1 | 14 | Mutable default argument (`alerts=[]`) | Change to `alerts=None` and initialize inside function |
+| 2 | 23 | Reusing mutable default leads to cross-contamination of data across wells | Pass an empty list explicitly to `flag_overpressure_events` |
+
+Let me know if you'd like the corrected script!
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Let's carefully analyze the script based on the **spec** and runtime behavior.
+
+---
+
+### 🔍 **Bug 1: Violates Specification in Comment on Line 3**
+
+#### 📌 Line 3:
+```python
+ALERT_THRESHOLD_PSI = 4500  # engineering spec: flag any reading >= 4500 psi
+```
+
+> **Spec says:** Flag any reading **greater than or equal to** 4500 psi.
+
+#### 🔎 Problem:
+On **line 17**:
+```python
+if psi > ALERT_THRESHOLD_PSI:
+```
+This uses **strict inequality** (`>`), so a reading **exactly equal to 4500 psi** will **not** be flagged.
+
+But according to the spec, **4500 psi should trigger an alert**.
+
+#### ✅ Fix:
+Change `>` to `>=` to match the specification.
+
+> **Line 17 (Bug):**
+```python
+if psi > ALERT_THRESHOLD_PSI:
+```
+
+> **Fix (Line 17):**
+```python
+if psi >= ALERT_THRESHOLD_PSI:
+```
+
+---
+
+### 🔍 **Bug 2: Silent Data Corruption with Multiple Wells (Mutable Default Argument)**
+
+#### 📌 Line 14:
+```python
+def flag_overpressure_events(readings, alerts=[]):
+```
+
+> This is a **classic Python pitfall**: using a **mutable default argument** (`alerts=[]`).
+
+The `alerts` list is created **once at function definition time**, not each time the function is called. So if the function is called multiple times (as it will be for multiple wells), the `alerts` list **retains values from previous calls**, leading to **accumulated, incorrect events**.
+
+#### 🔎 Example of Silent Corruption:
+- Well A: has overpressure event [4600]
+- Well B: has no overpressure
+- But `flag_overpressure_events` for Well B gets called with the same `alerts` list that already contains 4600 → Well B incorrectly reports 1 event.
+
+This bug **won't crash** the program, but **corrupts the output silently** when more than one well is processed.
+
+#### ✅ Fix:
+Avoid mutable defaults. Use `None` as default and initialize inside the function.
+
+> **Line 14 (Bug):**
+```python
+def flag_overpressure_events(readings, alerts=[]):
+```
+
+> **Fix (Lines 14–15):**
+```python
+def flag_overpressure_events(readings, alerts=None):
+    if alerts is None:
+        alerts = []
+```
+
+Alternatively, just create a new list inside the function and return it without relying on mutation, which would be cleaner.
+
+But even better: **don't use a default mutable argument**, and avoid shared state.
+
+Even better refactor (optional but clean):
+```python
+def flag_overpressure_events(readings):
+    return [psi for psi in readings if psi >= ALERT_THRESHOLD_PSI]
+```
+Then remove reliance on `alerts` altogether.
+
+But as per current structure, **the root issue is the mutable default**.
+
+---
+
+### ✅ Summary of Bugs
+
+| Bug | Line | Description | Fix |
+|-----|------|-----------|-----|
+| **1** | **17** | Uses `>` instead of `>=`, missing exact threshold alerts | Change to `psi >= ALERT_THRESHOLD_PSI` |
+| **2** | **14** | Mutable default argument `alerts=[]` causes state leakage across wells | Change to `alerts=None`, initialize inside function |
+
+---
+
+### ✅ Final Fixes
+
+#### 🔧 Fix for Bug 1 (Line 17):
+```python
+if psi >= ALERT_THRESHOLD_PSI:  # Was: if psi > ALERT_THRESHOLD_PSI:
+```
+
+#### 🔧 Fix for Bug 2 (Lines 14–15):
+```python
+def flag_overpressure_events(readings, alerts=None):
+    if alerts is None:
+        alerts = []
+```
+
+Or better yet, eliminate the issue entirely:
+
+```python
+def flag_overpressure_events(readings):
+    return [psi for psi in readings if psi >= ALERT_THRESHOLD_PSI]
+```
+
+(Then remove the `alerts=[]` parameter and any mutation logic.)
+
+> ⚠️ With this second fix, **both bugs are resolved**, and the code becomes safer and clearer.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+Here are the two bugs, their line citations, and the recommended fixes:
+
+### **Bug 1 (Line 17)**
+* **Issue:** The engineering spec on line 3 explicitly states to flag readings `>= 4500 psi`, but the code uses `>` (`if psi > ALERT_THRESHOLD_PSI:`). This causes a reading of exactly `4500` to be silently ignored, violating the spec.
+* **Fix:** Change the comparison operator to `>=`.
+  ```python
+  if psi >= ALERT_THRESHOLD_PSI:
+  ```
+
+### **Bug 2 (Line 15)**
+* **Issue:** The function uses a **mutable default argument** (`alerts=[]`). In Python, default arguments are evaluated only once when the function is defined. This means a single `list` object is shared across all calls to `flag_overpressure_events`. When the report processes multiple wells, overpressure events from earlier wells keep accumulating in the same list. Consequently, `len(events)` on line 28 returns a cumulative count across all processed wells instead of the count for the current well.
+* **Fix:** Remove the mutable default parameter and initialize the list fresh inside the function. This ensures each well gets its own isolated list.
+  ```python
+  def flag_overpressure_events(readings):
+      alerts = []  # Move initialization here
+      for psi in readings:
+          if psi >= ALERT_THRESHOLD_PSI:  # Also applies Bug 1 fix here
+              alerts.append(psi)
+      return alerts
+  ```
+  *(Alternatively, use the `None` sentinel pattern: `def flag_overpressure_events(readings, alerts=None):` followed by `if alerts is None: alerts = []` at the top of the function body.)*
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+**Bug 1**
+*   **Line:** 17
+*   **Issue:** The condition uses `>` instead of `>=`. The engineering spec on line 3 states that any reading **>= 4500** psi should be flagged. Currently, a reading of exactly 4500 is ignored.
+*   **Fix:** Change the condition on line 17 to:
+    ```python
+    if psi >= ALERT_THRESHOLD_PSI:
+    ```
+
+**Bug 2**
+*   **Line:** 14
+*   **Issue:** The function uses a mutable default argument (`alerts=[]`). In Python, default arguments are evaluated only once at definition time. This means the same list object is reused for every call to `flag_overpressure_events`. When processing multiple wells, events from the first well accumulate in the list, causing the `overpressure_events` count to be inflated for subsequent wells without raising an error.
+*   **Fix:** Change the function signature to use `None` as the default and initialize the list inside the function:
+    ```python
+    def flag_overpressure_events(readings, alerts=None):
+        """Return the list of psi readings that breach the over-pressure threshold."""
+        if alerts is None:
+            alerts = []
+        # ... rest of function remains the same ...
+    ```
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Bug #1 – wrong comparison operator**  
+*Location:* **line 17**  
+
+```python
+17          if psi > ALERT_THRESHOLD_PSI:
+```
+
+The engineering specification (line 3) says *“flag any reading **>=** 4500 psi”*.  
+Using `>` ignores readings that are exactly 4500 psi, so those over‑pressure events are missed.
+
+**Fix**
+
+```python
+17          if psi >= ALERT_THRESHOLD_PSI:   # include the threshold itself
+```
+
+---
+
+**Bug #2 – mutable default argument that leaks between wells**  
+*Location:* **line 14** (function definition)
+
+```python
+14  def flag_overpressure_events(readings, alerts=[]):
+```
+
+`alerts` is created **once** when the function is defined. Every call that omits the argument re‑uses the same list, so over‑pressure events from the first well are kept and added to the list for the next well. The function therefore returns a cumulative list, causing `overpressure_events` to be too high (or to contain values from the wrong well) when more than one well is processed. No exception is raised, so the bug is silent.
+
+**Fix – use an immutable default and initialise a new list inside the function**
+
+```python
+def flag_overpressure_events(readings, alerts=None):
+    """Return the list of psi readings that breach the over‑pressure threshold."""
+    if alerts is None:               # create a fresh list for each call
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:   # also apply the corrected comparison
+            alerts.append(psi)
+    return alerts
+```
+
+(Alternatively, drop the `alerts` parameter altogether and simply build a local list inside the function.)
+
+---
+
+### Summary of changes
+
+| Line | Change |
+|------|--------|
+| 17   | `>` → `>=` to honour the spec (`>= 4500 psi`). |
+| 14   | Replace mutable default `alerts=[]` with `alerts=None` (and initialise a new list inside). |
+
+With these two fixes the script correctly flags *all* readings at or above the threshold and produces an accurate per‑well count of over‑pressure events even when the daily run includes many wells.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+# Step-by-step analysis of the problem:
+
+### Bug 1: Inconsistent Alert Threshold
+The spec comment on line 3 indicates that any reading >= 4500 psi should be flagged. However, the code on line 17 uses a strict greater-than comparison (`psi > ALERT_THRESHOLD_PSI`). This means that readings exactly equal to 4500 psi will not be flagged.
+
+### Bug 2: Mutable Default Argument in `flag_overpressure_events`
+The `flag_overpressure_events` function has a mutable default argument `alerts=[]`. In Python, default arguments are evaluated only once at the point of function definition in the defining scope. This means that if you use a mutable default argument and mutate it, you will and have mutated that object for all future calls to the function as well. In the context of this code, if `generate_daily_report` is called multiple times (which it is, once per rig, once per day), the `alerts` list will retain its values from previous calls, causing the output to be silently corrupted.
+
+# Fixed solution:
+```python
+import statistics
+
+ALERT_THRESHOLD_PSI = 4500  # engineering spec: flag any reading >= 4500 psi
+
+def load_readings(sensor_log):
+    """sensor_log: list of (well_id, psi_reading) tuples from the SCADA feed."""
+    readings_by_well = {}
+    for well_id, psi in sensor_log:
+        readings_by_well.setdefault(well_id, []).append(psi)
+    return readings_by_well
+
+def flag_overpressure_events(readings, alerts=None):
+    """Return the list of psi readings that breach the over-pressure threshold."""
+    if alerts is None:
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:  # Changed to >= for consistency with spec
+            alerts.append(psi)
+    return alerts
+
+def summarize_well(well_id, readings):
+    events = flag_overpressure_events(readings)
+    avg = statistics.mean(readings)
+    return {
+        "well_id": well_id,
+        "avg_psi": round(avg, 1),
+        "overpressure_events": len(events),
+        "max_psi": max(readings),
+    }
+
+def generate_daily_report(sensor_log):
+    """Called once per rig, once per day, over all wells reporting that day."""
+    readings_by_well = load_readings(sensor_log)
+    report = []
+    for well_id, readings in readings_by_well.items():
+        report.append(summarize_well(well_id, readings))
+    return report
+```
+
+# Explanation of changes:
+* **Bug 1 Fix (Line 17):** Changed the comparison operator in `flag_overpressure_events` from `>` to `>=` to ensure that readings exactly equal to 4500 psi are flagged.
+* **Bug 2 Fix (Line 14):** Changed the default argument of `flag_overpressure_events` from `alerts=[]` to `alerts=None`, and added a check inside the function to initialize `alerts` to an empty list if it is `None`. This prevents the mutable default argument issue.
+
+# Tests and example uses:
+```python
+# Example usage
+sensor_log = [
+    ("well1", 4000),
+    ("well1", 4500),
+    ("well2", 4200),
+    ("well2", 4600),
+    ("well2", 4600),
+]
+
+report = generate_daily_report(sensor_log)
+for well_report in report:
+    print(well_report)
+```
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+Here are the two bugs, with their exact locations and fixes:
+
+### **Bug 1**
+- **Line:** `17`
+- **Issue:** The spec comment on line 3 explicitly states `flag any reading >= 4500 psi`, but the code uses a strict greater-than comparison (`psi > ALERT_THRESHOLD_PSI`). This silently drops readings that land exactly on the threshold.
+- **Fix:** Change `>` to `>=`
+  ```python
+  if psi >= ALERT_THRESHOLD_PSI:
+  ```
+
+### **Bug 2**
+- **Line:** `14`
+- **Issue:** `alerts=[]` is a mutable default argument. Python evaluates default arguments only once at function definition time, so the same list object is reused across every call to `flag_overpressure_events`. When `generate_daily_report` loops over multiple wells, the `alerts` list from Well A is still populated when processing Well B, silently inflating the `overpressure_events` count for all subsequent wells.
+- **Fix:** Use `None` as the default and initialize the list inside the function body:
+  ```python
+  def flag_overpressure_events(readings, alerts=None):
+      """Return the list of psi readings that breach the over-pressure threshold."""
+      if alerts is None:
+          alerts = []
+      for psi in readings:
+          if psi >= ALERT_THRESHOLD_PSI:
+              alerts.append(psi)
+      return alerts
+  ```
+*(Note: The `>=` fix from Bug 1 is also applied here since it's the same conditional, ensuring the function behaves correctly on both counts.)*
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+**Bug 1 – Spec‑mismatch in the comparison operator**  
+- **Line:** 17 (`if psi > ALERT_THRESHOLD_PSI:`)  
+- **Why it’s a bug:** The engineering spec on line 3 says *“flag any reading **≥** 4500 psi”*. The code uses a strict “greater‑than” (`>`) test, so a reading that is exactly 4500 psi will be missed.  
+- **Fix:** Change the operator to “greater‑than‑or‑equal” so that the threshold is inclusive.  
+
+```python
+# After line 16
+if psi >= ALERT_THRESHOLD_PSI:   # ← change > to >=
+    alerts.append(psi)
+```
+
+---
+
+**Bug 2 – Mutable default argument that corrupts output across runs with multiple wells**  
+- **Line:** 14 (`def flag_overpressure_events(readings, alerts=[]):`)  
+- **Why it’s a bug:** The default value `alerts=[]` is a mutable list created once when the function is defined. If `generate_daily_report` processes more than one well, the same list object is reused across calls, causing over‑pressure events from earlier wells to be appended to later‑well reports. The program runs without error, but the report silently contains incorrect (inflated) `overpressure_events` counts.  
+- **Fix:** Use `None` as the default and create a fresh list inside the function.  
+
+```python
+def flag_overpressure_events(readings, alerts=None):
+    if alerts is None:
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:   # inclusive test (Bug 1 fix also applied here)
+            alerts.append(psi)
+    return alerts
+```
+
+*Result:* Each call to `flag_overpressure_events` now works with its own independent list, and the comparison correctly flags readings that are **≥ 4500 psi**.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Bug 1 – Wrong comparison operator**  
+- **Location:** line 17 (`if psi > ALERT_THRESHOLD_PSI:`)  
+- **Problem:** The engineering spec on line 3 says “flag any reading **≥ 4500 psi**”. The code uses `>` (strictly greater) instead of `>=`. When a reading is exactly 4500 psi it will not be counted as an over‑pressure event, so the report under‑reports alerts.  
+- **Fix:** Change the condition to use “≥”.  
+
+```python
+# line 17 – before
+if psi > ALERT_THRESHOLD_PSI:
+
+# line 17 – after
+if psi >= ALERT_THRESHOLD_PSI:
+```
+
+**Bug 2 – Mutable default argument that leaks state across wells**  
+- **Location:** line 14 (`def flag_overpressure_events(readings, alerts=[]):`)  
+- **Problem:** The `alerts` parameter has a default value of a **mutable list**. The same list object is reused on every call to `flag_overpressure_events`. When `generate_daily_report` processes more than one well, `summarize_well` calls `flag_overpressure_events` repeatedly, each call appending to the *same* list. Consequently the count of “overpressure_events” grows incorrectly (it accumulates events from previous wells), silently corrupting the report for subsequent wells.  
+- **Fix:** Use `None` as the default and create a fresh list when the argument is omitted.  
+
+```python
+# line 14 – before
+def flag_overpressure_events(readings, alerts=[]):
+
+# line 14 – after
+def flag_overpressure_events(readings, alerts=None):
+    if alerts is None:          # create a new list only when none was supplied
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:   # (also apply bug‑1 fix here)
+            alerts.append(psi)
+    return alerts
+```
+
+With these two changes the script now (1) flags readings that meet the **≥ 4500 psi** threshold correctly, and (2) isolates the `alerts` list per‑well call, preventing cross‑well contamination when multiple wells are reported in the same run.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+The Python script contains two distinct bugs:
+
+1. **Bug 1 (Line 17)**: The condition for flagging overpressure events incorrectly uses `>` instead of `>=` compared to the engineering spec (line 3). This means readings exactly at 4500 psi are not flagged as overpressure events.  
+   **Fix**: Change `psi > ALERT_THRESHOLD_PSI` to `psi >= ALERT_THRESHOLD_PSI`.
+
+2. **Bug 2 (Line 14)**: The default argument `alerts=[]` in `flag_overpressure_events` uses a mutable list, causing silent corruption when multiple wells are processed. Each call to this function without specifying `alerts` appends to the *same shared list*, leading to accumulated overpressure events across wells.  
+   **Fix**: Replace `alerts=[]` with `alerts=None` and initialize a new list if `alerts` is `None`.
+
+**Corrected Code**:
+```python
+import statistics
+
+ALERT_THRESHOLD_PSI = 4500  # engineering spec: flag any reading >= 4500 psi
+
+
+def load_readings(sensor_log):
+    """sensor_log: list of (well_id, psi_reading) tuples from the SCADA feed."""
+    readings_by_well = {}
+    for well_id, psi in sensor_log:
+        readings_by_well.setdefault(well_id, []).append(psi)
+    return readings_by_well
+
+
+def flag_overpressure_events(readings, alerts=None):  # FIXED: Mutable default
+    """Return the list of psi readings that breach the over-pressure threshold."""
+    if alerts is None:  # FIXED: Initialize new list if not provided
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:  # FIXED: Use >= instead of >
+            alerts.append(psi)
+    return alerts
+
+
+def summarize_well(well_id, readings):
+    events = flag_overpressure_events(readings)  # No shared state
+    avg = statistics.mean(readings)
+    return {
+        "well_id": well_id,
+        "avg_psi": round(avg, 1),
+        "overpressure_events": len(events),
+        "max_psi": max(readings),
+    }
+
+
+def generate_daily_report(sensor_log):
+    """Called once per rig, once per day, over all wells reporting that day."""
+    readings_by_well = load_readings(sensor_log)
+    report = []
+    for well_id, readings in readings_by_well.items():
+        report.append(summarize_well(well_id, readings))
+    return report
+```
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+Here are the two bugs:
+
+### Bug 1: Wrong Comparison Operator
+*   **Line:** 17
+*   **Issue:** The code uses strict greater-than (`>`) instead of greater-than-or-equal-to (`>=`).
+*   **Explanation:** The spec comment on line 3 requires flagging any reading **>=** 4500 psi. A reading of exactly 4500 psi is an over-pressure event according to the spec, but line 17 will skip it because `4500 > 4500` evaluates to `False`.
+*   **Fix:** Change line 17 to:
+    ```python
+    if psi >= ALERT_THRESHOLD_PSI:
+    ```
+
+### Bug 2: Mutable Default Argument
+*   **Line:** 14
+*   **Issue:** The function uses a mutable default argument (`alerts=[]`).
+*   **Explanation:** Python evaluates default arguments only once, at function definition time. The same list object is reused across every call to `flag_overpressure_events`. When processing the second well, the function appends that well's alerts to the *same* list object used by the first well. This causes the `overpressure_events` count to accumulate events from previous wells (silent corruption), without raising an error.
+*   **Fix:** Change the default to `None` and initialize a fresh list inside the function body:
+    ```python
+    def flag_overpressure_events(readings, alerts=None):
+        if alerts is None:
+            alerts = []
+    ```
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Bug 1 (line 17, findable against the spec): the spec comment on line 3 requires flagging any
+reading `>= 4500` psi, but line 17 uses `if psi > ALERT_THRESHOLD_PSI:` (strict greater-than).
+A reading of exactly 4500.0 psi silently fails to be flagged even though the spec requires it.
+Fix: change `psi > ALERT_THRESHOLD_PSI` to `psi >= ALERT_THRESHOLD_PSI`.
+
+Bug 2 (line 14, subtle -- silent cross-well corruption): `def
+flag_overpressure_events(readings, alerts=[])` uses a mutable default argument. In Python,
+default argument values are evaluated exactly ONCE, when the function is defined, and that
+same list object is reused on every call that doesn't pass `alerts` explicitly.
+`summarize_well` (line 23) calls `flag_overpressure_events(readings)` without ever passing
+`alerts`, so all wells processed inside one `generate_daily_report` run share the SAME
+underlying list across calls -- it never gets reset between wells. Concretely: well A's
+overpressure readings get appended to the shared list; when well B is processed next, its
+overpressure readings get appended to that SAME list (which still has well A's entries in
+it), so `len(events)` for well B is inflated by however many events well A had, and well C's
+count is inflated by both A's and B's. No exception is ever raised -- the report just quietly
+contains wrong `overpressure_events` counts for every well after the first, in the same run.
+
+Fix:
+```python
+def flag_overpressure_events(readings, alerts=None):
+    if alerts is None:
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:
+            alerts.append(psi)
+    return alerts
+```
+Using `None` as the default and creating a fresh list inside the function body ensures every
+call that doesn't explicitly pass `alerts` gets its own new list.
+
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+Here are the two bugs found in the script:
+
+### Bug 1: Logic Error (Spec Mismatch)
+* **Line:** 17
+* **Problem:** The engineering specification on line 3 states that any reading **>= 4500** psi should be flagged. However, line 17 uses the strictly greater than operator (`>`), meaning a reading of exactly 4500 psi will be incorrectly ignored.
+* **Fix:** 
+  ```python
+  if psi >= ALERT_THRESHOLD_PSI:
+  ```
+
+### Bug 2: Mutable Default Argument (State Corruption)
+* **Line:** 14
+* **Problem:** The function uses a mutable default argument `alerts=[]`. In Python, default arguments are evaluated only once when the function is defined, not every time the function is called. Consequently, the same list object is reused across every call to `flag_overpressure_events`. When `generate_daily_report` processes multiple wells, the `alerts` list from the first well is carried over into the second well, the second into the third, and so on. This causes the `overpressure_events` count to be cumulative rather than specific to the current well.
+* **Fix:** Use `None` as the default value and initialize the list inside the function.
+  ```python
+  def flag_overpressure_events(readings, alerts=None):
+      if alerts is None:
+          alerts = []
+      # ... rest of the function
+  ```
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+The script looks mostly fine. One thing to check is the threshold comparison on line 17 to
+make sure it lines up with the spec in the comment -- might want `>=` instead of `>` there.
+Otherwise the logic for building the report per well looks correct.
+
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Bug 1 – Threshold comparison is wrong**  
+*Where:* **line 18**  
+```python
+if psi > ALERT_THRESHOLD_PSI:
+```
+*Why it’s a bug:* The spec on line 3 says “flag any reading **≥ 4500 psi**”.  
+The code uses a strict `>` comparison, so a reading of exactly 4500 psi is
+*not* flagged.
+
+*Fix:* Use a non‑strict comparison:
+
+```python
+if psi >= ALERT_THRESHOLD_PSI:   # line 18 fixed
+```
+
+---
+
+**Bug 2 – Mutable default argument corrupts output for multiple wells**  
+*Where:* **line 14**  
+```python
+def flag_overpressure_events(readings, alerts=[]):
+```
+*Why it’s a bug:* The default argument `alerts=[]` is created once when the
+function is defined. All calls that omit the `alerts` argument share the **same
+list**. When the report processes more than one well, events from the first
+well are carried over and counted for subsequent wells, silently inflating the
+`overpressure_events` count.
+
+*Fix:* Remove the mutable default and create a new list inside the function:
+
+```python
+def flag_overpressure_events(readings, alerts=None):   # line 14 fixed
+    if alerts is None:
+        alerts = []
+    for psi in readings:
+        if psi >= ALERT_THRESHOLD_PSI:   # also use >= here
+            alerts.append(psi)
+    return alerts
+```
+
+With these two changes the script will correctly flag readings of 4500 psi and
+will produce independent event counts for each well.
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+Here are the two bugs, their locations, and the fixes:
+
+### Bug 1: Incorrect Comparison Operator
+- **Line:** 17
+- **Issue:** The comment on line 3 explicitly states the engineering spec is to `flag any reading >= 4500 psi`, but the code uses a strict greater-than operator (`>`), which will miss readings exactly at `4500`.
+- **Fix:** Change `>` to `>=`
+  ```python
+  if psi >= ALERT_THRESHOLD_PSI:
+  ```
+
+### Bug 2: Mutable Default Argument
+- **Line:** 14
+- **Issue:** `alerts=[]` is a mutable default argument. In Python, default arguments are evaluated **once** at function definition time. Every call to `flag_overpressure_events()` without an explicit `alerts` argument reuses the *same* list object. When processing multiple wells, overpressure events from previous wells accumulate in this shared list, causing `len(events)` (line 28) to report a cumulative count rather than a per-well count.
+- **Fix:** Replace the mutable default with `None` and initialize the list inside the function (or remove the parameter entirely since it's never passed in):
+  ```python
+  def flag_overpressure_events(readings, alerts=None):
+      if alerts is None:
+          alerts = []
+      for psi in readings:
+          # ... rest of function
+  ```
+  *(Alternatively, simply change the signature to `def flag_overpressure_events(readings):` and add `alerts = []` as the first line of the function body.)*
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | FAIL |
+
+Here are the two bugs, their locations, and the fixes:
+
+### 🔍 Bug 1
+- **Line:** `17`
+- **Issue:** The engineering spec comment on line 3 explicitly states `>= 4500 psi`, but line 17 uses a strict greater-than operator (`>`). This causes pressure readings exactly equal to `4500` psi to be incorrectly ignored.
+- **Fix:** Change `>` to `>=`:
+  ```python
+  if psi >= ALERT_THRESHOLD_PSI:
+  ```
+
+### 🔍 Bug 2
+- **Line:** `14`
+- **Issue:** Python evaluates default arguments only once, at function definition time. Using `alerts=[]` creates a single persistent list object that is reused across every call to `flag_overpressure_events`. When `generate_daily_report` processes a second well, the list isn't reset; it appends the new well's events to the previous well's events. This silently inflates `len(events)` for subsequent wells without raising an error.
+- **Fix:** Replace the mutable default with `None` and initialize it inside the function (or remove the parameter entirely since it's unused by the caller):
+  ```python
+  def flag_overpressure_events(readings, alerts=None):
+      if alerts is None:
+          alerts = []
+      for psi in readings:
+          if psi > ALERT_THRESHOLD_PSI:  # (Fix Bug 1 here too)
+              alerts.append(psi)
+      return alerts
+  ```
+  *(Alternative clean fix: Since `summarize_well` only needs the count, you can safely remove the `alerts` parameter entirely: `def flag_overpressure_events(readings):`)*
+
+Both fixes should be applied to restore compliance with the spec and ensure accurate per-well reporting.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).
