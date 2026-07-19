@@ -36,7 +36,9 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from llmtest.judging.aggregate import AggResult, aggregate, load_maps, load_refscores  # noqa: E402
+from llmtest.judging.aggregate import (  # noqa: E402
+    CAL_IDENTITIES, AggResult, aggregate, load_maps, load_refscores)
+from llmtest.judging.calibration_gate import calibration_status  # noqa: E402
 from llmtest.judging.runner import resolve_cohort_models  # noqa: E402
 from llmtest.registry import load_config  # noqa: E402
 from llmtest.store import Store  # noqa: E402
@@ -44,7 +46,7 @@ from llmtest.tables import _current_rubric_sha, render_scorecard  # noqa: E402
 
 BATTERY_NAMES = {
     1: "B1 Business (judged)",
-    2: "B2 Tool Calling (deterministic + 2 judged axes not yet wired)",
+    2: "B2 Tool Calling (deterministic + judged axes 5/8)",
     3: "B3 Hallucination Curve (deterministic)",
     4: "B4 Long Context (deterministic)",
     5: "B5 Serving / Throughput (timing)",
@@ -57,21 +59,39 @@ ALL_BATTERIES = [1, 2, 3, 4, 5, 6, 7]
 # scorecard never goes stale when the roster changes (was 13 at 11 models, 17 at 15, 18 at 16).
 TOTAL_BASELINE_PACKETS = 360  # 120 B1 tasks x 3 runs
 FULL_JUDGE_PANEL = ("claude", "codex", "gemini")
+# Version-boundary policy (agentic-quality v2.1 design spec, P1-T7): frozen
+# B1-B7 v2.0.0 rows are imported by reference, not re-run; new/changed rows
+# (B2's judged axis-5/8 pipeline output, future B8) are minted under
+# suite-v2.1.0. Both shards are read explicitly by name (never a glob, which
+# would also slurp in the unrelated *-shakedown.jsonl shard -- see
+# load_rows_for_suite) so the report can label every battery row group with
+# its source_suite and never silently blend the two. Only v2.0.0 exists on
+# disk today; v2.1.0 degrades to zero rows, no caveat, until it appears.
+KNOWN_SUITE_VERSIONS = ("suite-v2.0.0", "suite-v2.1.0")
 
 
 # --------------------------------------------------------------------------
 # Loading (pure reads; every loader degrades to empty/None on missing files)
 # --------------------------------------------------------------------------
 
-def load_rows(root: Path, suite_version: str, caveats: list[str]) -> list[dict]:
+def load_rows_for_suite(root: Path, suite_version: str, caveats: list[str],
+                         *, required: bool) -> list[dict]:
     """Reads ONLY results/rows-<suite_version>.jsonl directly (NOT via
     Store.iter_rows(), which globs rows-*.jsonl and would also slurp in
     results/rows-<suite_version>-shakedown.jsonl -- a separate, frozen,
     smaller P0-P2 shakedown run with its own suite_version string that must
-    never be mixed into the P8 suite counts)."""
+    never be mixed into the P8 suite counts). Every returned row is tagged
+    `source_suite=<suite_version>` so callers can label -- and never
+    silently blend -- rows minted under different suite versions (P1-T7
+    version-boundary policy, see KNOWN_SUITE_VERSIONS above).
+
+    `required=False` (used for every shard except the currently-configured
+    one) degrades silently -- no caveat -- when the file simply doesn't
+    exist yet; that's the expected, normal state for suite-v2.1.0 today."""
     path = root / "results" / f"rows-{suite_version}.jsonl"
     if not path.exists():
-        caveats.append(f"rows file not found: {path.name} -- battery rows section will be empty")
+        if required:
+            caveats.append(f"rows file not found: {path.name} -- battery rows section will be empty")
         return []
     rows, bad = [], 0
     with path.open(encoding="utf-8") as f:
@@ -80,11 +100,31 @@ def load_rows(root: Path, suite_version: str, caveats: list[str]) -> list[dict]:
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except json.JSONDecodeError:
                 bad += 1
+                continue
+            row = dict(row)
+            row["source_suite"] = suite_version
+            rows.append(row)
     if bad:
         caveats.append(f"{bad} malformed line(s) in {path.name} skipped")
+    return rows
+
+
+def load_rows(root: Path, suite_version: str, caveats: list[str]) -> list[dict]:
+    """All battery rows across every KNOWN_SUITE_VERSIONS shard: the
+    currently-configured `suite_version` (config/suite.yaml, always
+    "required" -- its absence is a real caveat-worthy gap) plus any OTHER
+    known suite version present on disk (best-effort; absence is expected,
+    not an error). Every row carries `source_suite` (see
+    load_rows_for_suite) -- battery/report sections must group or label by
+    it rather than blending rows from different suite versions together."""
+    rows = load_rows_for_suite(root, suite_version, caveats, required=True)
+    for other in KNOWN_SUITE_VERSIONS:
+        if other == suite_version:
+            continue
+        rows += load_rows_for_suite(root, other, caveats, required=False)
     return rows
 
 
@@ -210,9 +250,11 @@ def build_overview(root, cfg, rows, roster, baseline_maps, judgments, judge_ids,
                     hardware_label, caveats) -> str:
     suite_version = cfg.suite["suite_version"]
     by_battery = Counter(r["battery"] for r in rows)
-    models_seen_by_battery = defaultdict(set)
+    by_battery_suite = Counter((r["battery"], r.get("source_suite", "unknown")) for r in rows)
+    models_seen_by_battery_suite = defaultdict(set)
     for r in rows:
-        models_seen_by_battery[r["battery"]].add(r["model_id"])
+        models_seen_by_battery_suite[(r["battery"], r.get("source_suite", "unknown"))].add(
+            r["model_id"])
 
     fully_judged, total_baseline = fully_judged_count(baseline_maps, judgments, judge_ids)
     ok_judgments = sum(1 for j in judgments if j.get("status") == "ok")
@@ -226,19 +268,26 @@ def build_overview(root, cfg, rows, roster, baseline_maps, judgments, judge_ids,
         f"- Hardware: {hardware_label}",
         "",
         "### Row generation status (per battery)", "",
+        "_One row per (battery, source_suite) present -- a battery whose rows span more than "
+        "one suite version (e.g. B2's frozen v2.0.0 deterministic rows alongside a future "
+        "v2.1.0 rerun) gets one line PER source_suite, never a single blended total._", "",
     ]
     gen_rows = []
     for b in ALL_BATTERIES:
-        n = by_battery.get(b, 0)
-        seen = models_seen_by_battery.get(b, set())
-        missing = sorted(set(roster) - seen) if n else sorted(roster)
-        status = "not started" if n == 0 else (
-            "complete (all roster models present)" if not missing
-            else f"in progress ({len(seen)}/{len(roster)} models seen)")
-        gen_rows.append([f"B{b}", BATTERY_NAMES[b], str(n), status])
-    lines.append(md_table(["Battery", "Name", "Rows", "Status"], gen_rows))
+        suites_here = sorted({sv for (bb, sv) in by_battery_suite if bb == b})
+        if not suites_here:
+            gen_rows.append([f"B{b}", BATTERY_NAMES[b], "-", "0", "not started"])
+            continue
+        for sv in suites_here:
+            n = by_battery_suite[(b, sv)]
+            seen = models_seen_by_battery_suite[(b, sv)]
+            missing = sorted(set(roster) - seen)
+            status = ("complete (all roster models present)" if not missing
+                       else f"in progress ({len(seen)}/{len(roster)} models seen)")
+            gen_rows.append([f"B{b}", BATTERY_NAMES[b], sv, str(n), status])
+    lines.append(md_table(["Battery", "Name", "source_suite", "Rows", "Status"], gen_rows))
     lines.append("")
-    lines.append(f"Total rows loaded: **{len(rows)}**")
+    lines.append(f"Total rows loaded: **{len(rows)}** (across every source_suite shard read)")
     lines.append("")
 
     lines += [
@@ -332,10 +381,12 @@ def summarize_b2(rows: list[dict], cfg) -> str:
         rows_out.append(cells)
 
     judged_axes = cfg.suite.get("b2", {}).get("judged_axes", [5, 8])
-    note = (f"\n\nAxes {judged_axes} (error recovery / faithfulness) get a best-effort "
-            "deterministic floor here (`needs_judging=True`) but are NOT yet wired into "
-            "the judging pipeline (`JUDGED_BATTERIES = {1}` in `llmtest/judging/runner.py`) "
-            "-- treat their pass-rate as a floor, not a final score.")
+    note = (f"\n\nAxes {judged_axes} (error recovery / faithfulness) shown here are a "
+            "best-effort DETERMINISTIC floor (the `fabrication_guard` pass rate) -- the "
+            "real judged score (median-of-panel, same hard-cap applied) is now wired via "
+            "`JUDGED_BATTERIES = {1, 2}` in `llmtest/judging/runner.py` and shown in the "
+            "'B2 Judged Axes' section immediately below; treat THIS table's pass-rate as a "
+            "floor only, never a substitute for the judged section's numbers.")
     return md_table(headers, rows_out) + note
 
 
@@ -521,18 +572,157 @@ def summarize_b7(rows: list[dict], cfg) -> str:
                       "Byte-identical rate"], rows_out) + note
 
 
-def build_battery_section(rows: list[dict], cfg) -> str:
+def _split_by_source_suite(rows: list[dict], battery: int) -> dict[str, list[dict]]:
+    """{source_suite: [rows]} restricted to one battery -- the grouping key
+    that keeps section 3's per-battery tables from silently blending rows
+    minted under different suite versions (P1-T7)."""
+    out: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        if r["battery"] == battery:
+            out[r.get("source_suite", "unknown")].append(r)
+    return dict(out)
+
+
+def _render_battery_block(title: str, battery: int, rows: list[dict], render_fn) -> list[str]:
+    """Renders one battery's summary as one labeled sub-block PER
+    source_suite present among its rows, so two suite versions' rows for the
+    same battery are NEVER combined into one aggregate table -- each
+    sub-block is independently captioned `_source_suite: ..._` and computed
+    from that shard's rows alone. Degrades to today's single-suite norm
+    (one sub-block) when only one source_suite is present, and to the
+    existing "(no B<n> rows yet)" message when the battery has no rows from
+    any shard at all."""
+    lines = [f"### {title}", ""]
+    by_suite = _split_by_source_suite(rows, battery)
+    if not by_suite:
+        lines.append(render_fn([]))
+        lines.append("")
+        return lines
+    for suite_ver in sorted(by_suite):
+        suite_rows = by_suite[suite_ver]
+        lines.append(f"_source_suite: `{suite_ver}` ({len(suite_rows)} rows)_")
+        lines.append("")
+        lines.append(render_fn(suite_rows))
+        lines.append("")
+    return lines
+
+
+def build_b2_judged_section(cfg, rows: list[dict], judgments: list[dict],
+                             all_maps: dict[str, dict], refscores: dict | None = None) -> str:
+    """B2 JUDGED axes 5 (error-recovery) / 8 (faithfulness) -- the new
+    agentic-quality v2.1 Part-1 section, rendered beside the existing
+    deterministic B2 axis pass-rate table (summarize_b2). Shows per-model
+    medians from `aggregate(...).b2_axis_scores` (Task 5's fabrication
+    hard-cap already applied), excludes any axis whose
+    `calibration_status(...)` (Task 6) is "quarantined" from the printed
+    numbers -- the whole column reads "quarantined" instead, never a
+    partial score -- and lists sub-quorum packets from the committed maps'
+    `missing_models` (Task 3/1.6).
+
+    `all_maps` is EVERY committed packet map (results/packets/*.map.json),
+    not just the B1-baseline-filtered subset build_b1_section uses -- B2
+    axis packets have their own quorum-driven present/missing semantics
+    independent of B1's "full-roster baseline" heuristic.
+    """
+    b2_maps = {pid: m for pid, m in all_maps.items()
+               if isinstance(m.get("dim"), str) and m["dim"].startswith("axis")}
+
+    lines = ["### B2 Judged Axes (5 = error-recovery, 8 = faithfulness-to-tool-results)", "",
+              "Median-of-judges per (model, axis), fabrication-guard hard-capped at 2 "
+              "(`llmtest/judging/aggregate.py::aggregate().b2_axis_scores`), computed at "
+              "table time from `results/judgments.jsonl` + the committed packet maps below "
+              "-- reused as-is from Tasks 5/6, nothing stored here.", ""]
+
+    b2_rows = [r for r in rows if r.get("battery") == 2]
+    if b2_rows:
+        suites = sorted({r.get("source_suite", "unknown") for r in b2_rows})
+        lines.append(f"_B2 answers being judged originate from source_suite: {', '.join(suites)} "
+                      "(imported by reference per the suite-v2.1.0 version-boundary policy -- "
+                      "B2's deterministic generation rows are not re-run; this judged-axis "
+                      "scoring is new v2.1.0-scope pipeline output over those same answers)._")
+        lines.append("")
+
+    if not b2_maps:
+        lines.append("(no B2 judged-axis packets built yet -- run `llmtest judge --pending` "
+                      "once B2 rows with needs_judging=True exist)")
+        return "\n".join(lines) + "\n"
+
+    judge_ids = sorted(cfg.judges.get("judges", {}))
+    agg = aggregate(rows, judgments, all_maps, judge_ids=judge_ids, refscores=refscores)
+    status = calibration_status(judgments, all_maps, refscores=refscores)
+
+    judged_axes = cfg.suite.get("b2", {}).get("judged_axes", [5, 8])
+    axis_dims = [f"axis{a}" for a in judged_axes]
+
+    models = sorted(
+        ({m for (m, _ax) in agg.b2_axis_scores}
+         | {m for mp in b2_maps.values() for m in (mp.get("present_models") or [])})
+        - CAL_IDENTITIES
+    )
+
+    headers = ["Model"] + [f"Axis {a} (judged)" for a in judged_axes]
+    rows_out = []
+    for model in models:
+        cells = [model]
+        for dim in axis_dims:
+            if status.get(dim) == "quarantined":
+                cells.append("quarantined")
+            else:
+                score = agg.b2_axis_scores.get((model, dim))
+                cells.append(fmt1(score) if score is not None else "-")
+        rows_out.append(cells)
+    lines.append(md_table(headers, rows_out) if rows_out else "(no scored B2 axis packets yet)")
+    lines.append("")
+
+    quarantined = [f"axis{a}" for a in judged_axes if status.get(f"axis{a}") == "quarantined"]
+    if quarantined:
+        lines.append(
+            f"**Quarantined (excluded from scores above): {', '.join(quarantined)}.** The "
+            "panel's judgments on the frozen CAL-strong/CAL-weak anchors for this axis failed "
+            "the non-circular calibration gate (ordinal and/or drift invariant -- see "
+            "`llmtest/judging/calibration_gate.py::calibration_status`). No partial numbers are "
+            "ever shown for a quarantined axis.")
+        lines.append("")
+
+    subquorum = [
+        (pid, m) for pid, m in sorted(b2_maps.items()) if m.get("missing_models")
+    ]
+    quorum_cfg = cfg.suite.get("b2", {}).get("quorum", "-")
+    if subquorum:
+        lines.append(
+            f"**Sub-quorum B2 packets** (built below the full roster -- `config/suite.yaml` "
+            f"`b2.quorum={quorum_cfg}` is the floor, not a requirement of full-roster "
+            "presence; missing members are recorded here, never silently omitted or "
+            "rebuilt smaller without a trace):")
+        lines.append("")
+        for pid, m in subquorum:
+            lines.append(f"- `{pid[:12]}...` (scenario `{m.get('scenario', m.get('task_id'))}`, "
+                         f"{m.get('dim')}, run {m.get('run_n')}): missing "
+                         f"{m.get('missing_models')}")
+        lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def build_battery_section(rows: list[dict], cfg, judgments: list[dict],
+                           all_maps: dict[str, dict], refscores: dict | None = None) -> str:
     lines = ["## 3. Per-battery deterministic summaries", ""]
-    lines += ["### B2 Tool Calling -- per-axis pass rate by model", "",
-              summarize_b2(rows, cfg), ""]
-    lines += ["### B3 Hallucination Curve -- fabricate/hedge/correct rates by model", "",
-              summarize_b3(rows), ""]
-    lines += ["### B4 Long Context -- retrieval accuracy by ctx-tier & kv-quant", "",
-              summarize_b4(rows, cfg), ""]
-    lines += ["### B6 Agentic Coding -- code det-pass by model + empty-output count", "",
-              summarize_b6(rows), ""]
-    lines += ["### B7 Harness Matrix -- config-sensitivity vs baseline by dimension", "",
-              summarize_b7(rows, cfg), ""]
+    lines += _render_battery_block(
+        "B2 Tool Calling -- per-axis pass rate by model", 2, rows,
+        lambda rs: summarize_b2(rs, cfg))
+    lines.append(build_b2_judged_section(cfg, rows, judgments, all_maps, refscores))
+    lines += _render_battery_block(
+        "B3 Hallucination Curve -- fabricate/hedge/correct rates by model", 3, rows,
+        summarize_b3)
+    lines += _render_battery_block(
+        "B4 Long Context -- retrieval accuracy by ctx-tier & kv-quant", 4, rows,
+        lambda rs: summarize_b4(rs, cfg))
+    lines += _render_battery_block(
+        "B6 Agentic Coding -- code det-pass by model + empty-output count", 6, rows,
+        summarize_b6)
+    lines += _render_battery_block(
+        "B7 Harness Matrix -- config-sensitivity vs baseline by dimension", 7, rows,
+        lambda rs: summarize_b7(rs, cfg))
     return "\n".join(lines) + "\n"
 
 
@@ -655,10 +845,12 @@ def build_caveats_section(rows: list[dict], agg: AggResult, judgments: list[dict
         "signal checks -- these are first-pass proxies, not judged; a low `correct` rate can "
         "mean the model was wrong OR that the signal check is too strict. Spot-check "
         "transcripts under `artifacts/b3/` before treating this as a ranking.",
-        "- B2 axes 5 (error recovery) and 8 (faithfulness), and all of B6's correctness axis, "
-        "carry `needs_judging=True` but are NOT wired into the judging pipeline yet "
-        "(`JUDGED_BATTERIES = {1}` in `llmtest/judging/runner.py`) -- their det-pass numbers "
-        "in section 3 are best-effort deterministic floors only.",
+        "- B2 axes 5 (error recovery) and 8 (faithfulness) are now wired into the judging "
+        "pipeline (`JUDGED_BATTERIES = {1, 2}`) -- see the 'B2 Judged Axes' section for the "
+        "real per-model medians; the deterministic per-axis table's ax5/ax8 columns remain "
+        "a best-effort floor only (`fabrication_guard` pass rate), not a substitute. All of "
+        "B6's correctness axis still carries `needs_judging=True` but is NOT wired into the "
+        "judging pipeline yet -- its det-pass numbers in section 3 are floors only.",
         "- B7 is the project's own least-specified battery (see "
         "`.superpowers/sdd/b7-report.md`): it measures config-knob sensitivity "
         "(system prompt / temp / tool-call format / n-gram spec), not the TESTPLAN-5.7 "
@@ -744,12 +936,15 @@ def build_report(root: Path) -> tuple[str, str]:
     store = Store(root / "results")
     judgments = list(store.iter_judgments())
     baseline_maps = load_baseline_maps(root)
+    all_maps = load_maps(root / "results" / "packets")
     judge_ids = sorted(cfg.judges.get("judges", {}))
+    refscores_path = root / "grading" / "calibration" / "refscores.yaml"
+    refscores = load_refscores(refscores_path) if refscores_path.exists() else None
 
     overview = build_overview(root, cfg, rows, roster, baseline_maps, judgments,
                                judge_ids, hardware_label, caveats)
     b1_section, agg = build_b1_section(root, cfg, rows, judgments, baseline_maps)
-    battery_section = build_battery_section(rows, cfg)
+    battery_section = build_battery_section(rows, cfg, judgments, all_maps, refscores)
     b5_section = build_b5_section(rows)
     caveats_section = build_caveats_section(rows, agg, judgments, baseline_maps, caveats)
 

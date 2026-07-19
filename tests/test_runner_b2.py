@@ -6,6 +6,7 @@ shared with B1."""
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import yaml
@@ -238,3 +239,83 @@ def test_run_pending_mixed_b1_b2_rows_both_packetized(tmp_path):
     assert result.judgments_written == 10
     assert result.errors_written == 0
     assert len(list(store.iter_judgments())) == 10
+
+
+# --- b2_quorum param (P1-T7): threads a floor below len(cohort_models) ---
+
+
+def test_b2_quorum_defaults_to_full_cohort_when_not_passed(tmp_path):
+    """No b2_quorum kwarg -> None -> len(cohort_models) -- unchanged
+    behavior from before the knob existed (a group short of the FULL
+    3-model COHORT gets skipped for quorum, not built smaller)."""
+    store = Store(tmp_path / "results")
+    fixture_sha = _write_b2_fixture(tmp_path)
+    _write_b2_calibration(tmp_path)
+    for model_id in COHORT[:2]:   # only 2 of 3 cohort models answer
+        _make_b2_row(tmp_path, store, model_id, fixture_sha,
+                     f"Answer from {model_id}: tool errored, no reading given.")
+    rows = list(store.iter_rows())
+
+    result = run_pending(rows=rows, store=store, judges_cfg=JUDGES_CFG, fake=True,
+                          packets_only=True, **_base_kwargs(tmp_path))
+
+    assert result.packets == []
+    assert len(result.skipped) == 1
+    assert "quorum" in result.skipped[0]["reason"]
+
+
+def test_b2_quorum_override_allows_subquorum_packet(tmp_path):
+    """b2_quorum, when explicitly passed below len(cohort_models), lets a
+    packet build with fewer than the full roster present -- proves the knob
+    is genuinely threaded through to build_b2_axis_packets's quorum param,
+    not just accepted and ignored (closes the Task-4-flagged gap)."""
+    store = Store(tmp_path / "results")
+    fixture_sha = _write_b2_fixture(tmp_path)
+    _write_b2_calibration(tmp_path)
+
+    present = COHORT[:2]   # only 2 of 3 cohort models answer
+    for model_id in present:
+        _make_b2_row(tmp_path, store, model_id, fixture_sha,
+                     f"Answer from {model_id}: tool errored, no reading given.")
+    rows = list(store.iter_rows())
+
+    result = run_pending(rows=rows, store=store, judges_cfg=JUDGES_CFG, fake=True,
+                          packets_only=True, b2_quorum=2, **_base_kwargs(tmp_path))
+
+    assert len(result.packets) == 1
+    map_data = json.loads(Path(result.packets[0].map_path).read_text(encoding="utf-8"))
+    assert map_data["present_models"] == sorted(present)
+    assert map_data["missing_models"] == sorted(set(COHORT) - set(present))
+
+
+def test_run_judge_threads_b2_quorum_from_suite_config(monkeypatch):
+    """judge_cmd.py's CLI layer reads config/suite.yaml's b2.quorum and
+    passes it through to run_pending as b2_quorum -- proving the config
+    knob is wired end-to-end, not just accepted by run_pending's signature."""
+    from llmtest import judge_cmd
+    from llmtest.cli import build_parser
+    from llmtest.registry import load_config
+
+    real_root = Path(__file__).resolve().parents[1]
+    cfg = load_config(real_root)
+    expected_quorum = cfg.suite.get("b2", {}).get("quorum")
+    assert expected_quorum is not None   # config/suite.yaml must set b2.quorum
+
+    captured = {}
+
+    class _FakeResult:
+        packets = []
+        skipped = []
+        judgments_written = 0
+        errors_written = 0
+
+    def fake_run_pending(**kwargs):
+        captured.update(kwargs)
+        return _FakeResult()
+
+    monkeypatch.setattr(judge_cmd, "run_pending", fake_run_pending)
+    args = build_parser().parse_args(["judge", "--pending", "--fake"])
+    rc = judge_cmd.run_judge(args, root=real_root)
+
+    assert rc == 0
+    assert captured["b2_quorum"] == expected_quorum

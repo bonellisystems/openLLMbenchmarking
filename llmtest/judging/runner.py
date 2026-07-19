@@ -112,6 +112,7 @@ def run_pending(
     judge_prompt_path: Path | str,
     judges_cfg: dict,
     cohort_models: list[str],
+    b2_quorum: int | None = None,
     judge_filter: str | None = None,
     packets_only: bool = False,
     fake: bool = False,
@@ -148,6 +149,15 @@ def run_pending(
     as pending again and re-invoked; the old "-" row is left in place as
     append-only history (a fresh success writes new ok-letter rows, which
     never collide with it since their letters differ).
+
+    `b2_quorum` (config/suite.yaml's `b2.quorum` knob, threaded by
+    `llmtest/judge_cmd.py`): minimum present-model count for a B2 axis
+    packet to build (spec 1.6). `None` (the default, and whatever a caller
+    passes when the config key is absent) falls back to
+    `len(cohort_models)` -- the full-roster "complete cohort" requirement,
+    matching B1's own behavior and this function's behavior before the
+    knob existed. `run_pending` stays pure: it never reads config/suite.yaml
+    itself.
     """
     root = Path(root)
     judge_ids = sorted(judges_cfg)
@@ -179,16 +189,16 @@ def run_pending(
         signals_by_task=signals_by_task,
     )
 
-    # suite.yaml's b2.quorum override knob is added in a later task; without
-    # it here, quorum defaults to the full roster (every cohort model must
-    # be present), matching build_cohort_packets' own "complete cohort"
-    # requirement -- callers get today's B1 behavior for B2 too until the
-    # config knob lands.
-    b2_quorum = len(cohort_models)
+    # suite.yaml's b2.quorum knob (threaded via the b2_quorum param above);
+    # None defaults to the full roster (every cohort model must be
+    # present), matching build_cohort_packets' own "complete cohort"
+    # requirement -- today's B1 behavior for B2 too, unless the caller
+    # (judge_cmd.py, reading config/suite.yaml) passes a lower floor.
+    resolved_b2_quorum = b2_quorum if b2_quorum is not None else len(cohort_models)
     b2_packets, b2_skipped = build_b2_axis_packets(
         b2_rows,
         root=root, judge_ids=judge_ids, cohort_models=cohort_models,
-        quorum=b2_quorum,
+        quorum=resolved_b2_quorum,
         out_maps=Path(out_maps), out_artifacts=Path(out_artifacts),
         judge_prompt_path=Path(judge_prompt_path),
     )
