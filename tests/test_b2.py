@@ -286,8 +286,13 @@ def test_axes_not_applicable_are_absent_from_det_checks():
 # --- plan() -------------------------------------------------------------
 
 def test_plan_covers_11_models_excluding_quant_arm():
+    """plan() excludes every model with role=quant-arm; roster size is read
+    from the registry itself (not hardcoded) so this survives roster growth."""
     from llmtest.registry import load_config
     cfg = load_config(ROOT)
+
+    non_quant_arm_models = [mid for mid, m in cfg.registry["models"].items()
+                             if m.get("role") != "quant-arm"]
 
     n_tasks = len(load_tasks(ROOT))
     n_runs = cfg.suite["b2"]["n_runs"]
@@ -298,9 +303,9 @@ def test_plan_covers_11_models_excluding_quant_arm():
 
     model_ids = {item.model_id for item in items}
     assert "gemma-4-26b-a4b-mxfp4" not in model_ids   # role=quant-arm excluded
-    assert len(model_ids) == 11
+    assert len(model_ids) == len(non_quant_arm_models)
 
-    assert len(items) == 11 * n_tasks * n_runs
+    assert len(items) == len(non_quant_arm_models) * n_tasks * n_runs
 
     for item in items:
         assert item.battery == 2

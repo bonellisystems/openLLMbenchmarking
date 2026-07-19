@@ -248,11 +248,22 @@ def test_model_arms_spot_check_model_adds_named_point_unpruned():
 
 
 def test_model_arms_every_roster_model_gets_at_least_one_arm():
-    """No non-quant-arm roster model is silently dropped to zero B4 coverage."""
+    """No non-quant-arm roster model that could physically fit the T1 tier is
+    silently dropped to zero B4 coverage (e.g. by a config bug like a missing
+    weights_gb). Models whose weights ALONE already exceed the T1 usable budget
+    are excluded from this guard by design: B4's local sweep (arm_fits_estimate)
+    is T1-only, and the "big-model tier" roster additions (gpt-oss-120b,
+    glm-4.5-air, llama-4-scout, qwen3-235b -- see config/registry.yaml notes)
+    were run on the rented RTX PRO 6000 (T3) rig, never intended to be planned
+    against the local T1 VRAM budget."""
     cfg = _cfg()
+    t1_usable = float(cfg.tiers["tiers"]["T1"]["usable_gb"])
+    overhead = float(cfg.tiers["runtime_overhead_gb"])
     for model_id, m in cfg.registry["models"].items():
         if m.get("role") == "quant-arm":
             continue
+        if float(m["weights_gb"]) + overhead > t1_usable:
+            continue  # weights alone can't fit T1 -- zero T1 arms is expected, not a bug
         arms = model_arms(model_id, m, cfg.suite["b4"], cfg.tiers)
         assert arms, f"{model_id} got zero B4 arms"
 
@@ -260,17 +271,25 @@ def test_model_arms_every_roster_model_gets_at_least_one_arm():
 # --- plan() --------------------------------------------------------------------
 
 def test_plan_full_grid_excludes_quant_arm_and_matches_summed_arms():
+    """model_ids planned must exactly match the non-quant-arm roster models that
+    actually get >=1 B4 arm (some "big-model tier" roster additions are too large
+    to fit T1 at all and correctly get zero arms -- see
+    test_model_arms_every_roster_model_gets_at_least_one_arm)."""
     cfg = _cfg()
     b4 = B4LongContext()
     items = b4.plan(cfg, FakeStore())
 
+    non_quant_arm = {mid: m for mid, m in cfg.registry["models"].items()
+                      if m.get("role") != "quant-arm"}
+    expected_model_ids = {mid for mid, m in non_quant_arm.items()
+                          if model_arms(mid, m, cfg.suite["b4"], cfg.tiers)}
+
     model_ids = {i.model_id for i in items}
     assert "gemma-4-26b-a4b-mxfp4" not in model_ids     # quant-arm excluded
-    assert len(model_ids) == 11
+    assert model_ids == expected_model_ids
 
     total_arms = sum(len(model_arms(mid, m, cfg.suite["b4"], cfg.tiers))
-                     for mid, m in cfg.registry["models"].items()
-                     if m.get("role") != "quant-arm")
+                     for mid, m in non_quant_arm.items())
     n_tasks = len(load_longcontext_tasks(cfg.root))
     n_runs = cfg.suite["b4"]["n_runs"]
     assert len(items) == total_arms * n_tasks * n_runs

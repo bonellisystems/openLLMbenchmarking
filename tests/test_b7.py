@@ -161,10 +161,11 @@ def test_matrix_cells_encode_b7_marker():
 # ---------------------------------------------------------------------------
 
 def test_plan_item_count_roster_x_probes_x_cells_x_runs():
+    """Roster size is read from the registry itself (not hardcoded) so this
+    survives roster growth."""
     cfg = load_config(ROOT)
     models = cfg.registry["models"]
     non_quant_arm = [mid for mid, m in models.items() if m.get("role") != "quant-arm"]
-    assert len(non_quant_arm) == 11  # 12 registry models, 1 quant-arm excluded
 
     store = FakeStore()
     b7 = B7HarnessMatrix()
@@ -174,11 +175,11 @@ def test_plan_item_count_roster_x_probes_x_cells_x_runs():
     n_cells = 5
     n_runs = cfg.suite["b7"]["n_runs"]
     assert n_runs == 2
-    assert len(items) == len(non_quant_arm) * n_probes * n_cells * n_runs  # 880
+    assert len(items) == len(non_quant_arm) * n_probes * n_cells * n_runs
 
     model_ids = {item.model_id for item in items}
     assert "gemma-4-26b-a4b-mxfp4" not in model_ids
-    assert len(model_ids) == 11
+    assert len(model_ids) == len(non_quant_arm)
 
     for item in items:
         assert item.battery == 7

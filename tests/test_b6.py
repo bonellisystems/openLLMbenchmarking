@@ -254,11 +254,14 @@ def test_compile_check_never_executes(monkeypatch):
 # --- Battery.plan() -----------------------------------------------------------
 
 def test_plan_covers_11_models_x_10_tasks_x_3_runs():
+    """plan() excludes every model with role=quant-arm; roster size is read
+    from the registry itself (not hardcoded) so this survives roster growth."""
     from llmtest.registry import load_config
     cfg = load_config(ROOT)
 
     models = cfg.registry["models"]
     quant_arm = [mid for mid, m in models.items() if m.get("role") == "quant-arm"]
+    non_quant_arm = [mid for mid, m in models.items() if m.get("role") != "quant-arm"]
     assert len(quant_arm) == 1
 
     tasks = f.load_tasks(ROOT)
@@ -268,12 +271,12 @@ def test_plan_covers_11_models_x_10_tasks_x_3_runs():
     b6 = B6AgenticCoding()
     items = b6.plan(cfg, store)
 
-    # 11 non-quant-arm models x 10 fixture tasks x 3 runs = 330
-    assert len(items) == 330
+    # non-quant-arm models x 10 fixture tasks x 3 runs
+    assert len(items) == len(non_quant_arm) * 10 * 3
 
     model_ids = {item.model_id for item in items}
     assert quant_arm[0] not in model_ids
-    assert len(model_ids) == 11
+    assert len(model_ids) == len(non_quant_arm)
 
     for item in items:
         assert item.battery == 6
@@ -456,11 +459,17 @@ def test_execute_bugfix_non_python_language_has_no_compile_check(tmp_path):
 
 
 def test_execute_sampling_records_runtime_default_temp(tmp_path):
+    # max_tokens_by_track.scratch was raised 6000 -> 12000 in config/suite.yaml
+    # (P8: reasoning models were truncated at the old 6000/4000 budgets -- 38 empty
+    # rows, all predicted_n==max_tokens -- see reasoning-model-token-budget lesson).
+    # Read from config rather than hardcoding so this test tracks the real budget.
+    cfg = _load_cfg()
     task = _load_task("scratch-03")
-    item = _make_exec_item(_load_cfg(), task, run_n=1)
+    item = _make_exec_item(cfg, task, run_n=1)
     ctx = _stub_ctx(tmp_path, "```bash\ntar -czf /tmp/x_$(date +%s).tar.gz $1\n```")
     row = B6AgenticCoding().execute(item, ctx)[0]
-    assert row["sampling"] == {"temp": "runtime-default", "max_tokens": 6000}  # scratch track
+    expected_max_tokens = cfg.suite["b6"]["max_tokens_by_track"]["scratch"]
+    assert row["sampling"] == {"temp": "runtime-default", "max_tokens": expected_max_tokens}
 
 
 def test_execute_never_calls_exec_or_eval(tmp_path, monkeypatch):

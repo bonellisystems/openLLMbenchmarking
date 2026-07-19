@@ -218,20 +218,24 @@ def test_score_hallucination_answer_hedge_is_not_fabrication():
 # --- plan() tests -----------------------------------------------------------
 
 def test_plan_covers_11_models_excluding_quant_arm():
-    """plan() excludes the ONE model with role=quant-arm, covers
-    11 models x 13 tasks x 3 runs = 429 items."""
+    """plan() excludes every model with role=quant-arm, covers the rest of the
+    roster x 13 tasks x 3 runs. Roster size is read from the registry itself
+    (not hardcoded) so this survives roster growth."""
     from llmtest.registry import load_config
     cfg = load_config(ROOT)
+
+    non_quant_arm_models = [mid for mid, m in cfg.registry["models"].items()
+                             if m.get("role") != "quant-arm"]
 
     store = FakeStore()
     b3 = B3Hallucination()
     items = b3.plan(cfg, store)
 
-    assert len(items) == 11 * 13 * 3
+    assert len(items) == len(non_quant_arm_models) * 13 * 3
 
     model_ids = {item.model_id for item in items}
     assert "gemma-4-26b-a4b-mxfp4" not in model_ids
-    assert len(model_ids) == 11
+    assert len(model_ids) == len(non_quant_arm_models)
 
     for item in items:
         assert item.battery == 3

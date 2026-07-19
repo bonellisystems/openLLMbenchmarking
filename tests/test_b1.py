@@ -59,16 +59,17 @@ def _make_exec_item(cfg, task, run_n=1):
 
 
 def test_plan_covers_11_models_excluding_quant_arm(tmp_path):
-    """plan() excludes the ONE model with role=quant-arm, covers 11 models × 1 exemplar task × 3 runs."""
+    """plan() excludes every model with role=quant-arm, covers the rest of the
+    roster × 1 exemplar task × 3 runs. Roster size is read from the registry
+    itself (not hardcoded) so this test survives roster growth."""
     from llmtest.registry import load_config
     cfg = load_config(ROOT)
 
-    # Verify registry has 12 models
     models = cfg.registry["models"]
-    assert len(models) == 12
 
     # Verify exactly ONE has role=quant-arm
     quant_arm_models = [mid for mid, m in models.items() if m.get("role") == "quant-arm"]
+    non_quant_arm_models = [mid for mid, m in models.items() if m.get("role") != "quant-arm"]
     assert len(quant_arm_models) == 1
     assert quant_arm_models[0] == "gemma-4-26b-a4b-mxfp4"
 
@@ -77,17 +78,16 @@ def test_plan_covers_11_models_excluding_quant_arm(tmp_path):
     b1 = B1Business()
     items = b1.plan(cfg, store)
 
-    # 11 models × 120 tasks (cybersecurity-01..08, it_infra-01..08, helpdesk-01..08,
+    # len(roster) models × 120 tasks (cybersecurity-01..08, it_infra-01..08, helpdesk-01..08,
     # knowledge_mgmt-01..08, coding-01..08, finance-01..08, operations-01..08,
     # data_analytics-01..08, project_mgmt-01..08, marketing-01..08, seo-01..08,
     # sales-01..08, outreach-01..08, legal_compliance-01..08, hr_people_ops-01..08) × 3 runs
-    # = 3960 items
-    assert len(items) == 3960
+    assert len(items) == len(non_quant_arm_models) * 120 * 3
 
     # Verify quant-arm model is excluded
     model_ids = {item.model_id for item in items}
     assert "gemma-4-26b-a4b-mxfp4" not in model_ids
-    assert len(model_ids) == 11
+    assert len(model_ids) == len(non_quant_arm_models)
 
     # Verify all items have correct battery, task_id prefix
     for item in items:
