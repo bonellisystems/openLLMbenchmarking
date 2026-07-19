@@ -249,3 +249,32 @@ def test_b2_axis_packet_never_contaminates_pairwise_wins():
     # And the B2 packet's own data still correctly landed in b2_axis_scores.
     assert agg.b2_axis_scores[("m1", "axis5")] == 9
     assert agg.b2_axis_scores[("m2", "axis5")] == 3
+
+
+def test_b2_cal_identities_excluded_from_axis_scores():
+    """CAL-strong and CAL-weak letters (calibration identities) must never
+    appear as model_ids in b2_axis_scores, matching the B1 path exclusion."""
+    maps = {
+        "p1": _b2_map(
+            fabrication_pass={"m1": True, "CAL-strong": True, "CAL-weak": True}
+        ),
+    }
+    judgments = [
+        _j("p1", "claude", "A", "m1", 5, rank=1),
+        _j("p1", "codex", "B", "m1", 6, rank=1),
+        _j("p1", "gemini", "C", "m1", 7, rank=1),
+        _j("p1", "claude", "D", "CAL-strong", 9, rank=2),
+        _j("p1", "codex", "E", "CAL-strong", 9, rank=2),
+        _j("p1", "gemini", "F", "CAL-strong", 9, rank=2),
+        _j("p1", "claude", "G", "CAL-weak", 2, rank=3),
+        _j("p1", "codex", "H", "CAL-weak", 2, rank=3),
+        _j("p1", "gemini", "I", "CAL-weak", 2, rank=3),
+    ]
+    agg = aggregate([], judgments, maps, refscores=REFSCORES)
+    # m1 should appear in b2_axis_scores
+    assert ("m1", "axis5") in agg.b2_axis_scores
+    # CAL-strong and CAL-weak must NEVER appear as keys in b2_axis_scores
+    for key in agg.b2_axis_scores:
+        model_id = key[0]
+        assert model_id not in {"CAL-strong", "CAL-weak"}, \
+            f"CAL identity {model_id} should not appear in b2_axis_scores"

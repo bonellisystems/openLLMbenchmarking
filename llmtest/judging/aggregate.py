@@ -284,9 +284,13 @@ def aggregate(
     # (reusing PacketAnswer.median, same as the B1 path), fabrication-capped
     # at 2.0 BEFORE averaging, then mean-of-medians per (model, axis) when a
     # model appears in more than one packet for the same axis -- mirrors B1's
-    # mean-of-medians per (model, unit) above. ---
+    # mean-of-medians per (model, unit) above. CAL identities excluded (parity
+    # with B1 path) -- calibration letters are for judge-consistency probes
+    # only, not for model axis scoring. ---
     b2_axis_medians: dict[tuple, list] = {}
     for (packet_id, model_id), scores in b2_groups.items():
+        if model_id in CAL_IDENTITIES:
+            continue
         pa = PacketAnswer(
             packet_id=packet_id, model_id=model_id,
             task_id=maps[packet_id].get("task_id", ""),
