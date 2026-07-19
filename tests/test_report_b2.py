@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import string
 import sys
 from pathlib import Path
 
@@ -85,6 +86,39 @@ def test_load_rows_reads_both_shards_and_never_blends_source_suite(tmp_path):
     by_suite = {r["source_suite"] for r in rows}
     assert by_suite == {"suite-v2.0.0", "suite-v2.1.0"}
     assert len(rows) == 2
+
+
+# --- load_baseline_maps: B2 axis-packet letter-count collision exclusion ---
+
+
+def test_load_baseline_maps_excludes_b2_axis_packets_with_colliding_letter_count(tmp_path):
+    """A B2 axis packet built at the default full-roster quorum (config/suite.yaml
+    b2.quorum == cohort size) has EXACTLY the same letter count as a real B1
+    baseline packet (both are len(cohort_models)+2 letters). load_baseline_maps
+    must exclude axis packets (dim starting with "axis") BEFORE computing the
+    max-letter-count target -- otherwise, once real B2 judging runs, those
+    axis-5/8 packets get counted as B1 baseline packets, inflating the
+    "Baseline packets" total (this is the bug the fix regresses)."""
+    letters = list(string.ascii_uppercase[:18])  # 18-letter full roster (16 models + CAL x2)
+    letters_by_judge = {jid: {letter: f"model-{i}" for i, letter in enumerate(letters)}
+                         for jid in ("claude", "codex", "gemini")}
+
+    b1_map = {"task_id": "b1.finance-01", "run_n": 1, "unit": "finance",
+              "rubric_sha": "rsha", "cal_fallback": False, "base_seed": "seed1",
+              "letters_by_judge": letters_by_judge}
+    axis_map = {"task_id": "b2.error-recovery-01", "run_n": 1, "dim": "axis5",
+                "scenario": "error-recovery-01", "present_models": [], "missing_models": [],
+                "fabrication_pass": {}, "rubric_sha": "rsha", "base_seed": "seed2",
+                "letters_by_judge": letters_by_judge}
+
+    packets_dir = tmp_path / "results" / "packets"
+    packets_dir.mkdir(parents=True, exist_ok=True)
+    (packets_dir / "b1-pkt.map.json").write_text(json.dumps(b1_map), encoding="utf-8")
+    (packets_dir / "b2-axis-pkt.map.json").write_text(json.dumps(axis_map), encoding="utf-8")
+
+    baseline = p8_report.load_baseline_maps(tmp_path)
+
+    assert set(baseline) == {"b1-pkt"}
 
 
 # --- B2 judged-axis section ---

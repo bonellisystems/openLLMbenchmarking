@@ -135,8 +135,17 @@ def load_baseline_maps(root: Path) -> dict[str, dict]:
     smaller letter count are partial-roster / dry-run / quota-probe packets from
     earlier waves and are out of scope for the baseline scorecard. Deriving the
     target from the packets (rather than a hardcoded 13/17/18) keeps the
-    scorecard correct across roster changes."""
-    maps_all = load_maps(root / "results" / "packets")
+    scorecard correct across roster changes.
+
+    B2 judged-axis packets (dim="axis5"/"axis8") are excluded BEFORE the
+    letter-count target is computed -- at the default full-roster quorum
+    (config/suite.yaml b2.quorum == cohort size) an axis packet's letter
+    count collides exactly with the B1 baseline letter count (both are
+    len(cohort_models)+2), so without this exclusion axis packets get
+    miscounted as B1 baseline packets once real B2 judging runs. Mirrors
+    aggregate.py's cal_fallback_count exclusion of the same dim field."""
+    maps_all = {pid: m for pid, m in load_maps(root / "results" / "packets").items()
+                if not (isinstance(m.get("dim"), str) and m.get("dim").startswith("axis"))}
     counts = [len(next(iter(m["letters_by_judge"].values())))
               for m in maps_all.values() if m.get("letters_by_judge")]
     if not counts:
@@ -249,7 +258,6 @@ def md_table(headers: list[str], rows: list[list[str]]) -> str:
 def build_overview(root, cfg, rows, roster, baseline_maps, judgments, judge_ids,
                     hardware_label, caveats) -> str:
     suite_version = cfg.suite["suite_version"]
-    by_battery = Counter(r["battery"] for r in rows)
     by_battery_suite = Counter((r["battery"], r.get("source_suite", "unknown")) for r in rows)
     models_seen_by_battery_suite = defaultdict(set)
     for r in rows:
