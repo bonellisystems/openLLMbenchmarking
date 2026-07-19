@@ -21,3 +21,13 @@ def test_b2_without_axes_raises():
 
 def test_cal_ref_paths():
     assert cal_ref(Dim("axis", "axis5")).as_posix().endswith("grading/calibration/b2/axis5.yaml")
+
+def test_b1_malformed_unit_missing_number_raises():
+    # exercises _unit_from_b1's "no hyphen" ValueError (a b1.-prefixed id with no -NN),
+    # which the existing b2.* test never reaches (it hits the outer prefix guard)
+    with pytest.raises(ValueError):
+        resolve_dims(1, "b1.cybersecurity", None)
+
+def test_cal_ref_rejects_unit_dim():
+    with pytest.raises(ValueError):
+        cal_ref(Dim("unit", "cybersecurity"))
