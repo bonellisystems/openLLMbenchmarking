@@ -16,9 +16,10 @@ It differs from `build_cohort_packets` in ways specific to B2's judged axes
   blend into one packet, even if a future scenario carries both axes.
 - **Rubric text and task prompt come from the fixture itself** (spec 1.2):
   `task.rubric["axis_N"]` fills the judge template's `anchors` slot, and the
-  full tool interaction (`json.dumps(task.messages)` -- prompt + tools +
-  injected tool error/result + the model's recovery) fills `task_prompt`.
-  There is no separate `grading/anchors/<unit>.md` file for B2 axes.
+  full tool interaction (`json.dumps({"tools": task.tools, "messages":
+  task.messages})` -- tool contract + prompt + injected tool error/result +
+  the model's recovery) fills `task_prompt`. There is no separate
+  `grading/anchors/<unit>.md` file for B2 axes.
 - **`fixture_sha` verification is per-row** (spec 1.2): a row whose
   `fixture_sha` doesn't match the loaded fixture's is excluded from that
   packet (never silently rebuilt against a mutated fixture) and reported in
@@ -39,8 +40,11 @@ It differs from `build_cohort_packets` in ways specific to B2's judged axes
 
 No evidence table is rendered per answer here (unlike `build_cohort_packets`'s
 det-signal table) -- B2 doesn't have B1's free-text signal engine, and the
-brief's reuse list omits `_format_evidence`; the answer body is just the
-scrubbed artifact text.
+brief's reuse list omits `_format_evidence`; the answer body is the scrubbed,
+answer-only rendering of the artifact (see `_render_answer`) -- never the raw
+`/v1/chat/completions` envelope, which carries identity side channels
+(`model`, `timings.predicted_per_second`, etc.) that must never reach a
+blinded packet.
 """
 from __future__ import annotations
 
@@ -51,9 +55,48 @@ from pathlib import Path
 
 import yaml
 
-from llmtest.batteries.b2_fixtures import load_tasks
+from llmtest.batteries.b2_fixtures import _response_text, extract_tool_calls, load_tasks
 from llmtest.judging.dimension import Dim, cal_ref, resolve_dims
 from llmtest.judging.packets import _LETTERS, PacketRecord, _read_artifact_text, scrub
+
+
+def _render_answer(raw_text: str) -> str:
+    """Parse a B2 artifact's raw text into an answer-ONLY rendering.
+
+    Real B2 artifacts (artifacts/b2/<sha>.json) are the whole
+    `/v1/chat/completions` response envelope -- id, usage, timings (incl.
+    `predicted_per_second`, a strong model-identity side channel), model
+    path/name strings the scrub() regex won't catch, finish_reason, etc.
+    Embedding that raw text verbatim as "the answer" would defeat the
+    letter-permutation blinding. So: json.loads the artifact and keep ONLY
+    the model's actual answer -- `choices[0].message.content` and
+    `.tool_calls`, via the SAME parsers score_axes() uses
+    (b2_fixtures._response_text / extract_tool_calls) -- rendered as
+    readable text, never the envelope.
+
+    Falls back to treating `raw_text` as the answer verbatim when it isn't
+    valid JSON (or isn't a JSON object), so synthetic/plain-text artifacts
+    (as written by tests, or by any future non-JSON transport) still work.
+    """
+    try:
+        response = json.loads(raw_text)
+    except (json.JSONDecodeError, TypeError):
+        return raw_text
+    if not isinstance(response, dict):
+        return raw_text
+
+    content = _response_text(response)
+    calls = extract_tool_calls(response)
+
+    parts = []
+    if content:
+        parts.append(content)
+    for call in calls:
+        fn = call.get("function") or {}
+        name = fn.get("name", "<unknown tool>")
+        args = fn.get("arguments", "")
+        parts.append(f"[tool call: {name}({args})]")
+    return "\n\n".join(parts)
 
 
 def _load_b2_calibration(root: Path, dim: Dim) -> tuple[str | None, str | None]:
@@ -167,10 +210,11 @@ def build_b2_axis_packets(
                           model=model_id)
                     continue
                 art = (r.get("artifacts") or {}).get("response")
-                text = _read_artifact_text(root, art) if art else None
-                if text is None:
+                raw_text = _read_artifact_text(root, art) if art else None
+                if raw_text is None:
                     _skip("missing artifact file", model=model_id)
                     continue
+                text = _render_answer(raw_text)
                 det = (r.get("det_checks") or {}).get(f"axis{axis_num}_fabrication_guard") or {}
                 members[model_id] = (r.get("row_id"), text, det)
 
@@ -183,15 +227,21 @@ def build_b2_axis_packets(
 
             rubric_text = (task.rubric or {}).get(f"axis_{axis_num}")
             if not rubric_text:
-                _skip(f"fixture has no rubric.axis_{axis_num} text")
+                _skip(f"fixture has no rubric.axis_{axis_num} text",
+                      present_models=present, missing_models=missing)
                 continue
 
             strong_text, weak_text = _load_b2_calibration(root, dim)
             if strong_text is None or weak_text is None:
-                _skip(f"missing/malformed calibration: {cal_ref(dim, root)}")
+                _skip(f"missing/malformed calibration: {cal_ref(dim, root)}",
+                      present_models=present, missing_models=missing)
                 continue
 
-            interaction = json.dumps(task.messages, ensure_ascii=False)
+            # Spec 1.2: the body must show the fixture's tool contract
+            # (task.tools) alongside task.messages, not messages alone --
+            # the judge needs to see what tools the model actually had.
+            interaction = json.dumps(
+                {"tools": task.tools, "messages": task.messages}, ensure_ascii=False)
 
             member_row_ids = sorted(row_id for row_id, _t, _d in members.values())
             answer_shas = sorted(
