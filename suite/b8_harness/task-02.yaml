@@ -1,0 +1,74 @@
+id: multifile-01
+shape: multi-file
+task_version: "1.1.0"
+prompt: |
+  The repo has three files:
+
+  - `lib_math.sh` -- defines `add()`, which works, but is MISSING a
+    `multiply()` function. Add it (integer multiplication of its two
+    arguments, printed via `echo`).
+  - `lib_format.sh` -- defines `fmt_result()`, but it prints the wrong
+    prefix ("Answer: " instead of "Result: "). Fix the prefix.
+  - `main.sh` -- already correct; sources both libraries and prints the
+    formatted product of 3 and 4. Do NOT edit `main.sh`.
+
+  When done, `bash main.sh` must print exactly `Result: 12`. You need to
+  edit BOTH `lib_math.sh` and `lib_format.sh` to get there -- neither file
+  alone is enough. Do not create any new files.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 240, tokens: 4000, steps: 12}
+setup_repo:
+  lib_math.sh: |
+    #!/bin/bash
+    add() {
+        echo $(( $1 + $2 ))
+    }
+
+    # multiply() is missing -- add it here (integer multiply, echo the result).
+  lib_format.sh: |
+    #!/bin/bash
+    fmt_result() {
+        echo "Answer: $1"
+    }
+  main.sh: |
+    #!/bin/bash
+    source lib_math.sh
+    source lib_format.sh
+    fmt_result "$(multiply 3 4)"
+oracle_files:
+  oracle_test.sh: |
+    #!/bin/bash
+    set -e
+    out="$(bash main.sh)"
+    if [ "$out" != "Result: 12" ]; then
+      echo "FAIL: main.sh -> '$out' (want 'Result: 12')"
+      exit 1
+    fi
+    out2="$(bash -c 'source lib_math.sh; multiply 6 7')"
+    if [ "$out2" != "42" ]; then
+      echo "FAIL: multiply 6 7 -> '$out2' (want 42)"
+      exit 1
+    fi
+    echo PASS
+protected_paths: [main.sh]
+allowed_diff_paths: [lib_math.sh, lib_format.sh]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && bash oracle_test.sh"]
+notes: |
+  Shape: multi-file -- completion genuinely requires coordinated edits
+  across two files; neither `lib_math.sh` nor `lib_format.sh` alone
+  produces the expected `main.sh` output. `main.sh` is agent-VISIBLE and
+  protected (both hash-checked AND excluded from allowed_diff_paths) so a
+  gamed "fix" can't just hardcode the entrypoint's own output -- that's the
+  tamper-proof mechanism (Design Decision #1a).
+
+  Hidden oracle (post-review hardening, task_version 1.0.0 -> 1.1.0):
+  `oracle_test.sh` moved to `oracle_files` -- it is never written into the
+  agent's workspace, so it cannot be read to discover exactly what's being
+  checked (e.g. that `multiply` gets probed with 6,7 in addition to
+  main.sh's own 3,4) and overfit against. `run_oracle` re-injects it into a
+  private copy only at validation time. The oracle also calls `multiply`
+  directly with different inputs (6, 7) than `main.sh`'s (3, 4), catching a
+  `multiply` that only special-cases the exact numbers used in main.sh's
+  call.

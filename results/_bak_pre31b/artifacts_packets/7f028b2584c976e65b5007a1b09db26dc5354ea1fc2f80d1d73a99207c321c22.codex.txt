@@ -1,0 +1,294 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Cybersecurity -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+Severity is triaged correctly against the actual impact described, response actions follow containment before eradication before recovery, and any CVE, CWE, or ATT&CK reference used is real and correctly applied (never invented). Evidence-preservation is called out before disruptive remediation, and breach-notification or compliance timelines are flagged when the scenario implies regulated or sensitive data. The answer is calibrated about what needs live forensics versus what can be assessed from the facts given.
+Example character: a triaged action list that isolates the affected system first, preserves logs, then patches, with the real CVE cited only where it is genuinely relevant.
+
+## 7 -- Strong
+The response plan is sound and correctly ordered (containment before eradication), and is directly usable by a responder. References to standards or CVEs are generic rather than specific, or evidence-preservation/notification timing gets only a light mention. Severity is judged reasonably even if not formally scored.
+Example character: a correct incident-response sequence that never names a specific CVE or ATT&CK technique even where the prompt supports one.
+
+## 5 -- Adequate
+The advice reads as a generic security checklist (patch systems, enable MFA, monitor logs) that is directionally correct but not prioritized by the actual severity or tailored to the specific incident described.
+Example character: a list of general hardening steps with no sense of which one matters most given the described exposure.
+
+## 3 -- Weak
+The response gets the ordering wrong (patches or removes an attacker's access before containing them), misjudges severity, or pads the answer with boilerplate ("enable a firewall") that does not engage the specific scenario.
+Example character: jumps straight to "eradicate the malware" on an active intrusion without isolating the host first.
+
+## 0 -- Unusable
+Cites a fabricated CVE, CWE, or CVSS score as if verified, or recommends actively dangerous steps (disable logging, do not isolate an active breach) as sound practice. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Fabricated CVE, CWE, or CVSS identifiers presented as real.
+- Eradication or patching recommended before containment on an active incident.
+- Recommending disabling logging or otherwise destroying evidence.
+- Ignoring implied breach-notification or regulatory timelines when sensitive data is involved.
+- Treating every finding as equally critical with no severity differentiation.
+
+## Unit-specific excellence markers
+- Severity correctly triaged and prioritized against the described impact.
+- Containment-before-eradication-before-recovery ordering respected.
+- Real, correctly-applied CVE/CWE/ATT&CK references where relevant.
+- Evidence-preservation explicitly called out.
+- Notification or compliance timeline awareness when data exposure is implied.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+A 60-employee industrial-parts distributor (an MSP client with no dedicated security staff)
+was hit by a phishing campaign. The facts, as confirmed by your team so far:
+
+- 6 employees opened an emailed Word attachment that exploited CVE-2022-30190 ("Follina"), a
+  Microsoft Office/MSDT remote-code-execution vulnerability triggered via a malicious external
+  link with no macros and no user interaction beyond opening the document, to drop a
+  credential-harvesting page that captured their Microsoft 365 passwords.
+- Sign-in logs show all 6 accounts had successful M365 logins from an unfamiliar ASN in
+  another country within 48 hours of the phishing email, and none of these logins triggered an
+  MFA challenge.
+- Two mailboxes, accountspayable@ and controller@, now have newly created inbox rules that
+  silently forward a copy of, and then delete, any message whose subject contains the word
+  "invoice".
+
+Write a phishing-response runbook, in priority order, that a level-1 helpdesk technician with
+no security background could execute. Specifically address why a password reset alone will
+not fully remediate this incident given what the sign-in logs show, and what you would check
+in each affected mailbox beyond the inbox rules already described.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| numeric-3 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Phishing-response runbook (priority order):
+
+1. Revoke, don't just reset. For all 6 compromised accounts: revoke all active refresh tokens /
+sign out of all sessions (in Microsoft 365 this is the "Revoke Sessions" action, or via
+Microsoft Graph's revokeSignInSessions) BEFORE or alongside the password reset. This is the
+step a simple password reset misses: the sign-in logs show logins from an unfamiliar ASN that
+never triggered MFA, which strongly suggests the attacker is using a stolen session/refresh
+token captured by the credential-harvesting page, not just a password. A password reset alone
+does not invalidate an already-issued token -- the attacker's session can keep working even
+after the password changes, unless the token is explicitly revoked.
+
+2. Remove the malicious inbox rules. Delete the auto-forward-and-delete rules already found on
+accountspayable@ and controller@ (classic Business Email Compromise persistence and
+invoice-fraud staging), and don't stop there -- check EVERY affected mailbox (all 6, not just
+the 2 already flagged) for similar hidden rules, since attackers often plant rules on multiple
+mailboxes.
+
+3. Check for illicit OAuth app consent grants. Beyond inbox rules, review each of the 6
+accounts' app permissions / enterprise application consents for anything unfamiliar the
+attacker may have granted themselves during the compromise window -- an illicit consent grant
+also survives a password reset and can give the attacker ongoing mailbox access via the Graph
+API even after tokens are revoked and inbox rules are cleaned up, so this needs checking in the
+same pass, not as an afterthought.
+
+4. Contain the initial vector. Confirm the malicious Word attachment exploiting CVE-2022-30190
+(Follina) is quarantined/blocked at the email gateway for all 60 mailboxes (not just the 6 that
+opened it), and patch/mitigate the MSDT protocol handler issue per Microsoft's guidance on any
+endpoint that hasn't applied the fix, since Follina requires no macros and can be re-triggered
+by a similar attachment.
+
+5. Communicate and monitor. Notify the 6 affected employees and the finance department
+specifically about the invoice-fraud angle (the attacker may already have sent fraudulent
+payment-redirect emails from the compromised mailboxes before detection), and monitor sign-in
+logs for the next several days for any recurrence from the same ASN.
+
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Phishing Response Runbook: Credential Harvest & Mailbox Compromise
+
+**Target Audience:** Level-1 Helpdesk Technician  
+**Incident Type:** Phishing $\rightarrow$ Credential Theft $\rightarrow$ Business Email Compromise (BEC)
+
+---
+
+### ⚠️ CRITICAL NOTICE: Why a Password Reset is NOT enough
+In this specific incident, the sign-in logs show successful logins from an unfamiliar location **without an MFA challenge**. This indicates the attacker likely performed a **Session Hijack (Token Theft)**.
+
+When a user clicks a malicious link, the attacker doesn't just steal the password; they steal the "Session Cookie" that tells Microsoft, *"This user has already logged in and passed MFA."* If you only change the password, the attacker's stolen session cookie remains valid, allowing them to stay logged in to the mailbox without ever needing the new password or an MFA prompt.
+
+**You must perform the "Revoke Sessions" step below to kick the attacker out.**
+
+---
+
+### Phase 1: Immediate Containment (Priority: High)
+*Goal: Terminate the attacker's access immediately.*
+
+1.  **Revoke All Active Sessions:**
+    *   Log into the **Microsoft 365 Admin Center**.
+    *   Go to **Users** > **Active Users**.
+    *   Select each of the 6 affected users.
+    *   Select **"Revoke sessions"** (This invalidates the stolen session tokens/cookies).
+2.  **Reset Passwords:**
+    *   Immediately reset the passwords for all 6 affected users.
+    *   Ensure the new passwords meet complexity requirements and have never been used before.
+3.  **Enable/Enforce MFA:**
+    *   Verify that Multi-Factor Authentication (MFA) is active for these users. If it was disabled or bypassed, re-enabling it is mandatory.
+
+---
+
+### Phase 2: Mailbox Remediation (Priority: High)
+*Goal: Remove traces of the attacker's persistence and activity.*
+
+For the two highly sensitive mailboxes (`accountspayable@` and `controller@`), perform the following checks beyond the "invoice" rules already identified:
+
+1.  **Audit All Inbox Rules:**
+    *   Check for *any* other rules that move mail to "RSS Feeds," "Deleted Items," or "Archive." Attackers often create multiple rules to hide their tracks.
+2.  **Check Mail Forwarding Settings:**
+    *   In the Exchange Admin Center, check if **External Forwarding** has been enabled for these accounts. Attackers often set a global forwarding rule that bypasses "Inbox Rules."
+3.  **Check "Sent Items":**
+    *   Review the Sent folder. Did the attacker send fraudulent invoices or "change of banking details" emails to vendors or clients?
+4.  **Check "Deleted Items" & "Recoverable Items":**
+    *   Look for legitimate emails from vendors that the attacker may have deleted to hide their activity.
+5.  **Check OAuth App Permissions:**
+    *   Check if the attacker granted a third-party application permission to access the mailbox (this allows them to read mail even if the password is changed). Look for "Enterprise Applications" in the Azure/Entra ID portal.
+
+---
+
+### Phase 3: Verification & Cleanup (Priority: Medium)
+*Goal: Ensure the threat is gone and the environment is stable.*
+
+1.  **Audit Sign-in Logs (Last 72 Hours):**
+    *   Look for any other successful logins from unfamiliar countries or IP addresses for the *entire* company, not just the 6 victims.
+2.  **Check for Data Exfiltration:**
+    *   Review "Mailbox Audit Logs" if available to see if there was a spike in "MailItemsAccessed" (this tells us if they read/downloaded the entire company directory or sensitive files).
+3.  **Scan Affected Workstations:**
+    *   Since the "Follina" exploit was used, the physical computers used by those 6 employees may have been compromised. Flag these machines for a full EDR/Antivirus scan to ensure no "backdoors" were left behind.
+
+---
+
+### Phase 4: Reporting (Priority: Low)
+1.  **Escalate:** Notify the MSP Security Lead/Tier 2 that the incident is "Contained" but requires a final review of the mail logs.
+2.  **Document:** Log the time the sessions were revoked and the time passwords were changed in the incident ticket.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| numeric-3 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+We should have the 6 users reset their passwords right away and remind everyone to be careful
+about phishing emails. We can also delete those suspicious inbox rules we found. Once passwords
+are changed, the accounts should be secure again. We'd also recommend some security awareness
+training for staff going forward.
+
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| numeric-3 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**Phishing‑Response Run‑Book (Level‑1 Help‑Desk)**  
+*Designed for a technician with no security background.  Follow in the order listed below.*
+
+| # | Priority | Action | Tool / How‑to | Why it matters |
+|---|----------|--------|---------------|----------------|
+| 1 | **Immediate** | **Reset passwords for the 6 compromised accounts** | Azure AD portal → **Users** → select user → **Reset password** (auto‑send to user) | Stops the attacker from using the stolen credentials **after** you finish the full remediation.  A reset alone does *not* remove the malicious rule or other persistence mechanisms. |
+| 2 | **Immediate** | **Force sign‑out of all active sessions** | Azure AD portal → **Users** → select user → **Sign out all sessions** | The attacker may still be logged‑in via a long‑lived session token; this guarantees the reset password takes effect. |
+| 3 | **Immediate** | **Enable/Enforce MFA** for each affected account | Azure AD portal → **Users** → select user → **Authentication methods** → **Multi‑factor authentication** → **Enable** (or use Conditional Access to force MFA) | The sign‑in logs show logins *without* an MFA challenge; MFA blocks future unauthorized sign‑ins even if the password is compromised again. |
+| 4 | **Short‑term** | **Investigate mailbox rules** | Exchange Admin Center (EAC) → **Recipients** → **Mailboxes** → select user → **Mailbox features** → **Inbox Rules** (or PowerShell: `Get-InboxRule –Mailbox <user>`). Delete any rule that is not known to be legitimate. | The “invoice” rule is a classic persistence technique. Other hidden rules (e.g., forward to external address, auto‑archive) may exist. |
+| 5 | **Short‑term** | **Check for hidden or “silent” rules** | PowerShell: `Get-InboxRule –Mailbox <user> | Where-Object {$_.Enabled -eq $true}`. | Some attackers create rules that are not displayed in the UI. |
+| 6 | **Short‑term** | **Review mailbox permissions** | EAC → **Recipients** → **Mailboxes** → select user → **Mailbox permissions**. Remove any **Full Access** or **Send As / Send on Behalf** rights that belong to unknown users or groups. | Compromised accounts often give themselves admin or forwarding rights. |
+| 7 | **Short‑term** | **Search for suspicious mail‑flow (transport) rules** | EAC → **Mail flow** → **Rules**. Look for any rule that forwards, deletes, or modifies messages for your
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

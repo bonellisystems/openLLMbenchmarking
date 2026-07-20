@@ -340,10 +340,55 @@ class GeminiAdapter(BaseAdapter):
                           _substitute_argv(argv_template, model_pin, cli=cli))
 
 
+class KimiAdapter(BaseAdapter):
+    """Moonshot Kimi (K3) agent CLI (`kimi -p {instruction} --yolo`).
+
+    Kimi narrates its reasoning as `• ` bullet lines and appends a
+    `To resume this session: ...` footer, and its narration can itself contain
+    braces (e.g. echoing the requested JSON schema back), so the reply object is
+    taken as the LAST balanced `{...}` in stdout that validates as a
+    {scores,reasons,ranking} reply -- parse_reply's default first-object scan can
+    otherwise lock onto a brace inside the narration. Candidate 4th judge (not in
+    the frozen median-of-3 panel); driven via file delivery like gemini/agy since
+    a 10k-token packet cannot ride in the `-p` argv (Windows argv cap)."""
+
+    # NB: `-p` (non-interactive prompt) cannot be combined with --yolo/--auto
+    # ("Cannot combine --prompt with --yolo"); in -p mode Kimi auto-executes
+    # read-only tool actions (file reads) without an approval prompt anyway.
+    DEFAULT_ARGV_TEMPLATE = ["kimi", "-p", "{instruction}",
+                              "--output-format", "text"]
+
+    def __init__(self, judge_id: str, model_pin: str, cli_version: str | None,
+                 argv_template: list[str] | None = None, cli: str | None = None):
+        argv_template = argv_template or self.DEFAULT_ARGV_TEMPLATE
+        super().__init__(judge_id, model_pin, cli_version,
+                          _substitute_argv(argv_template, model_pin, cli=cli))
+
+    def _parse_stdout(self, stdout: str,
+                       expected_letters: list[str]) -> tuple[dict | None, str | None]:
+        footer = stdout.rfind("To resume this session")
+        text = stdout[:footer] if footer != -1 else stdout
+        last_ok, last_err = None, "no valid {scores,reasons,ranking} object in reply"
+        idx = text.find("{")
+        while idx != -1:
+            obj = _scan_balanced_object(text, idx)
+            if obj is None:
+                idx = text.find("{", idx + 1)
+                continue
+            parsed, err = parse_reply(obj, expected_letters)
+            if parsed is not None:
+                last_ok = parsed
+            else:
+                last_err = err
+            idx = text.find("{", idx + len(obj))
+        return (last_ok, None) if last_ok is not None else (None, last_err)
+
+
 _ADAPTER_CLASSES = {
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
     "gemini": GeminiAdapter,
+    "kimi": KimiAdapter,
 }
 
 _file_delivery_variants: dict[type, type] = {}

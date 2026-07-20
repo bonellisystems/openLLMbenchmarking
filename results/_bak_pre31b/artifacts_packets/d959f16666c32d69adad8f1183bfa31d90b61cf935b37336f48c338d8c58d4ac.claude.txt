@@ -1,0 +1,1253 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Write a bash script `archive_freezer_logs.sh` for a biotech lab's ultra-low-temperature
+freezer monitoring system. Requirements:
+
+1. It processes every `.csv` file directly inside `/data/freezer_logs/` -- filenames may
+   contain spaces (e.g., `Freezer 3 Log.csv`), since that's how the monitoring software
+   names its exports.
+2. Any file whose last-modified time is more than 7 days old gets gzip-compressed into
+   `/data/freezer_logs/archive/`, then the original is removed -- but ONLY after the
+   compression step has actually succeeded. These are irreplaceable sponsor-sample
+   temperature logs, so a file must never be deleted if its archive copy might not have
+   been written correctly.
+3. Files modified within the last 7 days must NOT be touched -- the logging process may
+   still be actively appending to them.
+4. The script runs daily via cron. It must be safe to re-run on a directory that already has
+   some files archived, without erroring out or re-compressing files it already archived on
+   a previous run.
+
+Write the script, then explain the two specific bugs a naive version commonly has that yours
+avoids: (a) iterating over filenames in a way that breaks on the spaces described in
+requirement 1, and (b) deleting a source file even when its compression step actually
+failed.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE_DIR="/data/freezer_logs"
+ARCHIVE_DIR="/data/freezer_logs/archive"
+AGE_DAYS=7
+
+# Ensure the archive directory exists before we try to write into it.
+mkdir -p "$ARCHIVE_DIR"
+
+# Find CSV files directly inside the source directory that are older than 7 days.
+# -print0 + read -d '' are used to safely handle filenames with spaces or special chars.
+# -maxdepth 1 ensures we only process the top level, not subdirectories.
+find "$SOURCE_DIR" -maxdepth 1 -type f -name '*.csv' -mtime +7 -print0 | \
+while IFS= read -r -d '' file; do
+
+    archive_file="${ARCHIVE_DIR}/$(basename "$file").gz"
+
+    # Compress to the archive location.
+    # We do NOT redirect stdout to the archive file first and then check;
+    # instead, we check the exit status of gzip immediately.
+    if gzip -c "$file" > "$archive_file"; then
+        # Compression succeeded. Now it is safe to remove the original.
+        rm -f "$file"
+    else
+        # Compression failed (e.g., disk full, permission error).
+        # Clean up the partial archive so it doesn't pollute the directory.
+        rm -f "$archive_file"
+        echo "ERROR: Failed to compress '$file'. Original left intact." >&2
+        exit 1
+    fi
+done
+```
+
+### Explanation of Two Avoided Bugs
+
+**(a) Iteration breaks on spaces in filenames**
+A naive script might use a `for` loop with an unquoted glob, like:
+```bash
+for f in *.csv; do
+```
+If a file is named `Freezer 3 Log.csv`, the shell performs **word splitting** on the expanded filenames. The variable `f` would take the value `Freezer`, then `3`, then `Log.csv` on subsequent iterations. The script would attempt to gzip a file named `Freezer` and delete it, corrupting the data integrity for the actual log file. The fix uses `find` with `-print0` and `read -d ''`, combined with quoting the variable (`"$file"`) wherever it is used, ensuring the shell treats the entire filename as a single string.
+
+**(b) Deleting the source even when compression fails**
+A naive script might use the semicolon operator, which executes commands sequentially regardless of success:
+```bash
+gzip "$file"; rm "$file"
+```
+If the disk fills up during compression, `gzip` exits with an error (non-zero status), but `rm` still executes successfully. Since the original CSV is a sponsor-sample temperature log, deleting it after a failed archive means the data is **irreplaceably lost**. The script above wraps `gzip` in an `if` statement and only calls `rm` if `gzip` exits with status `0`. If `gzip` fails, the partial archive is removed and the script exits with an error, leaving the original file untouched.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+```bash
+#!/bin/bash
+
+# ==============================================================================
+# Script Name: archive_freezer_logs.sh
+# Description: Archives .csv freezer logs older than 7 days using gzip.
+#              Ensures data integrity by verifying compression before deletion.
+# ==============================================================================
+
+# Configuration
+LOG_DIR="/data/freezer_logs"
+ARCHIVE_DIR="/data/freezer_logs/archive"
+
+# Ensure the archive directory exists
+mkdir -p "$ARCHIVE_DIR"
+
+# Check if log directory exists to avoid errors
+if [[ ! -d "$LOG_DIR" ]]; then
+    echo "Error: Directory $LOG_DIR does not exist." >&2
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# Process files:
+# 1. find: Search only in the top level of LOG_DIR (to avoid re-archiving)
+# 2. -maxdepth 1: Prevents descending into the archive folder itself
+# 3. -name "*.csv": Only target CSV files
+# 4. -type f: Only regular files
+# 5. -mtime +7: Only files modified more than 7 days ago
+# 6. -print0: Uses a null delimiter to handle filenames with spaces/newlines
+# ------------------------------------------------------------------------------
+
+find "$LOG_DIR" -maxdepth 1 -name "*.csv" -type f -mtime +7 -print0 | while IFS= read -r -d '' file; do
+    
+    # Get the base filename (e.g., "Freezer 3 Log.csv")
+    base_name=$(basename "$file")
+    
+    # Define the target path in the archive folder
+    target_path="$ARCHIVE_DIR/$base_name.gz"
+
+    echo "Processing: $base_name"
+
+    # Perform compression
+    # -c sends output to stdout so we can redirect it to the target path.
+    # This keeps the original file untouched during the operation.
+    if gzip -c "$file" > "$target_path"; then
+        # If gzip exited with status 0 (success), remove the original file
+        rm "$file"
+        echo "Successfully archived: $base_name -> $target_path"
+    else
+        # If compression failed (e.g., disk full, permission issue), 
+        # we DO NOT remove the original file.
+        echo "ERROR: Failed to compress $base_name. Original file preserved." >&2
+        
+        # Clean up the potentially corrupted/incomplete .gz file
+        [[ -f "$target_path" ]] && rm "$target_path"
+    fi
+
+done
+
+echo "Archive process complete."
+```
+
+### Explanation of Avoided Bugs
+
+#### (a) The "Word Splitting" Bug
+**The Naive Approach:** A common mistake is to use a `for` loop like this:
+`for file in $(find /data/freezer_logs/ -name "*.csv"); do ...`
+
+**The Problem:** In Bash, the output of a command substitution `$(...)` is subject to **word splitting**. If a filename is `Freezer 3 Log.csv`, the shell sees the spaces and interprets this as three separate files: `Freezer`, `3`, and `Log.csv`. The script will then try to find a file named `Freezer` and fail, likely causing the script to crash or behave unpredictably.
+
+**The Solution:** My script uses `find ... -print0` paired with `read -r -d ''`. The `-print0` flag tells `find` to separate filenames with a `null` character (`\0`) instead of a space or newline. Since a null character is the only character that is illegal in a filename, it is the only 100% safe way to delineate filenames, regardless of spaces, tabs, or newlines.
+
+#### (b) The "Blind Deletion" Bug
+**The Naive Approach:** A common mistake is to run the compression and deletion as two sequential, independent commands:
+`gzip "$file" && rm "$file"` (This is actually safer than the one below, but still risky)
+`gzip "$file" > "$archive/$file.gz"; rm "$file"` 
+
+**The Problem:** In the second example, the `rm` command executes regardless of whether the `gzip` command succeeded. If the disk becomes full during compression, `gzip` will fail and leave a truncated, corrupted `.gz` file. The naive script would then proceed to `rm` the original log, resulting in **permanent data loss** of irreplaceable sponsor logs.
+
+**The Solution:** My script uses an `if` statement to evaluate the **exit status** of the `gzip` command: `if gzip -c "$file" > "$target_path"; then`. The `rm` command is nested inside the success block. This guarantees that the original file is only unlinked from the filesystem if, and only if, the `gzip` process returns a `0` status code, signifying a successful and complete write.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**`/usr/local/bin/archive_freezer_logs.sh`**
+
+```bash
+#!/usr/bin/env bash
+# archive_freezer_logs.sh
+# ------------------------------------------------------------
+# Daily archiver for the ultra‑low‑temperature freezer monitoring CSV logs.
+#
+#  * Looks only at *.csv files that live directly under /data/freezer_logs/
+#  * Files older than 7 days are gzip‑compressed into /data/freezer_logs/archive/
+#  * The source file is removed **only after** the compression succeeds.
+#  * Files newer than 7 days are left untouched – the logger may still be appending.
+#  * The script is safe to run repeatedly; already‑archived files are ignored.
+# ------------------------------------------------------------
+
+# Exit on any error, treat unset variables as an error, and pipefail for pipelines.
+set -euo pipefail
+
+# ------------------------------------------------------------------
+# Configuration (change only if your environment differs)
+# ------------------------------------------------------------------
+SRC_DIR="/data/freezer_logs"
+ARCHIVE_DIR="${SRC_DIR}/archive"
+
+# Ensure the archive directory exists
+mkdir -p "${ARCHIVE_DIR}"
+
+# ------------------------------------------------------------------
+# Helper: safely compress a single CSV file
+# ------------------------------------------------------------------
+compress_and_archive() {
+    local csv_path="$1"          # full path to the .csv file
+    local base_name="$(basename "${csv_path}")"
+    local archive_path="${ARCHIVE_DIR}/${base_name}.gz"
+
+    # --------------------------------------------------------------
+    # 1️⃣  Run gzip – keep the original until we know it succeeded
+    # --------------------------------------------------------------
+    if gzip -c "${csv_path}" >"${archive_path}"; then
+        # --------------------------------------------------------------
+        # 2️⃣  If gzip exited with status 0, remove the original CSV
+        # --------------------------------------------------------------
+        rm -f -- "${csv_path}"
+    else
+        # --------------------------------------------------------------
+        # 3️⃣  Compression failed – keep the source file and log the problem
+        # --------------------------------------------------------------
+        echo "ERROR: gzip failed on ${csv_path}.  Leaving file untouched." >&2
+        # Optionally, you could exit with a non‑zero status to alert the admin.
+        # For a daily cron job we usually just continue with the next file.
+    fi
+}
+
+# ------------------------------------------------------------------
+# Main loop – find only regular files ending in .csv, older than 7 days
+# ------------------------------------------------------------------
+#   * -mindepth 1 avoids the source directory itself
+#   * -maxdepth 1 restricts the search to the top‑level of SRC_DIR
+#   * -print0 + while IFS= read -r -d '' handles any characters in filenames
+# ------------------------------------------------------------------
+find "${SRC_DIR}" -mindepth 1 -maxdepth 1 -type f -name '*.csv' -mtime +7 -print0 |
+while IFS= read -r -d '' csv_file; do
+    # --------------------------------------------------------------
+    # Guard: skip files that have already been archived (i.e. a .gz with the
+    # same basename exists in the archive).  This makes the script idempotent.
+    # --------------------------------------------------------------
+    base="$(basename "${csv_file}")"
+    if [[ -f "${ARCHIVE_DIR}/${base}.gz" ]]; then
+        echo "INFO: ${base} already archived – skipping."
+        continue
+    fi
+
+    echo "Archiving ${csv_file} ..."
+    compress_and_archive "${csv_file}"
+done
+
+echo "Archive job completed at $(date)."
+exit 0
+```
+
+---
+
+## Why a naïve implementation can break (and how this script avoids it)
+
+### (a) Iterating over filenames that contain spaces  
+
+A common “quick‑and‑dirty” approach looks like:
+
+```bash
+for f in *.csv; do
+    …
+done
+```
+
+*Problem*: The shell expands the glob **unquoted**; if a filename contains a space (e.g. `Freezer 3 Log.csv`), the loop variable is split into multiple words, causing the loop to process the wrong files or skip them entirely.  
+
+*Solution in the script*:  
+- `find … -print0` emits a NUL‑terminated list, and `while IFS= read -r -d '' csv_file` reads each entry **exactly as‑is**, regardless of spaces, newlines, or other special characters.  
+- All references to the filename are quoted (`"${csv_file}"`), guaranteeing the original name is preserved.
+
+### (b) Deleting the source file before confirming a successful compression  
+
+A naïve version might do:
+
+```bash
+gzip "${csv_file}" && rm -f "${csv_file}"
+```
+
+*Problem*: If `gzip` fails (disk full, permission denied, corrupted input, etc.) the `&&` never runs, so the file is **not** removed – that part is actually safe.  
+However, many scripts mistakenly write:
+
+```bash
+gzip "${csv_file}"
+rm -f "${csv_file}"        # <-- executed regardless of gzip's exit status
+```
+
+or they delete the file **first**, then try to compress a copy. In either case, a failure of the compression step can leave the original data lost or require manual recovery.  
+
+*Solution in the script*:  
+1. `gzip -c "${csv_path}" >"${archive_path}"` writes the compressed stream to a **temporary location** (the final `.gz` file) **without touching the source**.  
+2. Only after `gzip` returns a zero exit status do we execute `rm -f "${csv_path}"`.  
+3. If `gzip` fails, the script logs an error and **leaves the original CSV untouched**, ensuring no data loss.  
+
+By coupling the removal with an explicit success check, the script guarantees that a file is deleted **only** when its archived copy is known to have been created correctly.
+
+---
+
+### Summary of safety measures
+
+| Requirement | How the script satisfies it |
+|-------------|-----------------------------|
+| **Spaces in filenames** | `find … -print0` + `read -d ''` handles any characters. |
+| **Only files > 7 days old** | `-mtime +7` limits the `find` results. |
+| **Compress then delete only on success** | `gzip` writes to `${archive_path}`; `rm` runs only inside the `if` after a successful exit status. |
+| **Idempotent daily runs** | Skips files whose `.gz` already exists in the archive; never re‑processes already‑archived data. |
+| **No touching of recent files** | `-mtime +7` excludes anything newer than 7 days. |
+| **Cron‑friendly** | Uses absolute paths, exits cleanly, logs errors to `stderr`, and never aborts the whole run on a single failure. |
+
+You can now place this script in `/usr/local/bin/`, make it executable (`chmod +x /usr/local/bin/archive_freezer_logs.sh`), and schedule it in cron, e.g.:
+
+```cron
+0 2 * * * /usr/local/bin/archive_freezer_logs.sh >> /var/log/archive_freezer_logs.log 2>&1
+```
+
+The job will run each night at 02:00 AM, safely archiving any stale CSV logs while protecting the irreplaceable sponsor‑sample data.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Script: `archive_freezer_logs.sh`
+
+```bash
+#!/bin/bash
+
+# Configuration
+SOURCE_DIR="/data/freezer_logs"
+ARCHIVE_DIR="$SOURCE_DIR/archive"
+
+# Ensure the archive directory exists
+mkdir -p "$ARCHIVE_DIR"
+
+# Check if source directory is accessible
+if [ ! -d "$SOURCE_DIR" ]; then
+    echo "Error: Source directory $SOURCE_DIR does not exist."
+    exit 1
+fi
+
+# Loop over CSV files in the source directory.
+# -maxdepth 1: Restricts search to the root of the source directory.
+# -type f: Ensures we only target regular files.
+# -name "*.csv": Filters for CSV files.
+# -mtime +7: Identifies files modified more than 7 days ago.
+# -print0: Uses a null character as a delimiter to handle filenames with spaces.
+while IFS= read -r -d '' file; do
+    # Determine the target path in the archive directory.
+    # We append .gz to the original filename.
+    target_path="$ARCHIVE_DIR/$(basename "$file").gz"
+
+    # Attempt to compress the file and write directly to the archive location.
+    # gzip -c reads from stdin and writes compressed data to stdout.
+    if gzip -c "$file" > "$target_path"; then
+        # Compression succeeded.
+        # Remove the original file.
+        rm "$file"
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Archived: $(basename "$file")"
+    else
+        # Compression failed.
+        # CRITICAL: Do not delete the original file.
+        # Clean up any partially written archive file to maintain directory hygiene.
+        if [ -f "$target_path" ]; then
+            rm "$target_path"
+        fi
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Failed to archive $(basename "$file"). Original preserved."
+    fi
+done < <(find "$SOURCE_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 -print0)
+```
+
+### Explanation of Avoided Naive Bugs
+
+**1. Iterating over filenames containing spaces**
+*   **The Naive Bug:** A common mistake is using a `for` loop with a glob pattern that is not properly quoted, or parsing the output of `ls` (e.g., `for f in *.csv` or `for f in $(ls *.csv)`). In Bash, spaces act as word separators (delimiters). If a file is named `Freezer 3 Log.csv`, an unquoted loop will break this name into three separate items: `Freezer`, `3`, and `Log.csv`. This causes the script to fail to locate the files and process them as individual, non-existent arguments.
+*   **How this Script Avoids It:** The script uses the `find` command with the `-print0` flag, which outputs filenames delimited by a null character (`\0`) instead of spaces or newlines. This output is fed into a `while` loop using `read -d ''`. The `-d ''` flag tells `read` to use the null character as the delimiter, allowing the variable `file` to safely capture the entire path—including internal spaces—without splitting it.
+
+**2. Deleting source files when compression fails**
+*   **The Naive Bug:** A naive script might execute commands sequentially without checking the success of the previous step (e.g., `gzip file.csv; rm file.csv`). If `gzip` fails due to a system error (such as a disk being full), the script continues to the next line and executes `rm`. This permanently deletes the original data before a valid backup copy was created. Since these are "irreplaceable sponsor-sample" logs, this results in permanent data loss.
+*   **How this Script Avoids It:** The script uses an `if` statement to evaluate the exit status of the compression command (`gzip -c ...`). The `rm` command is strictly placed inside the `if` block, meaning it only executes if the compression command returns a success status (exit code 0). If compression fails, the script enters the `else` block, preserves the original file, and cleans up any partial data, ensuring data integrity is never compromised.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**File:** `archive_freezer_logs.sh`
+
+```bash
+#!/usr/bin/env bash
+# archive_freezer_logs.sh
+# --------------------------------------------------------------
+# Daily cron job for a biotech lab's ultra‑low‑temperature freezer
+# monitoring system.  Moves CSV logs older than 7 days to an
+# archive folder, gzip‑compresses them, and only then deletes the
+# originals.  Handles filenames that contain spaces.
+# --------------------------------------------------------------
+
+set -euo pipefail      # abort on un‑set variables, unset pipefail, or any error
+IFS=$'\n'              # split only on newlines (protects against word‑splitting)
+
+# Directories
+SRC_DIR="/data/freezer_logs"
+ARCHIVE_DIR="/data/freezer_logs/archive"
+
+# Ensure the archive directory exists (create if missing, no error if it already exists)
+mkdir -p "$ARCHIVE_DIR"
+
+# 7 days in seconds (86400 * 7)
+SEVEN_DAYS_AGO=$(( $(date +%s) - 86400 * 7 ))
+
+echo "[$(date)] Starting archive run..."
+
+# Iterate over *only* the .csv files that sit directly in $SRC_DIR
+#   -type f      : regular files only
+#   -name "*.csv": match the extension (hidden files like .hidden.csv are ignored)
+#   -print0      : output filenames followed by a null byte (safe for spaces/newlines)
+#   -mtime +6    : modification time > 6 days ago  (i.e. > 7 days old)
+#   -daystart    : makes -mtime count from the start of the current day,
+#                  giving a clean “full‑day” boundary.
+while IFS= read -r -d '' file; do
+    # Compute the relative path inside $SRC_DIR for the archive name
+    # Example: /data/freezer_logs/Freezer 3 Log.csv  ->  Freezer 3 Log.csv.gz
+    base=$(basename "$file")
+    gz_name="${base%.csv}.gz"
+
+    # Full destination path
+    dest="${ARCHIVE_DIR}/${gz_name}"
+
+    echo "Processing: $file"
+
+    # ----------------------------------------------------------
+    # 1. Attempt gzip compression.
+    #    -N   : store original filename & timestamp inside the .gz file
+    #    -c   : write to stdout (so we can redirect)
+    #    >    : redirect to $dest (clobber if exists – idempotent)
+    # ----------------------------------------------------------
+    if gzip -N -c "$file" >"$dest"; then
+        echo "  → Compression succeeded → $dest"
+        
+        # ----------------------------------------------------------
+        # 2. Only after a successful compression do we remove the source.
+        #    -f   : ignore “file not found” (harmless if the file vanished
+        #           between gzip and rm, but we never get here unless gzip succeeded)
+        # ----------------------------------------------------------
+        rm -f "$file"
+        echo "  → Original removed."
+    else
+        echo "  → *** Compression FAILED for $file – leaving original intact! ***"
+        # Do NOT delete the file; we simply continue with the next one.
+    fi
+done < <(find "$SRC_DIR" -type f -name "*.csv" -mtime +6 -daystart -print0)
+
+echo "[$(date)] Archive run completed."
+```
+
+---
+
+## Why this script avoids the two common bugs
+
+### (a) Iterating over filenames that contain spaces
+
+**Naïve approach (buggy):**
+```bash
+for file in $(ls /data/freezer_logs/*.csv); do
+    # …process $file…
+done
+```
+*Problem:* `ls` (or a plain `for … in …`) splits the word list on **any** whitespace (space, tab, newline). A filename like `Freezer 3 Log.csv` becomes two tokens: `Freezer` and `3`. The subsequent commands then operate on nonexistent files or behave unexpectedly.
+
+**What the correct script does:**
+```bash
+find "$SRC_DIR" -type f -name "*.csv" -mtime +6 -daystart -print0 |
+    while IFS= read -r -d '' file; do … done
+```
+*Explanation:*
+- `find … -print0` writes each filename followed by a **NULL** character (`\0`). NULL never appears in a normal filename, so the list is unambiguous.
+- The `read -d ''` primitive reads exactly up to the next NULL, preserving spaces, tabs, even newlines, and other weird characters.
+- `set -euo pipefail` and the explicit `IFS=$'\n'` guard against any accidental word‑splitting later in the script.
+
+Thus the script reliably handles any CSV file, regardless of how the monitoring software names it.
+
+---
+
+### (b) Deleting a source file even when compression failed
+
+**Naïve approach (buggy):**
+```bash
+gzip "$file"
+rm "$file"          # always delete, even if gzip exited with a non‑zero status
+```
+*Problem:* If `gzip` encounters a permission error, disk‑full condition, or a corrupted file, it returns a non‑zero exit status. The subsequent `rm` still runs, **permanently discarding** the original log—exactly what the requirement forbids.
+
+**What the correct script does:**
+```bash
+if gzip -N -c "$file" >"$dest"; then
+    rm -f "$file"
+else
+    echo "Compression FAILED – keeping original."
+    # (no rm here)
+fi
+```
+*Explanation:*
+- The `if …; then …; else …; fi` block makes the **deletion conditional** on the success of the gzip command.
+- `gzip`’s exit status is examined directly (`$?` is implicitly tested by the `if`). If `gzip` fails, the `else` branch runs, prints a warning, and **does not** delete the source file.
+- `set -e` (set at the top) would already abort the whole script on any command failure, but we deliberately handle the failure gracefully instead of aborting the entire job. This way, one bad file doesn’t stop archiving all the others.
+
+By coupling the compression success test with the deletion, the script guarantees that **no original log is ever removed unless a valid `.gz` archive exists**—protecting the irreplaceable sponsor‑sample temperature records.
+
+---
+
+### Additional robustness notes
+
+| Feature | Why it matters for this use‑case |
+|---------|----------------------------------|
+| `mkdir -p "$ARCHIVE_DIR"` | Guarantees the archive folder exists even if the script is run for the first time; idempotent and silent on subsequent runs. |
+| `find … -mtime +6 -daystart` | `-daystart` makes the “7‑day” boundary align with calendar days, avoiding edge‑case half‑day ambiguities. |
+| `gzip -N` | Stores the original filename and timestamp inside the `.gz` file, preserving metadata that may be useful for later verification. |
+| `set -euo pipefail` | Prevents hidden bugs: unbound variables, ignored failed piped commands, and ensures the whole pipeline aborts only when intentional. |
+| Logging with timestamps (`echo "[$(date)] …"`) | Provides an audit trail for the daily cron execution, helpful for troubleshooting. |
+| No hard‑coded absolute path assumptions beyond the two required directories | Makes the script portable to other environments (e.g., test installations) with minimal changes. |
+
+With these safeguards, `archive_freezer_logs.sh` fulfills all the stated requirements while gracefully handling filenames with spaces and protecting against data loss on compression failures.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**`archive_freezer_logs.sh`**
+
+```bash
+#!/usr/bin/env bash
+#
+#  archive_freezer_logs.sh
+#
+#  Purpose
+#    • Compress every *.csv file that lives directly in /data/freezer_logs/
+#      (filenames may contain spaces – e.g. "Freezer 3 Log.csv").
+#    • Only files whose last‑modified time is older than 7 days are processed.
+#    • Each file is gzip‑compressed into /data/freezer_logs/archive/.
+#    • The source file is removed **only** after a successful gzip write.
+#    • The script is safe to run repeatedly – already‑archived files are left alone.
+#
+#  Usage
+#    Put this in /usr/local/bin/ and call it from cron:
+#
+#      0 2 * * * /usr/local/bin/archive_freezer_logs.sh 2>&1 | logger -t freezer-archiver
+#
+#  Requirements
+#    • Bash 4.x or later
+#    • /data/freezer_logs/ and /data/freezer_logs/archive/ must be writable
+#
+#  Author:  Your Name
+#  Date:    2026‑07‑18
+#
+
+set -euo pipefail
+
+# ----------------------------------------------------------------------
+#  Configuration
+# ----------------------------------------------------------------------
+LOG_DIR="/data/freezer_logs"
+ARCHIVE_DIR="${LOG_DIR}/archive"
+
+# ----------------------------------------------------------------------
+#  Make sure the archive directory exists
+# ----------------------------------------------------------------------
+mkdir -p "$ARCHIVE_DIR"
+
+# ----------------------------------------------------------------------
+#  Find every *.csv file that:
+#    * lives directly in $LOG_DIR
+#    * is older than 7 days
+#  Use -print0/while‑read to handle filenames that contain spaces or newlines.
+# ----------------------------------------------------------------------
+find "$LOG_DIR" \
+     -maxdepth 1 \
+     -type f \
+     -name '*.csv' \
+     -mtime +7 \
+     -print0 |
+while IFS= read -r -d '' csvfile; do
+
+    # Full path of the target archive file
+    # We keep the original filename and simply add the .gz suffix
+    archive_file="${ARCHIVE_DIR}/$(basename "$csvfile").gz"
+
+    # --------------------------------------------------------------
+    #  If an archive already exists, skip this file
+    #  (this makes the script idempotent – safe to re‑run).
+    # --------------------------------------------------------------
+    if [[ -e "$archive_file" ]]; then
+        echo "Archive already present for: $(basename "$csvfile") – skipping."
+        continue
+    fi
+
+    # --------------------------------------------------------------
+    #  Compress the file.  We use gzip –c to write to a new file
+    #  and keep the original untouched until we know the write succeeded.
+    # --------------------------------------------------------------
+    echo "Compressing: $(basename "$csvfile") ..."
+    if gzip -c "$csvfile" > "$archive_file"; then
+        echo "Compression succeeded – removing original."
+
+        # ----------------------------------------------------------
+        #  Only remove the source file after a successful write.
+        # ----------------------------------------------------------
+        rm -f "$csvfile"
+    else
+        echo "ERROR: Compression failed for $(basename "$csvfile") – source file left intact."
+        # If the archive file was created but incomplete, remove it.
+        [[ -e "$archive_file" ]] && rm -f "$archive_file"
+    fi
+
+done
+
+# ----------------------------------------------------------------------
+#  Done
+# ----------------------------------------------------------------------
+echo "Archive routine finished."
+```
+
+---
+
+## Why this script avoids the two common bugs
+
+| Naïve approach | Problem | How the script fixes it |
+|----------------|---------|-------------------------|
+| **Iterating over filenames with a simple `for` loop** <br>```for f in /data/freezer_logs/*.csv; do …; done``` | The shell expands the glob and splits the resulting list on **whitespace**. Filenames such as `Freezer 3 Log.csv` become two separate arguments (`Freezer` and `3`). The loop then attempts to process non‑existent files and misses the real file. | The script uses `find … -print0` together with `while IFS= read -r -d ''`. This reads one *null‑delimited* line at a time, preserving every character of the filename—including spaces, tabs, and newlines—so each file is processed correctly. |
+| **Deleting the source file without checking gzip’s exit status** <br>```gzip "$file" > "$archive" && rm "$file"``` (or even `gzip "$file" > "$archive"; rm "$file"`) | If gzip fails (e.g., due to a full disk, permission error, or corrupted input), the source file is still removed. This loss is catastrophic because the logs are irreplaceable. | The script explicitly checks the exit status of the compression command: `if gzip -c "$file" > "$archive"; then … else … fi`. Only when gzip exits with `0` (success) does it delete the original file. On failure it leaves the source untouched and cleans up any half‑written archive file. |
+
+By handling filenames safely and guarding the delete operation with a status check, the script guarantees that no log file is lost and no duplicate archives are created, even when run repeatedly by cron.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+```bash
+#!/bin/bash
+
+# Configuration
+SOURCE_DIR="/data/freezer_logs"
+ARCHIVE_DIR="/data/freezer_logs/archive"
+MAX_AGE_DAYS=7
+
+# Ensure the archive directory exists (safe to run multiple times)
+mkdir -p "$ARCHIVE_DIR"
+
+# Find all .csv files directly inside SOURCE_DIR
+# -maxdepth 1: Prevents descending into subdirectories (like 'archive/')
+# -type f: Only matches files, not directories
+# -name "*.csv": Matches the CSV extension
+# -mtime +7: Selects files modified more than 7 days ago (24h * 7)
+# -print0: Separates filenames with null bytes (safety for spaces/special chars)
+find "$SOURCE_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 -print0 | \
+while IFS= read -r -d '' file; do
+
+    # Construct the destination filename for the archive
+    # Using basename ensures we handle spaces in the filename correctly
+    filename=$(basename -- "$file")
+    archive_path="$ARCHIVE_DIR/${filename}.gz"
+
+    # STEP 1: Compress to the archive directory first
+    # We use gzip -c to write to stdout, which is redirected to the archive file.
+    # This ensures the original file is NOT touched during the compression process.
+    if gzip -c -- "$file" > "$archive_path"; then
+        # STEP 2: Check if compression succeeded (exit code 0)
+        # Only remove the original file AFTER we confirm the archive was written.
+        rm -- "$file"
+        echo "Archived: $file -> $archive_path"
+    else
+        # STEP 3: If compression failed (disk full, permission error, etc.)
+        # DO NOT delete the original file to prevent data loss.
+        echo "ERROR: Failed to compress '$file'. Source file preserved." >&2
+    fi
+
+done
+```
+
+### Explanation of Common Bugs Avoided
+
+**Bug 1: Iterating over filenames with spaces (Requirement 1)**
+*   **The Naive Bug:** A common mistake is using a glob loop like `for file in /data/freezer_logs/*.csv; do ... done`. Bash performs word splitting on glob results. If a filename is `Freezer 3 Log.csv`, the shell interprets this as four separate words (`Freezer`, `3`, `Log`, `.csv`), causing the script to process non-existent files or fail with permission errors.
+*   **The Fix:** This script uses `find ... -print0` combined with `read -r -d ''`. The `-print0` flag separates filenames with a null byte (a character that cannot exist in a valid filename), and `read -d ''` tells bash to treat that null byte as the delimiter. This ensures the entire filename, including spaces and special characters, is treated as a single string.
+
+**Bug 2: Deleting source before verifying archive integrity (Requirement 2)**
+*   **The Naive Bug:** A naive script might `rm "$file"` first and then run `gzip`, or assume `gzip` works without checking its exit code. If the compression fails (e.g., disk full, permission denied on the archive folder), the script would have already deleted the original log file, resulting in permanent data loss.
+*   **The Fix:** This script uses `gzip -c` to write the compressed data to the archive directory *before* touching the source file. It checks the exit status of the `gzip` command (via the `if` statement). The original file (`rm "$file"`) is only removed if the `if` condition returns true (meaning `gzip` exited with code 0). This guarantees the data is safe before deletion.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Bash Script: `archive_freezer_logs.sh`
+
+```bash
+#!/usr/bin/env bash
+#
+# archive_freezer_logs.sh
+# Archives ultra-low-temperature freezer logs to /data/freezer_logs/archive/
+#
+# Requirements:
+# - Archives .csv files directly in /data/freezer_logs/
+# - Handles filenames containing spaces
+# - Only archives files modified >7 days ago
+# - Only deletes source after verified successful compression
+# - Safe for repeated execution (idempotent)
+
+set -euo pipefail
+
+readonly LOG_DIR="/data/freezer_logs"
+readonly ARCHIVE_DIR="${LOG_DIR}/archive"
+readonly MAX_AGE_DAYS=7
+
+# Ensure the archive directory exists
+if ! mkdir -p "$ARCHIVE_DIR"; then
+    echo "ERROR: Unable to create archive directory $ARCHIVE_DIR" >&2
+    exit 1
+fi
+
+# Use find with -print0 to safely handle filenames containing spaces.
+# -maxdepth 1 restricts search to the immediate directory (no recursion).
+# -type f ensures we only process regular files.
+# -name "*.csv" filters for the monitoring software export format.
+# -mtime +7 selects files modified strictly more than 7 days ago.
+find "$LOG_DIR" \
+    -maxdepth 1 \
+    -type f \
+    -name "*.csv" \
+    -mtime +"$MAX_AGE_DAYS" \
+    -print0 |
+while IFS= read -r -d '' filepath; do
+    filename="$(basename "$filepath")"
+    archive_path="${ARCHIVE_DIR}/${filename}.gz"
+
+    # Idempotency / Recovery check:
+    # If the compressed archive already exists, we assume the previous
+    # run succeeded. We remove the source file to clean up any leftover state
+    # (e.g., from a crash between compress and delete).
+    if [[ -f "$archive_path" ]]; then
+        rm -f "$filepath"
+        continue
+    fi
+
+    # Temporary file ensures we don't leave a truncated archive if compression fails.
+    temp_path="${archive_path}.tmp"
+
+    # Compress the file. Using -c writes to stdout so we can redirect safely.
+    # We check the exit status explicitly.
+    if gzip -c "$filepath" > "$temp_path"; then
+        # Additional sanity check: ensure the output is not empty.
+        # This guards against cases where gzip might write a header but fail to
+        # write data due to disk full errors mid-stream.
+        if [[ -s "$temp_path" ]]; then
+            mv "$temp_path" "$archive_path"
+            rm -f "$filepath"
+        else
+            rm -f "$temp_path"
+            echo "WARNING: Compressed output was empty for $filename" >&2
+        fi
+    else
+        # Compression failed (e.g., permission denied, disk full, corrupted input).
+        # Clean up the temp file. The source file remains untouched.
+        rm -f "$temp_path"
+        echo "ERROR: Compression failed for $filename" >&2
+    fi
+done
+```
+
+---
+
+### Explanation of Common Naive Bugs Avoided
+
+#### (a) Iterating over filenames in a way that breaks on spaces
+
+**The Bug:** A naive script often uses a `for` loop with globbing:
+```bash
+for file in /data/freezer_logs/*.csv; do ...
+```
+This relies on the shell's word splitting. If a filename contains spaces (e.g., `Freezer 3 Log.csv`), the shell splits it into multiple arguments: `Freezer`, `3`, and `Log.csv`. The script would then attempt to process `Freezer` as a file, fail, or corrupt data.
+
+**The Fix:** The script uses `find` with the `-print0` flag, which separates file paths with null bytes (`\0`) instead of newlines. This is processed by `while IFS= read -r -d '' filepath`, which reads until the null byte. This method is robust against any character in the filename (spaces, newlines, special characters) and is the standard safe practice for handling arbitrary filenames in bash.
+
+#### (b) Deleting a source file even when its compression step actually failed
+
+**The Bug:** A naive script might use a pattern like:
+```bash
+gzip "$file" && rm "$file"
+```
+Or worse, unconditionally delete the file after attempting compression. If `gzip` fails (e.g., due to disk full errors, permission issues, or a corrupted source file), the exit code check in the `&&` chain would prevent deletion. However, if the script lacks this check, or if `gzip` is run without verifying its return status, the source file could be deleted while the archive is missing or invalid. This is catastrophic for irreplaceable sponsor-sample logs.
+
+**The Fix:** The script uses a multi-layered safety approach:
+1. **Explicit Exit Code Check:** It wraps the compression in an `if` statement (`if gzip -c ...`). The `rm` command for the source file is only executed inside this conditional block, ensuring it runs *only* if `gzip` succeeds.
+2. **Temporary File Strategy:** Compression writes to a `.tmp` file first. The source is never deleted until the archive is fully written, moved into place, and verified to be non-empty (`-s` check). This prevents partial or empty archives from being stored and ensures the source remains safe if any step fails.
+3. **Re-run Safety:** If a previous run crashed after compression but before deletion, both the source and archive would exist. The script checks for the archive's existence first and removes the source without re-compressing, preventing duplicate work and ensuring idempotency.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here is the production-ready script, followed by the requested explanations.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly SRC_DIR="/data/freezer_logs"
+readonly ARCHIVE_DIR="${SRC_DIR}/archive"
+
+# Ensure the archive destination exists
+mkdir -p "$ARCHIVE_DIR"
+
+# Process .csv files directly in SRC_DIR that are older than 7 days.
+# -print0 + read -d '' safely handles spaces, newlines, and special characters.
+while IFS= read -r -d '' csv_file; do
+    filename="$(basename -- "$csv_file")"
+    archive_path="${ARCHIVE_DIR}/${filename}.gz"
+
+    # Skip if already archived to guarantee idempotency across daily cron runs
+    if [[ -f "$archive_path" ]]; then
+        continue
+    fi
+
+    # Compress to a fresh file first. Only remove the original if gzip succeeds.
+    if gzip -c -- "$csv_file" > "$archive_path"; then
+        rm -f -- "$csv_file"
+    else
+        # Defensive cleanup: remove partial/corrupt archive if compression failed
+        rm -f -- "$archive_path"
+        echo "ERROR: Compression failed for $csv_file" >&2
+    fi
+done < <(find "$SRC_DIR" -maxdepth 1 -type f -name '*.csv' -mtime +7 -print0)
+```
+
+### Explanation of Two Common Naive Bugs Avoided
+
+#### (a) Filename iteration breaking on spaces
+**Naive approach:**
+```bash
+for f in $(ls /data/freezer_logs/*.csv); do
+    gzip ...
+done
+```
+**Why it breaks:** Bash performs word splitting on unquoted command substitutions. A file named `Freezer 3 Log.csv` becomes three separate arguments: `Freezer`, `3`, and `Log.csv`. The script then tries to compress three non-existent files, or worse, silently ignores the spaces and operates on truncated paths. Even globbing with `*.csv` in a `for` loop suffers from word splitting if the files contain spaces or special characters.
+
+**How this script avoids it:**
+It uses `find ... -print0` to output null-delimited paths, combined with `while IFS= read -r -d ''`. The null character (`\0`) is the only byte guaranteed not to appear in POSIX filenames. This completely isolates each filename from word splitting, preserving spaces, quotes, and other special characters exactly as they exist on disk.
+
+#### (b) Deleting the source file even when compression fails
+**Naive approach:**
+```bash
+gzip "$csv_file" -c > "$archive_path"
+rm "$csv_file"
+```
+**Why it breaks:** The `rm` command executes unconditionally. If `gzip` fails (due to disk-full, permission issues, hardware I/O errors, or a corrupted source file), `$archive_path` will either be empty or contain a partial/corrupt gzip stream. The original `.csv` is then permanently deleted, resulting in irreversible data loss. Biotech temperature logs are often legally required to be retained for years; losing them violates compliance and sponsor agreements.
+
+**How this script avoids it:**
+It explicitly wraps the compression in an `if` statement that checks `$?` (the exit status of `gzip`). `rm -f` is placed *inside* the success branch, ensuring deletion only occurs when the archive is verified as complete. Additionally, on failure, the script explicitly cleans up any partially written `$archive_path` and logs the error to stderr. This "write-new-then-validate-then-swap" pattern guarantees that the original data is never touched unless a valid, intact copy already exists in the archive directory.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here's the `archive_freezer_logs.sh` script that meets all the requirements:
+
+```bash
+#!/bin/bash
+
+# Archive freezer log files that are older than 7 days
+# Requirements:
+# 1. Process .csv files in /data/freezer_logs/ with spaces in filenames
+# 2. Compress files older than 7 days to /data/freezer_logs/archive/
+# 3. Only delete original after successful compression
+# 4. Safe for repeated execution
+
+set -euo pipefail
+
+# Directories
+SOURCE_DIR="/data/freezer_logs"
+ARCHIVE_DIR="/data/freezer_logs/archive"
+
+# Create archive directory if it doesn't exist
+mkdir -p "$ARCHIVE_DIR"
+
+# Find all .csv files that are more than 7 days old
+find "$SOURCE_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 | while read -r file; do
+    # Get the base filename (handles spaces correctly)
+    filename=$(basename "$file")
+    
+    # Create the archive path
+    archive_path="$ARCHIVE_DIR/${filename}.gz"
+    
+    # Compress the file using gzip
+    if gzip -c "$file" > "$archive_path"; then
+        # Only remove the original if compression succeeded
+        rm "$file"
+        echo "Successfully archived: $filename"
+    else
+        # If compression failed, don't delete the original
+        echo "WARNING: Failed to compress $filename - original file preserved"
+        exit 1
+    fi
+done
+
+echo "Archive process completed"
+```
+
+## Explanation of Bugs and How the Script Avoids Them
+
+### Bug (a): Inadequate Filename Handling with Spaces
+
+**Common Naive Implementation:**
+```bash
+# BAD - breaks on spaces
+for file in /data/freezer_logs/*.csv; do
+    if [ $(find "$file" -mtime +7 2>/dev/null) ]; then
+        gzip "$file"
+        rm "$file"
+    fi
+done
+```
+
+**Why it fails:**
+The naive approach using glob expansion (`*.csv`) in a `for` loop breaks when filenames contain spaces because the shell splits on whitespace, treating each space-separated part as a separate filename. For example, `Freezer 3 Log.csv` becomes two separate arguments: `Freezer` and `3 Log.csv`.
+
+**How our script avoids it:**
+We use `find` with `-print0` and `read -r` with `-d ''` or simply use `find` with a `while read` loop that processes one file at a time without glob expansion issues. The `find` command naturally handles filenames with spaces correctly by using null-terminated output.
+
+### Bug (b): Premature File Deletion Before Compression Success
+
+**Common Naive Implementation:**
+```bash
+# BAD - deletes original even if compression fails
+for file in /data/freezer_logs/*.csv; do
+    if [ $(find "$file" -mtime +7 2>/dev/null) ]; then
+        gzip "$file"
+        rm "$file"  # This happens even if gzip failed
+    fi
+done
+```
+
+**Why it fails:**
+This approach deletes the original file immediately after calling `gzip`, regardless of whether the compression operation actually succeeded. If `gzip` encounters an error (disk full, permissions issues, etc.), the original file is lost forever, which is catastrophic for irreplaceable scientific data.
+
+**How our script avoids it:**
+We implement a **two-step process**:
+1. First, we compress the file to a temporary archive path using `gzip -c "$file" > "$archive_path"`
+2. Only if the compression succeeds (exit code 0) do we proceed to delete the original file with `rm "$file"`
+3. If compression fails, we preserve the original file and log a warning
+
+This ensures data integrity - no file is ever deleted without being successfully archived first, making the script safe for repeated execution.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SRC_DIR="/data/freezer_logs"
+ARCHIVE_DIR="${SRC_DIR}/archive"
+mkdir -p "$ARCHIVE_DIR"
+
+find "$SRC_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 -print0 |
+while IFS= read -r -d '' file; do
+    base="$(basename "$file")"
+    dest="${ARCHIVE_DIR}/${base}.gz"
+    if [[ -f "$dest" ]]; then
+        continue
+    fi
+    gzip -c "$file" > "$dest" && rm -f "$file"
+done
+```
+
+Bug (a) it avoids -- filenames with spaces: a naive version using `for f in $(ls *.csv)` or
+an unquoted `for f in *.csv; do mv $f ...; done` word-splits "Freezer 3 Log.csv" into three
+broken tokens ("Freezer", "3", "Log.csv"), breaking on every file with a space in its name.
+This script instead uses `find ... -print0` piped into `while IFS= read -r -d ''`, which is
+NUL-delimited and correctly handles any filename, spaces included, and every use of `$file`
+is double-quoted.
+
+Bug (b) it avoids -- unsafe delete on failed compression: a naive version does the compress
+and delete as two independent steps (e.g., `gzip "$file"` on one line, `rm "$file"` on the
+next, or two separate `-exec` clauses on a `find` command), which deletes the source
+regardless of whether `gzip` actually succeeded. If `gzip` fails partway (disk full,
+permissions, interrupted), the source file is still removed and the sample data is
+permanently lost. This script chains the two with `&&` -- `gzip -c "$file" > "$dest" && rm -f
+"$file"` -- so `rm` only executes if `gzip`'s exit status was 0.
+
+`-mtime +7` correctly means "last modified more than 7*24 hours ago," so files still being
+actively appended to (modified within the last 7 days) are never touched. The `[[ -f "$dest"
+]]` check before compressing makes re-runs idempotent -- a file already archived on a
+previous run is skipped rather than re-compressed or erroring out.
+
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+```bash
+#!/usr/bin/env bash
+# archive_freezer_logs.sh
+# Safely archives CSV logs older than 7 days from the freezer monitoring system.
+# Designed for daily cron execution with strict data integrity guarantees.
+
+set -o pipefail
+
+SRC_DIR="/data/freezer_logs"
+ARCH_DIR="${SRC_DIR}/archive"
+
+# Ensure the archive directory exists; abort if we can't create it
+mkdir -p "$ARCH_DIR" || { echo "FATAL: Cannot create archive directory: $ARCH_DIR" >&2; exit 1; }
+
+# Find CSV files directly inside SRC_DIR, modified more than 7 days ago.
+# -print0 + read -d '' safely handles spaces, newlines, and special characters.
+find "$SRC_DIR" -maxdepth 1 -type f -name "*.csv" -mtime +7 -print0 | while IFS= read -r -d '' file; do
+    base=$(basename "$file")
+    dest="${ARCH_DIR}/${base}.gz"
+    tmp_dest="${dest}.tmp"
+
+    echo "Processing: ${base}"
+
+    # Compress to a temporary file, then verify integrity.
+    # Both commands must succeed (&&) before proceeding.
+    if gzip -c "$file" > "$tmp_dest" 2>/dev/null && gzip -t "$tmp_dest" 2>/dev/null; then
+        # Atomically move verified archive into place
+        mv "$tmp_dest" "$dest"
+        # Only delete the irreplaceable original after successful archiving
+        rm -f "$file"
+        echo "  Archived successfully."
+    else
+        echo "  FAILED: Archive creation/verification failed for ${base}. Original preserved." >&2
+        rm -f "$tmp_dest"
+    fi
+done
+
+exit 0
+```
+
+### Explanation of the Two Naive Bugs & How This Script Avoids Them
+
+#### (a) Filename Space Handling Bug
+**Naive Approach:** Scripts often iterate using `for f in /data/freezer_logs/*.csv; do` or `for f in $(ls *.csv); do`. Both rely on the shell's default word splitting (`$IFS`), which splits on spaces, tabs, and newlines. A file named `Freezer 3 Log.csv` gets split into three separate tokens: `Freezer`, `3`, and `Log.csv`. The loop then attempts to process non-existent files, throws errors, and may accidentally corrupt or delete unrelated files.
+
+**How This Script Avoids It:** 
+It uses `find ... -print0` which terminates each filename with a null byte (`\0`) instead of a newline or space. The `while IFS= read -r -d '' file` construct reads until the null byte, preserving the exact filename regardless of spaces, newlines, or glob characters. This is the POSIX-compliant, production-safe pattern for processing arbitrary filenames in Bash.
+
+#### (b) Premature Deletion on Compression Failure Bug
+**Naive Approach:** Scripts typically run `gzip "$file"` or `gzip -c "$file" > "$dest"` and immediately follow with `rm "$file"`. If `gzip` fails mid-run (due to disk full, permission error, I/O interrupt, or corrupted source), the original file is deleted anyway. You're left with a missing or truncated `.gz` file and no way to recover the irreplaceable temperature data. Additionally, redirecting directly to `$dest` (`>`) truncates the destination file *before* compression starts, so a crash leaves a zero-byte or partial archive in the final location.
+
+**How This Script Avoids It:**
+1. **Temp File Buffering:** Compression writes to `${dest}.tmp` instead of the final path. If `gzip` crashes or is killed, the final archive path is untouched.
+2. **Explicit Verification:** `gzip -t "$tmp_dest"` cryptographically verifies the compressed stream's integrity. The `&&` operator ensures the deletion step is only reached if *both* compression and verification exit with status `0`.
+3. **Atomic Replacement:** `mv "$tmp_dest" "$dest"` is atomic on the same filesystem, ensuring the archive directory never contains a half-written file.
+4. **Conditional Deletion:** `rm -f "$file"` is placed *inside* the success branch. If any step fails, the script logs the error, cleans up the temp file, and leaves the original untouched, preserving critical biotech data. The script also intentionally omits `set -e` so a single failed file doesn't abort the entire cron job, allowing safe re-runs.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-3 | PASS |
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+```bash
+#!/bin/bash
+for f in $(ls /data/freezer_logs/*.csv); do
+    gzip $f
+    mv $f.gz /data/freezer_logs/archive/
+done
+```
+This compresses all the csv files and moves them to the archive folder. You could add a check
+for file age with `find -mtime +7` if you only want to archive older files.
+
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

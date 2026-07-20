@@ -1,0 +1,1313 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+A county government's online building-permit portal throws the error below when an applicant
+submits a permit fee calculation. Explain exactly why the error occurs, and provide a fixed
+version of the function.
+
+Code (`permits.py`):
+```
+ 1  FEE_SCHEDULE = {
+ 2      "residential_addition": 150,
+ 3      "large_project_surcharge": 2.5,
+ 4  }
+ 5
+ 6  def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+ 7      base_fee = fee_schedule[permit_type]
+ 8      if square_footage > 5000:
+ 9          surcharge = fee_schedule.get("large_project_surcharge")
+10      total = base_fee + surcharge * square_footage / 1000
+11      return round(total, 2)
+12
+13  fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+14  print(fee)
+```
+
+Traceback:
+```
+Traceback (most recent call last):
+  File "permits.py", line 13, in <module>
+    fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+  File "permits.py", line 10, in calculate_permit_fee
+    total = base_fee + surcharge * square_footage / 1000
+UnboundLocalError: local variable 'surcharge' referenced before assignment
+```
+
+Explain why line 10 fails specifically for this call (`square_footage=1200`), then rewrite
+`calculate_permit_fee` so it still applies the large-project surcharge only when
+`square_footage > 5000`, but never leaves `surcharge` undefined for the normal case -- and
+also handle the case where `fee_schedule` is missing the `"large_project_surcharge"` key at
+all, for a lot over 5000 sq ft.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | FAIL |
+| regex-1 | PASS |
+
+### Why the Error Occurs
+When `square_footage` is `1200`, the condition `square_footage > 5000` on line 8 evaluates to `False`. Because of this, the `if` block containing line 9 (`surcharge = ...`) is completely skipped. Python then proceeds to line 10, which attempts to read the variable `surcharge`. 
+
+Since `surcharge` was never assigned a value during this specific function call, Python raises an `UnboundLocalError`. *(Note: Python's compiler sees the `surcharge = ...` assignment on line 9, so it marks `surcharge` as a local variable for the entire function. When the `if` block is skipped, that local variable is never bound, causing the runtime crash when line 10 tries to use it.)*
+
+### Fixed Version
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    
+    # Safely retrieve the surcharge rate; default to 0.0 if the key is missing
+    surcharge_rate = fee_schedule.get("large_project_surcharge", 0.0)
+    
+    # Only apply the surcharge multiplier for lots > 5000 sq ft
+    surcharge = surcharge_rate if square_footage > 5000 else 0.0
+    
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+
+### Key Improvements
+1. **Guaranteed Assignment:** `surcharge` is now always assigned a value (either `surcharge_rate` or `0.0`) before line 10 executes, eliminating the `UnboundLocalError`.
+2. **Correct Business Logic:** The surcharge multiplier is only applied when `square_footage > 5000`. For normal-sized lots, `surcharge` defaults to `0.0`, keeping the calculation as `base_fee`.
+3. **Safe Key Handling:** Using `.get("large_project_surcharge", 0.0)` gracefully handles a missing key. If the schedule lacks the key and a lot happens to exceed 5000 sq ft, the code won't crash with a `KeyError` or `TypeError`; it will simply apply a `$0` surcharge.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| contains-2 | FAIL |
+| regex-1 | FAIL |
+
+The error happens because `surcharge` isn't defined. Just set `surcharge = fee_schedule.get(
+"large_project_surcharge")` outside the if statement so it always runs:
+
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = fee_schedule.get("large_project_surcharge")
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+This should fix the crash.
+
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+Why line 10 fails for this call: `calculate_permit_fee("residential_addition", 1200,
+FEE_SCHEDULE)` passes `square_footage=1200`. The condition on line 8, `square_footage > 5000`,
+is `1200 > 5000` -> False, so line 9 (`surcharge = fee_schedule.get(...)`) never executes.
+Python decides at compile time that `surcharge` is a local variable for the whole function,
+because it IS assigned somewhere in the function body (line 9) -- it does not fall back to
+any outer/global scope just because that particular assignment didn't run this time.
+Referencing `surcharge` on line 10 before it was bound on this execution path is exactly what
+raises `UnboundLocalError: local variable 'surcharge' referenced before assignment`.
+
+Fixed version, also handling the missing-key edge case:
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = 0
+    if square_footage > 5000:
+        surcharge = fee_schedule.get("large_project_surcharge", 0)
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+Initializing `surcharge = 0` before the `if` guarantees it's always defined regardless of
+which branch runs. Using `.get("large_project_surcharge", 0)` instead of the original
+`.get("large_project_surcharge")` also fixes a second latent bug: if `square_footage > 5000`
+but the fee schedule is missing that key, the original `.get()` call (no default) returns
+`None`, and `None * square_footage` would raise `TypeError` on line 10 -- a different crash
+that a fix only addressing the UnboundLocalError would leave in place.
+
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | FAIL |
+| regex-1 | PASS |
+
+## Why the traceback happens
+
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]               # ← always executed
+    if square_footage > 5000:
+        surcharge = fee_schedule.get("large_project_surcharge")
+    total = base_fee + surcharge * square_footage / 1000   # ← line 10
+```
+
+* The variable **`surcharge`** is created **only inside the `if` block**.  
+* When the function is called with `square_footage = 1200` the condition  
+
+  ```python
+  if square_footage > 5000:
+  ```
+
+  evaluates to **False**, so the block is skipped and **`surcharge` never gets bound**.  
+* Python still reaches line 10, where it tries to read the value of `surcharge`.  
+  Because the name exists in the local namespace but has never been assigned a
+  value, the interpreter raises an **`UnboundLocalError`**.
+
+In short: the function assumes that `surcharge` will always be defined, but the
+definition is conditional. When the condition is not met, the variable is
+missing, causing the error.
+
+---
+
+## A robust implementation
+
+Below is a rewritten `calculate_permit_fee` that
+
+1. **Always defines `surcharge`** (default = 0) so the later arithmetic never
+   sees an undefined name.
+2. **Applies the large‑project surcharge only when the square footage exceeds
+   5 000 sq ft**.
+3. **Gracefully handles a missing `"large_project_surcharge"` entry** in the
+   `fee_schedule`.  
+   * If the surcharge is needed but not present, the function raises a clear
+     `KeyError` with an explanatory message.  
+   * If the surcharge is not needed, the missing key is irrelevant.
+
+```python
+from __future__ import annotations
+from typing import Mapping, Union
+
+# ----------------------------------------------------------------------
+# Fee schedule – keep it separate so callers can pass a different mapping
+# ----------------------------------------------------------------------
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,   # $ per 1 000 sq ft over the threshold
+}
+
+
+def calculate_permit_fee(
+    permit_type: str,
+    square_footage: Union[int, float],
+    fee_schedule: Mapping[str, Union[int, float]],
+) -> float:
+    """
+    Compute the total permit fee.
+
+    Parameters
+    ----------
+    permit_type : str
+        Key that identifies the base fee in ``fee_schedule``.
+    square_footage : int | float
+        Size of the project in square feet.
+    fee_schedule : Mapping[str, int|float]
+        Dictionary‑like object that contains at least the base‑fee entry
+        for *permit_type*.  May optionally contain a ``"large_project_surcharge"``
+        entry (price per 1 000 sq ft) that is applied only when
+        ``square_footage > 5_000``.
+
+    Returns
+    -------
+    float
+        The total fee rounded to two decimal places.
+
+    Raises
+    ------
+    KeyError
+        If ``permit_type`` is missing from ``fee_schedule`` or,
+        when a surcharge is required, the schedule does not define
+        ``"large_project_surcharge"``.
+    ValueError
+        If ``square_footage`` is negative.
+    """
+    if square_footage < 0:
+        raise ValueError("square_footage cannot be negative")
+
+    # 1️⃣  Base fee – this *must* exist, otherwise we surface the original KeyError.
+    try:
+        base_fee = fee_schedule[permit_type]
+    except KeyError as exc:
+        raise KeyError(f'Base fee for permit type "{permit_type}" not found') from exc
+
+    # 2️⃣  Determine surcharge (default = 0 → no extra charge)
+    surcharge_per_1000 = 0.0
+
+    if square_footage > 5_000:
+        # The surcharge is needed – make sure the schedule provides it.
+        try:
+            surcharge_per_1000 = fee_schedule["large_project_surcharge"]
+        except KeyError as exc:
+            raise KeyError(
+                'Fee schedule is missing required key "large_project_surcharge" '
+                "for projects larger than 5,000 sq ft"
+            ) from exc
+
+    # 3️⃣  Compute total
+    total = base_fee + (surcharge_per_1000 * square_footage / 1_000)
+
+    # 4️⃣  Return a nicely‑rounded monetary amount
+    return round(total, 2)
+
+
+# ----------------------------------------------------------------------
+# Example usage – works for both the normal and the large‑project case
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    # Normal project (no surcharge)
+    print(calculate_permit_fee("residential_addition", 1_200, FEE_SCHEDULE))  # 150.00
+
+    # Large project (surcharge applied)
+    print(calculate_permit_fee("residential_addition", 7_500, FEE_SCHEDULE))
+    # → 150 + 2.5 * 7.5 = 150 + 18.75 = 168.75 → 168.75
+```
+
+### What changed?
+
+| Line(s) | Original behaviour | New behaviour |
+|--------|--------------------|---------------|
+| `if square_footage > 5000:` block | Assigned `surcharge` **only** when the condition was true. | Assigns a **default** `surcharge_per_1000 = 0.0` first, then overwrites it **only** if the condition is true. |
+| `surcharge = fee_schedule.get("large_project_surcharge")` | Used `.get()`, which would silently return `None` if the key were missing, later causing a `TypeError` when multiplied. | Directly accesses `fee_schedule["large_project_surcharge"]` inside a `try/except`. If the key is missing **and** a surcharge is required, we raise a clear `KeyError`. |
+| Use of the variable `surcharge` | Might be `None` or undefined → `UnboundLocalError` or later `TypeError`. | Variable is **always defined** (`float`), guaranteeing that line 10 (`total = …`) can always be evaluated. |
+| No validation | Negative square footage would silently produce a nonsensical fee. | Added a defensive `ValueError` for negative inputs. |
+| No docstring / type hints | Hard to understand contract. | Added a full docstring and type hints for better maintainability. |
+
+With these adjustments the function works for the original call (`square_footage = 1200`) **and** for any project over 5 000 sq ft, while providing helpful error messages when the fee schedule is incomplete.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | FAIL |
+| regex-1 | PASS |
+
+### Explanation of the Error
+
+The error occurs because of the conditional logic used to define the `surcharge` variable.
+
+When the function is called with `square_footage = 1200`, the following happens:
+1. **Line 7:** `base_fee` is successfully assigned the value `150`.
+2. **Line 8:** The condition `if square_footage > 5000` is evaluated. Since `1200` is **not** greater than `5000`, the condition is **False**.
+3. **Line 9:** Because the `if` condition failed, the code block inside it is skipped entirely. Consequently, **the variable `surcharge` is never created or assigned a value.**
+4. **Line 10:** The interpreter attempts to calculate `total = base_fee + surcharge * ...`. When it reaches `surcharge`, it looks for a local variable with that name in the current scope. Since no such variable exists, Python raises an `UnboundLocalError`.
+
+In short: The code assumes `surcharge` will be defined regardless of whether the `if` statement runs, but the logic only defines it if the project is "large."
+
+---
+
+### Fixed Code
+
+To fix this, we must ensure `surcharge` is initialized with a default value (0) so it is always available for the calculation, and use the `.get()` method with a default value to safely handle cases where the surcharge key might be missing from the dictionary.
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    # Get the base fee; assumes permit_type exists in fee_schedule
+    base_fee = fee_schedule[permit_type]
+    
+    # Initialize surcharge to 0 so it is always defined for the math below
+    surcharge_rate = 0
+    
+    if square_footage > 5000:
+        # Use .get(key, default) to handle the case where the key is missing
+        surcharge_rate = fee_schedule.get("large_project_surcharge", 0)
+    
+    # If square_footage <= 5000, surcharge_rate remains 0
+    total = base_fee + (surcharge_rate * square_footage / 1000)
+    return round(total, 2)
+
+# Test Cases
+# 1. Normal case (No surcharge): Expected 150.0
+print(f"Normal (1200 sq ft): {calculate_permit_fee('residential_addition', 1200, FEE_SCHEDULE)}")
+
+# 2. Large project (With surcharge): 150 + (2.5 * 6000 / 1000) = 150 + 15 = 165.0
+print(f"Large (6000 sq ft): {calculate_permit_fee('residential_addition', 6000, FEE_SCHEDULE)}")
+
+# 3. Missing surcharge key in dict: Expected 150.0 (surcharge defaults to 0)
+print(f"Missing Key (6000 sq ft): {calculate_permit_fee('residential_addition', 6000, {'residential_addition': 150})}")
+```
+
+### Key Improvements:
+1.  **Initialization:** `surcharge_rate = 0` is declared outside the `if` block. This ensures that even if the `if` condition is false, the variable exists when line 10 is reached.
+2.  **Defensive Programming:** Using `fee_schedule.get("large_project_surcharge", 0)` prevents a `KeyError`. If a large project is submitted but the government forgot to include the surcharge rate in the `FEE_SCHEDULE` dictionary, the code will gracefully treat the surcharge as `$0` rather than crashing.
+3.  **Clarity:** I renamed `surcharge` to `surcharge_rate` to more accurately reflect that it is a multiplier used in the calculation.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### 🔍 **Why the Error Occurs**
+
+The error:
+
+```
+UnboundLocalError: local variable 'surcharge' referenced before assignment
+```
+
+happens on **line 10**:
+
+```python
+total = base_fee + surcharge * square_footage / 1000
+```
+
+...because **`surcharge` is only defined inside the `if square_footage > 5000:` block (line 9)**, but the code tries to use it unconditionally on line 10.
+
+In this specific call:
+```python
+calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+```
+- `square_footage = 1200`, which is **not** greater than 5000
+- So the `if` block (line 8) is **not executed**
+- Therefore, `surcharge` is **never assigned**
+- But then line 10 tries to use `surcharge` anyway → `UnboundLocalError`
+
+Even though `fee_schedule.get("large_project_surcharge")` returns `2.5` when called (it's present), that doesn't matter here — the issue is that the variable isn't created at all when the condition is false.
+
+---
+
+### ✅ **Requirements for the Fix**
+We need to fix the function so that:
+1. The **surcharge is only applied when `square_footage > 5000`**
+2. `surcharge` is **never undefined** — i.e., it must be defined in all code paths
+3. If `"large_project_surcharge"` is **missing from `fee_schedule`**, the function should still work:
+   - For large projects (>5000 sq ft): assume `surcharge = 0` or raise a clear error?  
+     → Since the prompt says "handle the case", we should **default safely** (e.g., treat missing surcharge as 0, or skip it).
+
+But logically: if there's no surcharge defined, and the project is large, we probably don't want to apply *any* surcharge. So use `.get(..., 0)` for safety.
+
+---
+
+### ✅ **Fixed Version of `calculate_permit_fee`**
+
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = 0  # Default to 0 unless large project and surcharge exists
+
+    if square_footage > 5000:
+        surcharge = fee_schedule.get("large_project_surcharge", 0)  # Safe access
+
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+
+---
+
+### 🧠 Explanation of the Fix
+
+- **`surcharge` is initialized to `0`** at the start of the conditional logic → ensures it's always defined
+- Only if `square_footage > 5000` do we **pull the surcharge rate** from the schedule
+- We use `.get("large_project_surcharge", 0)` → returns `2.5` if present, `0` if missing
+- Then the formula on line 10 is safe in **all cases**
+
+---
+
+### ✅ Test Case Results
+
+With original input:
+```python
+calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+```
+- `base_fee = 150`
+- `square_footage = 1200` → not > 5000 → `surcharge = 0`
+- `total = 150 + 0 = 150`
+- Returns `150.00` → ✅ Success, no error
+
+Large project test:
+```python
+calculate_permit_fee("residential_addition", 6000, FEE_SCHEDULE)
+```
+- `surcharge = 2.5`
+- `total = 150 + 2.5 * 6000 / 1000 = 150 + 15 = 165.00` → also correct
+
+Edge case: missing surcharge key
+```python
+FEE_SCHEDULE_NO_SURCHARGE = {"residential_addition": 150}
+calculate_permit_fee("residential_addition", 6000, FEE_SCHEDULE_NO_SURCHARGE)
+```
+- Still works: `surcharge = 0` (due to `.get(..., 0)`)
+- Returns `150.00` → safe fallback
+
+---
+
+### ✅ Final Answer Summary
+
+> **Error Cause**: The variable `surcharge` is only defined inside the `if square_footage > 5000:` block. When `square_footage <= 5000` (like 1200), the block is skipped, so `surcharge` is never assigned, but the code still tries to use it — causing `UnboundLocalError`.
+
+> **Fix**: Initialize `surcharge = 0` and conditionally update it only for large projects, using `.get(..., 0)` to safely handle missing keys.
+
+### ✅ Fixed Code:
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = 0  # Default: no surcharge
+
+    if square_footage > 5000:
+        surcharge = fee_schedule.get("large_project_surcharge", 0)  # Safe lookup
+
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+The error occurs because the variable `surcharge` is only assigned when `square_footage > 5000` (line 9). For the given call (`square_footage=1200`), the condition `square_footage > 5000` is `False`, so `surcharge` is never defined. When line 10 attempts to use `surcharge` in the calculation, Python raises an `UnboundLocalError` since the variable has no value in the current scope.
+
+To fix this:
+1. Initialize `surcharge` to `0` before the conditional check to ensure it's always defined.
+2. Handle the case where `"large_project_surcharge"` is missing from `fee_schedule` by using `.get()` with a default of `0`.
+
+Here's the fixed function:
+
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = 0  # Initialize surcharge to handle cases where it's not needed or undefined
+    if square_footage > 5000:
+        surcharge = fee_schedule.get("large_project_surcharge", 0)  # Default to 0 if key missing
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+
+**Explanation of changes:**
+- **`surcharge = 0`**: Ensures `surcharge` exists for all cases (both when `square_footage <= 5000` and when `square_footage > 5000`).
+- **`.get("large_project_surcharge", 0)`**: Safely retrieves the surcharge value if the key exists; defaults to `0` if the key is missing.
+- The surcharge is only applied when `square_footage > 5000`, and the function now handles missing surcharge keys gracefully.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+**Why the error happens**
+
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    if square_footage > 5000:          # <-- only runs for big projects
+        surcharge = fee_schedule.get("large_project_surcharge")
+    total = base_fee + surcharge * square_footage / 1000   # <-- uses surcharge
+```
+
+When `square_footage` is **1200** the `if square_footage > 5000` test is *False*, so the
+statement inside the `if` block never executes.  
+Python therefore never creates a local variable named `surcharge`.  
+The next line (`total = … surcharge …`) tries to read that variable, and since it
+doesn't exist a **`UnboundLocalError`** is raised.
+
+---
+
+## A safe, corrected implementation
+
+We need to guarantee that `surcharge` is defined *for every execution path* and
+that we can handle the situation where the schedule does not contain the
+`"large_project_surcharge"` key (in that case we treat the surcharge rate as 0).
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    """
+    Calculate the permit fee.
+
+    Parameters
+    ----------
+    permit_type : str
+        The type of permit (must be a key in fee_schedule).
+    square_footage : int or float
+        Size of the project in square feet.
+    fee_schedule : dict
+        Dictionary that contains the base fee for the permit type and, optionally,
+        a key "large_project_surcharge" giving a per‑1000‑sq‑ft surcharge rate.
+
+    Returns
+    -------
+    float
+        The total fee rounded to two decimal places.
+    """
+    # Base fee – must exist
+    base_fee = fee_schedule[permit_type]
+
+    # Rate for the surcharge; 0 if the key is missing
+    surcharge_rate = fee_schedule.get("large_project_surcharge", 0)
+
+    # Compute surcharge only if the project is large enough
+    surcharge = surcharge_rate * square_footage / 1000 if square_footage > 5000 else 0
+
+    total = base_fee + surcharge
+    return round(total, 2)
+
+
+# Example usage
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)          # -> 150.0
+
+# Large project (over 5000 sq ft)
+print(calculate_permit_fee("residential_addition", 6000, FEE_SCHEDULE))
+# -> 150.0 + 2.5 * 6000 / 1000 = 150.0 + 15.0 = 165.0
+```
+
+### What changed?
+
+| Original | New |
+|----------|-----|
+| `surcharge` defined only inside the `if` block | `surcharge` is always defined; it is set to 0 when the project is not large enough |
+| `fee_schedule.get("large_project_surcharge")` could return `None` | `fee_schedule.get("large_project_surcharge", 0)` guarantees a numeric rate |
+| The surcharge calculation was in the same line as the total | Separated into its own line for clarity, but the arithmetic is the same |
+
+With this version, the function never raises `UnboundLocalError` and correctly
+applies (or skips) the large‑project surcharge, even when the surcharge key is
+absent from the fee schedule.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+## Why Line 10 Fails
+
+The `UnboundLocalError` occurs because `surcharge` is only defined inside the `if` block on **line 8–9**, and it is **never defined** when that block is skipped.
+
+In the failing call:
+
+- `square_footage = 1200`
+- `1200 > 5000` → `False`
+- So **line 9 never runs**, `surcharge` is never assigned
+- **Line 10** then tries to evaluate `surcharge * 1200 / 1000`, which references an undefined local variable → `UnboundLocalError`
+
+This same problem would also occur for any normal-sized permit (≤ 5000 sq ft), and silently fail to add the surcharge — which is incorrect behavior for large projects.
+
+## Fixed Version
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    if square_footage > 5000:
+        surcharge = fee_schedule.get("large_project_surcharge", 0)
+    else:
+        surcharge = 0
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)
+```
+
+### What Changed
+
+| Line | Original | Fixed |
+|------|----------|-------|
+| 8–9  | `surcharge` only set inside `if` | `surcharge` always initialized — either from the schedule (with `.get(..., 0)` fallback) or set to `0` |
+| 10   | `surcharge` referenced unconditionally | Safe — `surcharge` is always defined before use |
+
+### Behavior Matrix
+
+| `square_footage` | `large_project_surcharge` in schedule | Resulting `surcharge` |
+|------------------|--------------------------------------|------------------------|
+| ≤ 5000           | present or absent                    | `0`                    |
+| > 5000           | present                              | value from schedule    |
+| > 5000           | absent                               | `0` (graceful fallback) |
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+# Step-by-step analysis of the problem:
+
+1. **The error occurs because the variable `surcharge` is only defined when `square_footage > 5000`.** In the given function call, `square_footage` is 1200, which is less than 5000. Therefore, the `if` condition is not met, and the `surcharge` variable is not assigned a value.
+2. **When `surcharge` is not defined, the function attempts to use it in the calculation of `total` on line 10.** This results in an `UnboundLocalError` because Python does not know what value to use for `surcharge`.
+3. **The issue can be resolved by ensuring that `surcharge` always has a defined value.** This can be achieved by setting a default value for `surcharge` when `square_footage` is not greater than 5000.
+
+# Fixed solution:
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    """
+    Calculate the permit fee based on the permit type and square footage.
+
+    Args:
+    - permit_type (str): The type of permit.
+    - square_footage (int): The square footage of the project.
+    - fee_schedule (dict): A dictionary containing the fee schedule.
+
+    Returns:
+    - float: The calculated permit fee.
+    """
+    base_fee = fee_schedule[permit_type]
+    # Set surcharge to 0 by default
+    surcharge = 0.0
+
+    # Check if the fee schedule has a large project surcharge
+    if "large_project_surcharge" in fee_schedule:
+        large_project_surcharge = fee_schedule["large_project_surcharge"]
+        if square_footage > 5000:
+            surcharge = large_project_surcharge
+    else:
+        # Handle the case where the fee schedule is missing the large project surcharge
+        if square_footage > 5000:
+            raise ValueError("Fee schedule is missing the large project surcharge")
+
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)
+```
+
+# Explanation of changes:
+
+*   **Set a default value for `surcharge`**: We set `surcharge` to 0.0 by default to ensure it always has a defined value.
+*   **Check if the fee schedule has a large project surcharge**: Before attempting to access the large project surcharge, we check if it exists in the fee schedule. If it does not exist and the square footage is greater than 5000, we raise a `ValueError`.
+*   **Improved code organization and documentation**: We added a docstring to the function to describe its purpose, arguments, and return value. We also used more descriptive variable names to improve code readability.
+
+# Tests and example uses:
+
+You can test the function with different inputs to ensure it behaves as expected:
+
+```python
+# Test case 1: Normal case
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)
+
+# Test case 2: Large project surcharge applied
+fee = calculate_permit_fee("residential_addition", 6000, FEE_SCHEDULE)
+print(fee)
+
+# Test case 3: Fee schedule missing large project surcharge
+try:
+    fee_schedule = {"residential_addition": 150}
+    fee = calculate_permit_fee("residential_addition", 6000, fee_schedule)
+    print(fee)
+except ValueError as e:
+    print(e)
+```
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### Why the Error Occurs
+The `UnboundLocalError` happens because `surcharge` is **only assigned inside the `if` block**, but the code later tries to use it unconditionally on line 10. 
+
+When called with `square_footage=1200`, the condition `1200 > 5000` evaluates to `False`. Python skips the `if` block entirely, meaning `surcharge` is never created in the local scope. When execution reaches line 10, it evaluates `surcharge * square_footage / 1000`, looks for `surcharge` in the current scope, finds nothing, and raises `UnboundLocalError`.
+
+In Python, variables must be initialized before they are referenced, and control flow (like `if/else`) can easily skip initialization paths.
+
+---
+
+### Fixed Version
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = 0  # Initialize to prevent UnboundLocalError
+    
+    if square_footage > 5000:
+        # .get() safely returns 0 if the key is missing, avoiding a KeyError
+        surcharge = fee_schedule.get("large_project_surcharge", 0)
+        
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+```
+
+### Key Changes Made:
+1. **`surcharge = 0` initialization**: Ensures the variable exists in the local scope regardless of whether the `if` condition is met. For normal projects (`≤ 5000 sq ft`), it correctly stays `0` and doesn't affect the total.
+2. **`.get("large_project_surcharge", 0)`**: Safely handles the case where the fee schedule dictionary doesn't contain the key. It returns `0` instead of `None` (which would cause a `TypeError` on multiplication) or `KeyError`.
+3. Logic remains identical: the surcharge is only applied when `square_footage > 5000`, and the per-1000-sq-ft calculation is preserved.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | FAIL |
+| regex-1 | FAIL |
+
+## Why the `UnboundLocalError` happens on the call  
+
+```python
+calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+```
+
+| Step | What the code does | Variable state |
+|------|--------------------|----------------|
+| 6‑7  | `base_fee = fee_schedule[permit_type]` → `base_fee = 150` | `base_fee` is defined |
+| 8    | `if square_footage > 5000:` → `1200 > 5000` is **False** | – |
+| 9‑10 | The body of the `if` is **skipped**, therefore the line `surcharge = fee_schedule.get("large_project_surcharge")` is never executed. | `surcharge` is still *undefined* |
+| 10   | `total = base_fee + surcharge * square_footage / 1000` tries to use `surcharge` | **`UnboundLocalError: local variable 'surcharge' referenced before assignment`** |
+
+The variable `surcharge` is created **inside** the `if` block, so it only exists when the condition is true. For a normal residential addition (`square_footage = 1200`) the condition is false, the assignment never runs, and the later expression still tries to read `surcharge`. Python raises the error because a local variable that has not been assigned yet cannot be used.
+
+> **Bottom line:** `surcharge` is left undefined for every call where `square_footage ≤ 5000`. The function crashes even though the surcharge should be irrelevant for those cases.
+
+---
+
+## Requirements for the fixed function
+
+1. **Apply the large‑project surcharge only when `square_footage > 5000`.**  
+2. **Never reference an undefined `surcharge` variable** – it must have a sensible default value (e.g., `0`) for the “normal” case.  
+3. **Gracefully handle a missing `"large_project_surcharge"` entry in `fee_schedule`.**  
+   * If the key is missing, treat the surcharge as `0` (i.e., no extra charge).  
+4. Keep the public signature `calculate_permit_fee(permit_type, square_footage, fee_schedule)` unchanged.
+
+---
+
+## Fixed implementation
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,   # optional – may be absent in some schedules
+}
+
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    """
+    Compute the permit fee for a given `permit_type`.
+
+    * `base_fee` is looked up directly from the schedule.
+    * If the project is larger than 5,000 sq ft, an additional
+      `large_project_surcharge` (cents per sq ft) is applied.
+    * Missing keys are handled gracefully:
+        - unknown `permit_type` → raises a clear ValueError
+        - missing `large_project_surcharge` → treated as 0
+    * The result is rounded to two decimal places (cents).
+    """
+    # ------------------------------------------------------------------
+    # 1️⃣  Validate that the requested permit_type exists
+    # ------------------------------------------------------------------
+    try:
+        base_fee = fee_schedule[permit_type]
+    except KeyError as exc:
+        raise ValueError(
+            f"Permit type '{permit_type}' is not defined in the fee schedule."
+        ) from exc
+
+    # ------------------------------------------------------------------
+    # 2️⃣  Obtain the surcharge value, defaulting to 0 if the key is missing
+    # ------------------------------------------------------------------
+    # `.get` returns the value if present, otherwise the supplied default (0)
+    large_project_rate = fee_schedule.get("large_project_surcharge", 0)
+
+    # ------------------------------------------------------------------
+    # 3️⃣  Compute the total fee
+    # ------------------------------------------------------------------
+    if square_footage > 5_000:                     # only apply surcharge when large
+        # surcharge is expressed as a *percentage* (e.g., 2.5 means 2.5 % of the
+        # square‑footage).  Multiplying by `square_footage / 1000` converts it
+        # to a dollar amount that matches the original design.
+        surcharge_amount = large_project_rate * square_footage / 1000
+        total = base_fee + surcharge_amount
+    else:
+        # No surcharge for normal‑size projects
+        total = base_fee
+
+    # ------------------------------------------------------------------
+    # 4️⃣  Return a nicely rounded monetary value
+    # ------------------------------------------------------------------
+    return round(total, 2)
+
+
+# ----------------------------------------------------------------------
+# Demo – the original failing case now works
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+    print(f"The permit fee is: ${fee}")          # → The permit fee is: $150.0
+```
+
+### What changed, step‑by‑step
+
+| Change | Reason |
+|--------|--------|
+| **`large_project_rate = fee_schedule.get("large_project_surcharge", 0)`** | Guarantees `large_project_rate` always has a value (0 when the key is absent). No `UnboundLocalError` can occur later. |
+| **Move the surcharge calculation inside an `if square_footage > 5_000:` block** | The surcharge is only used when the project truly qualifies as “large”. For smaller projects the code never touches the `surcharge` variable. |
+| **Separate `total` computation for the two cases** | Makes the logic explicit and prevents accidental use of an undefined variable. |
+| **Added validation for missing `permit_type`** | Gives a clear error message instead of a generic `KeyError`. |
+| **Used a constant `5_000` (instead of a magic number)** | Improves readability and makes the threshold easy to adjust. |
+| **Rounded only at the very end** | Keeps intermediate calculations precise (important if the surcharge were a floating‑point percentage). |
+
+---
+
+## Quick sanity‑check
+
+```python
+# 1. Normal residential addition (1200 sq ft) → no surcharge
+print(calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE))
+# → 150.0
+
+# 2. Large project that exceeds 5,000 sq ft
+print(calculate_permit_fee("residential_addition", 6000, FEE_SCHEDULE))
+# → 150 + 2.5 * 6000 / 1000 = 150 + 15 = 165.0
+
+# 3. Missing "large_project_surcharge" key (still works)
+no_surcharge_schedule = {
+    "residential_addition": 150,
+}
+print(calculate_permit_fee("residential_addition", 6000, no_surcharge_schedule))
+# → 150.0   (treated as 0% surcharge)
+```
+
+All three scenarios run without raising an exception, and the function respects the original business rule: **only projects larger than 5,000 sq ft receive the extra surcharge**, while the variable is always defined.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+## Why the Error Occurs
+
+The error occurs because of a **conditional variable assignment** issue. In the current code:
+
+1. When `square_footage=1200` (which is NOT > 5000), the condition `if square_footage > 5000:` evaluates to `False`
+2. This means the `surcharge` variable is **never assigned** inside the if-block
+3. However, line 10 tries to use `surcharge` in the calculation: `total = base_fee + surcharge * square_footage / 1000`
+4. Since `surcharge` was never defined in this execution path, Python raises `UnboundLocalError`
+
+The function works fine when `square_footage > 5000` because `surcharge` gets assigned in that case, but it fails when `square_footage <= 5000` because `surcharge` remains undefined.
+
+## Fixed Version
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    surcharge = 0  # Default value
+    
+    if square_footage > 5000:
+        # Handle case where large_project_surcharge key might be missing
+        surcharge = fee_schedule.get("large_project_surcharge", 0)
+    
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)
+```
+
+## Key Improvements
+
+1. **Initialization**: `surcharge = 0` ensures the variable is always defined
+2. **Safe lookup**: `fee_schedule.get("large_project_surcharge", 0)` provides a default value of 0 if the key is missing
+3. **Consistent logic**: The surcharge is only applied when `square_footage > 5000`, but `surcharge` is always properly initialized
+4. **Robust error handling**: Handles the case where `fee_schedule` might not contain the `"large_project_surcharge"` key
+
+The fixed code now correctly handles both cases:
+- When `square_footage <= 5000`: `surcharge` remains 0, so no surcharge is applied
+- When `square_footage > 5000`: `surcharge` gets the proper value from the fee schedule
+- When the fee schedule is missing the surcharge key: Uses 0 as default, preventing KeyError
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+**Why the error occurs**
+
+```python
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    if square_footage > 5000:          # ← condition is *False* for 1200
+        surcharge = fee_schedule.get("large_project_surcharge")
+    total = base_fee + surcharge * square_footage / 1000   # ← UnboundLocalError
+    return round(total, 2)
+```
+
+1. The function is called with `square_footage = 1200`.  
+2. The `if` statement checks `square_footage > 5000`. Because `1200` is **not** greater than `5000`, the body of the `if` block is **skipped**.  
+3. Skipping the block means the local variable `surcharge` is **never created**.  
+4. When the execution reaches line 10 (`total = base_fee + surcharge * …`), Python looks for a name `surcharge` in the current local scope. Since it was never assigned, Python raises  
+
+   ```
+   UnboundLocalError: local variable 'surcharge' referenced before assignment
+   ```
+
+In short: for a “small” project (`square_footage ≤ 5000`) the code never defines `surcharge`, yet it tries to use it on the next line.
+
+---
+
+**Fixed version of `calculate_permit_fee`**
+
+The goal is:
+
+* Apply the *large‑project surcharge* **only** when `square_footage > 5000`.  
+* Never leave `surcharge` undefined (i.e., always have a value for the calculation).  
+* Gracefully handle the case where `fee_schedule` does **not** contain the key `"large_project_surcharge"` (e.g., a very large lot but no surcharge defined).
+
+A clean way is to give `surcharge` a default value of `0` (meaning “no surcharge”) and then adjust it only when the size condition is met:
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    # "large_project_surcharge": 2.5,   # optional – may be missing
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    # 1️⃣ Base fee – assume the permit_type key always exists.
+    base_fee = fee_schedule[permit_type]
+
+    # 2️⃣ Start with a zero surcharge.
+    surcharge = 0.0
+
+    # 3️⃣ If the project is “large”, look up the surcharge.
+    if square_footage > 5000:
+        # .get returns None if the key is missing; we treat that as 0.
+        surcharge = fee_schedule.get("large_project_surcharge") or 0.0
+
+    # 4️⃣ Compute total. The surcharge is a *percentage* (e.g., 2.5 % per 1000 sq ft)
+    #    so we multiply by (square_footage / 1000).  Using float division is safe in Python 3.
+    total = base_fee + surcharge * (square_footage / 1000)
+
+    # 5️⃣ Return a nicely rounded result.
+    return round(total, 2)
+
+
+# Example usage:
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)          # → 150.0 (no surcharge)
+
+# Large project with surcharge defined:
+FEE_SCHEDULE["large_project_surcharge"] = 2.5
+fee_large = calculate_permit_fee("residential_addition", 8000, FEE_SCHEDULE)
+print(fee_large)    # → 150 + 2.5 * (8000/1000) = 150 + 20 = 170.0
+
+# Large project but surcharge key missing:
+del FEE_SCHEDULE["large_project_surcharge"]
+fee_missing = calculate_permit_fee("residential_addition", 8000, FEE_SCHEDULE)
+print(fee_missing)  # → 150.0 (surcharge falls back to 0)
+```
+
+**Explanation of the fixes**
+
+| Step | What was wrong | How it’s fixed |
+|------|----------------|----------------|
+| **Variable definition** | `surcharge` only existed inside the `if` block, so it was undefined when `square_footage ≤ 5000`. | Initialize `surcharge = 0.0` **before** the `if`. This guarantees a value in every execution path. |
+| **Conditional surcharge** | The surcharge was applied unconditionally because the variable was always assumed to exist. | Compute `surcharge` **only** when `square_footage > 5000`. Outside that block `surcharge` stays `0.0`, meaning “no extra charge”. |
+| **Missing key handling** | `fee_schedule.get("large_project_surcharge")` returns `None` if the key is absent; using `None` in arithmetic raises `TypeError`. | Use the “or 0.0” idiom: `fee_schedule.get("large_project_surcharge") or 0.0`. If the key is missing (or its value is `None`/`0`), `surcharge` becomes `0.0`. |
+| **Readability / safety** | The original code mixed integer division concerns and assumed the schedule always had the surcharge key. | Explicitly cast the division to float (Python 3 does this automatically) and document the expected meaning of the surcharge (percentage per 1000 sq ft). |
+
+With these changes the function:
+
+* **Never raises `UnboundLocalError`** – `surcharge` is always defined.  
+* **Applies the surcharge only for projects larger than 5 000 sq ft**.  
+* **Gracefully falls back to zero** when the surcharge entry is absent, preventing `TypeError`.  
+
+The example calls at the bottom demonstrate the three scenarios (normal size, large size with surcharge, large size without surcharge) and show the expected numeric results.
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### Explanation of the Error
+
+The error occurs because of how Python handles variable scope and control flow.
+
+1.  **The Logic Path:** When you call the function with `square_footage=1200`, the code executes `if square_footage > 5000`. Since 1200 is not greater than 5000, the condition evaluates to `False`.
+2.  **Skipping Assignment:** Because the condition is false, the code inside the `if` block (Line 9) is skipped entirely. Consequently, the variable `surcharge` is **never assigned** a value in this function execution.
+3.  **The Crash:** Execution proceeds to Line 10, where the code tries to calculate `total` using the variable `surcharge`. Since `surcharge` was never defined in the local scope of this function call, Python raises an `UnboundLocalError`.
+
+### Fixed Code
+
+Here is the corrected version of the function. It initializes `surcharge` to `0` before the check, ensuring the variable always exists, and uses `.get(..., 0)` to safely handle cases where the surcharge key might be missing from the dictionary.
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    
+    # FIX 1: Initialize surcharge to 0. 
+    # This ensures the variable exists for the calculation on line 12,
+    # preventing the UnboundLocalError for small projects.
+    surcharge = 0
+    
+    # FIX 2: Apply surcharge logic only for large projects
+    if square_footage > 5000:
+        # FIX 3: Use .get() with a default of 0. 
+        # If the key "large_project_surcharge" is missing from the schedule,
+        # it defaults to 0 instead of returning None (which would cause a TypeError in math).
+        surcharge = fee_schedule.get("large_project_surcharge", 0)
+        
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+
+# Test cases
+print(calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)) # 150.0 (Small project)
+print(calculate_permit_fee("residential_addition", 6000, FEE_SCHEDULE)) # 165.0 (Large project)
+```
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### Explanation of the Error
+
+The error occurs because the variable `surcharge` is conditionally assigned inside an `if` block, but the condition is not met during the specific function call.
+
+1.  **Condition Evaluation:** When calling `calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)`, the variable `square_footage` is set to `1200`.
+2.  **If Statement:** The code checks `if square_footage > 5000`. Since `1200` is not greater than `5000`, this condition evaluates to `False`.
+3.  **Skipped Assignment:** Because the condition is `False`, the Python interpreter skips the block of code indented under the `if` statement (line 9), where `surcharge` is defined.
+4.  **Unbound Variable:** Execution proceeds to line 10 (`total = base_fee + surcharge * ...`). At this point, the local variable `surcharge` has never been created in the function's scope for this execution path.
+5.  **Runtime Error:** Python attempts to access an uninitialized local variable, resulting in `UnboundLocalError: local variable 'surcharge' referenced before assignment`.
+
+### Fixed Code
+
+The fixed version initializes `surcharge` to `0` before the conditional check. This ensures the variable always exists, even when `square_footage` is 5000 or less. Additionally, inside the conditional block, `.get()` is used with a default value of `0` to handle cases where the `fee_schedule` dictionary lacks the `"large_project_surcharge"` key, preventing `None` or `KeyError` issues during calculation.
+
+```python
+ 1  FEE_SCHEDULE = {
+ 2      "residential_addition": 150,
+ 3      "large_project_surcharge": 2.5,
+ 4  }
+ 5
+ 6  def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+ 7      base_fee = fee_schedule[permit_type]
+ 8      surcharge = 0  # Initialize to ensure variable is defined for all cases
+ 9      if square_footage > 5000:
+10          # Use default 0 if key is missing to avoid TypeError
+11          surcharge = fee_schedule.get("large_project_surcharge", 0)
+12      total = base_fee + surcharge * square_footage / 1000
+13      return round(total, 2)
+14
+15  fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+16  print(fee)
+```
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### Why Line 10 Fails for `square_footage=1200`
+
+In Python, a local variable is only added to the function's namespace when the line that assigns it is actually executed. Because `1200` is not greater than `5000`, the `if square_footage > 5000:` block is **skipped entirely**. As a result, the `surcharge` variable is never created in the local scope. When execution reaches line 10, Python tries to look up `surcharge`, finds nothing, and raises an `UnboundLocalError`.
+
+Additionally, if `square_footage` were `> 5000` but `"large_project_surcharge"` were missing from the dictionary, `fee_schedule.get(...)` would return `None`. Multiplying `None` by a number would then cause a `TypeError`.
+
+### Fixed Version
+
+```python
+FEE_SCHEDULE = {
+    "residential_addition": 150,
+    "large_project_surcharge": 2.5,
+}
+
+def calculate_permit_fee(permit_type, square_footage, fee_schedule):
+    base_fee = fee_schedule[permit_type]
+    
+    # Default to 0.0 so the variable always exists in the local scope.
+    surcharge = 0.0
+    
+    # Only apply the surcharge when the lot exceeds 5000 sq ft.
+    if square_footage > 5000:
+        # .get() with a default of 0.0 safely handles missing keys.
+        surcharge = fee_schedule.get("large_project_surcharge", 0.0)
+        
+    total = base_fee + surcharge * square_footage / 1000
+    return round(total, 2)
+
+fee = calculate_permit_fee("residential_addition", 1200, FEE_SCHEDULE)
+print(fee)  # Output: 150.0
+```
+
+### How the Fix Meets Your Requirements
+1. **Normal cases never leave `surcharge` undefined:** `surcharge` is initialized to `0.0` *before* the `if` statement, guaranteeing it exists in the local scope regardless of the conditional path taken.
+2. **Surcharge still only applies when `> 5000`:** The `if square_footage > 5000:` guard remains intact, so smaller lots get a flat `base_fee`.
+3. **Missing key handled for large lots:** `fee_schedule.get("large_project_surcharge", 0.0)` returns the scheduled rate when present, but gracefully falls back to `0.0` instead of `None`, preventing a `TypeError` and keeping the calculation valid.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

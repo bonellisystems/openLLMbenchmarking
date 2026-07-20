@@ -1,0 +1,1111 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# IT Infrastructure -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The diagnosis or design is correct and tied to the specific systems, symptoms, and constraints given, with exact commands or configuration for the stated platform rather than generic advice. It includes a rollback or backup step before any risky change, quantifies blast radius and expected downtime, and is calibrated about what still needs on-site or live verification. A maintenance-window or change-freeze constraint mentioned in the prompt is respected, not ignored.
+Example character: a targeted fix with the exact command sequence, a stated rollback step, and a note on which part of the environment is affected.
+
+## 7 -- Strong
+The technical recommendation is sound and directly usable, with correct commands or configuration for the stated platform. It is missing one of: an explicit rollback plan, a quantified blast-radius/downtime estimate, or a post-change verification step. Nothing here would misdiagnose the problem.
+Example character: a correct fix for the stated symptom that does not spell out how to undo it if it goes wrong.
+
+## 5 -- Adequate
+The direction is correct but the advice reads as a generic troubleshooting checklist rather than being tailored to the specific hardware, software, or symptoms given. An engineer would need to fill in the exact commands and confirm the environment before acting.
+Example character: "check logs, restart the service, verify connectivity" offered without adapting to the platform named in the prompt.
+
+## 3 -- Weak
+The answer misdiagnoses the stated problem, ignores an explicit constraint (no maintenance window, no downtime allowed, specific hardware), or jumps to a disruptive fix without trying safer steps first.
+Example character: recommends a reboot or reinstall as the first step on a production system the prompt flagged as always-on.
+
+## 0 -- Unusable
+Recommends a destructive action (wipe, factory reset, force-delete) with no backup or rollback warning, or invents command syntax or vendor behavior that does not exist. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Destructive commands (rm -rf, drop database, factory reset, force reformat) with no backup or rollback step.
+- Fabricated CLI flags, config keys, or vendor documentation presented as real.
+- Ignoring a stated production, change-freeze, or maintenance-window constraint.
+- No mention of testing a risky change in non-production first.
+- Treating a symptom fix as a root-cause fix without saying so.
+
+## Unit-specific excellence markers
+- Explicit rollback or backup step before any risky change.
+- Blast radius and expected downtime called out in concrete terms.
+- Exact commands or configuration syntax for the stated platform.
+- Maintenance-window and change-freeze awareness.
+- Post-change verification or monitoring step included.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Your MSP manages IT for a USDA-inspected poultry processing plant. The plant's file-and-scan
+server (a Hyper-V VM: 8 vCPU, 32GB RAM, 500GB SSD volume) hosts the shared folder that
+handheld barcode scanners on the production floor write to for USDA-mandated lot-tracking
+records. Current monitoring shows two things: (1) CPU is sustained at 91% for roughly 20
+minutes at each of the plant's three daily shift changes (07:00, 15:00, 23:00), when all
+scanners re-sync in a burst; and (2) the SSD volume is 82% full, growing at about 23GB per
+week from retained lot-tracking scan logs -- a 2-year USDA retention requirement means the
+old logs can't simply be purged to reclaim space. The plant cannot tolerate any scanner
+downtime during a shift-change window, because a gap in lot-tracking coverage during a shift
+change is itself a USDA compliance finding. Recommend a right-sized VM spec (vCPU/RAM), a
+storage plan that respects the 2-year retention requirement, and a timeline for making the
+change that avoids all three daily shift-change windows.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Risk Assessment & Constraints Summary
+
+*   **Storage Urgency:** Volume is at 82% (~410 GB used) with 80 GB free. At 23 GB/week growth, the volume will hit 100% in **~3.5 weeks**. This requires immediate action to prevent a write failure that would halt scanner operations.
+*   **CPU Burst Risk:** Sustained 91% CPU at shift changes indicates the VM is undersized for the burst re-sync workload. This creates a risk of I/O latency or scan timeouts during the exact windows where USDA compliance is most vulnerable.
+*   **Retention Constraint:** USDA mandates 2-year retention. No data can be purged. Total projected data volume over 2 years must be accommodated.
+*   **Downtime Prohibition:** No scanner downtime is permitted, particularly during the 07:00, 15:00, and 23:00 shift-change windows. Any change must use live migration or hot-add capabilities to avoid service interruption.
+
+---
+
+### 1. Right-Sized VM Specification
+
+Based on the current workload symptoms, the VM is CPU-constrained during bursts and over-provisioned on RAM for a file-and-scan role.
+
+**Recommended Spec:**
+| Component | Current | **Recommended** | Rationale |
+| :--- | :--- | :--- | :--- |
+| **vCPU** | 8 | **16** | The 91% CPU sustained for 20 minutes indicates a compute bottleneck during burst re-syncs. Doubling to 16 vCPU provides ~50% utilization during bursts, eliminating the saturation risk and reducing latency for concurrent scanner writes. |
+| **RAM** | 32 GB | **16 GB** | File servers handling shared folder writes rarely require 32 GB unless a specific local application dictates it. Reducing to 16 GB recovers host resources and eliminates memory bloat. *Note: Confirm with the plant's application layer that no local software (e.g., specific scanning agent or logging service) requires >16 GB before finalizing.* |
+| **Network** | Existing | **Existing** | No change required unless NIC saturation is observed during bursts. |
+
+**Hyper-V Implementation Strategy:**
+*   Use **Live Migration** to a new VM with the new spec, or leverage **Generation 2 Hot-Add** capabilities if the existing VM is Gen 2, to avoid any reboot.
+*   Live Migration ensures zero downtime for scanners during the change.
+
+---
+
+### 2. Storage Plan (2-Year Retention)
+
+**Growth Calculation:**
+*   Current Usage: ~410 GB.
+*   Weekly Growth: 23 GB.
+*   Retention Period: 2 Years (104 Weeks).
+*   Total Data at End of Year 2: 410 GB + (104 weeks × 23 GB) = 410 GB + 2,392 GB = **~2.8 TB**.
+*   Overhead/Snapshots: Add 15% buffer for OS, logs, and VSS snapshots = **~3.2 TB**.
+
+**Recommendation:**
+*   **Expand SSD Volume to 3.5 TB.**
+    *   This accommodates the full 2-year rolling dataset without compression or tiering, ensuring the fastest possible write performance for the production floor scanners.
+    *   Moving data to tiered storage (cold/archive) introduces risk of latency if USDA inspectors or plant auditors request historical lot data during an inspection. Keeping the full dataset on SSD mitigates this
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## 1. Situation Snapshot  
+
+| Item | Current State | Why it matters |
+|------|---------------|----------------|
+| **VM** | 8 vCPU / 32 GB RAM / 500 GB SSD | CPU spikes to **91 %** for ~20 min at each of the three shift‑change bursts (07:00, 15:00, 23:00). Any loss of scanner connectivity = USDA non‑compliance. |
+| **Data growth** | 82 % of 500 GB used → ≈ 410 GB of logs | Logs grow **≈ 23 GB / week** (≈ 1.2 TB / yr). USDA requires **2‑year retention** → ≈ 2.4 TB of immutable log data. |
+| **Retention** | No purge allowed | Must keep every scan log for 2 years, but we must still have head‑room for new logs and OS/app space. |
+| **Change window constraints** | No downtime allowed **during** the three daily shift‑change windows. | Any outage at 07:00, 15:00, or 23:00 creates a compliance gap. |
+
+---
+
+## 2. Right‑Sizing the VM  
+
+### 2.1 Why the current VM is insufficient  
+
+* **CPU bottleneck** – 8 vCPU are saturated for ~20 min every 8 h. Even if the VM host has spare cores, the hyper‑visor will still schedule the VM on a limited subset of physical cores, causing the 91 % figure.  
+* **Memory head‑room** – 32 GB is adequate for the OS and file‑share service, but adding more vCPU (especially with higher‑frequency cores) will increase the VM’s working set; a safety margin is prudent.  
+
+### 2.2 Target VM Specification  
+
+| Resource | Recommended Size | Rationale |
+|----------|------------------|-----------|
+| **vCPU** | **12 vCPU** (3 × 4‑core sockets) | 50 % more compute capacity. Bench‑marks on a similar Hyper‑V workload (SMB file‑share + many small write bursts) show a ~30‑40 % reduction in peak CPU % when moving from 8→12 cores. Gives us ~55 % head‑room during the 20‑min burst (target < 55 % CPU). |
+| **RAM** | **48 GB** (24 GB per socket) | 50 % extra RAM covers the larger vCPU cache, potential future OS or antivirus updates, and allows the VM to keep more file‑system metadata in memory, reducing disk I/O during bursts. |
+| **vNUMA** | Enable 2‑node NUMA (6 vCPU + 24 GB per node) | Keeps the VM’s workload NUMA‑aware, improves cache locality for the SMB service. |
+| **Network** | **10 GbE (synthetic) + SR‑IOV** | Handheld scanners typically use 1 GbE, but a 10 GbE synthetic NIC with SR‑IOV guarantees no network‑stack bottleneck during the 2‑minute sync storm. |
+| **Guest OS** | Windows Server 2022 (Core) with SMB Direct (RDMA) disabled if no RDMA hardware, otherwise enable. | SMB Direct reduces CPU overhead for high‑throughput small‑file writes. |
+
+> **Bottom line:** 12 vCPU / 48 GB RAM gives a comfortable **≥ 30 %** CPU margin during the busiest 20‑minute windows and future‑proofs the VM for modest load growth (e.g., additional scanners).
+
+---
+
+## 3. Storage Plan that Meets the 2‑Year Retention Requirement  
+
+### 3.1 Capacity Forecast  
+
+| Metric | Current | Weekly Growth | Yearly Growth | 2‑Year Total |
+|--------|---------|---------------|--------------|--------------|
+| **Log data used** | 410 GB | 23 GB | 1,196 GB | 2,392 GB |
+| **OS + SMB share metadata** | ~90 GB | – | – | – |
+| **Safety buffer (15 %)** | – | – | – | 360 GB |
+| **Grand total needed** | – | – | – | **≈ 2.9 TB** |
+
+> **We need ~3 TB of *active* storage** that is always online, fast enough to absorb the 20‑minute write bursts, and that can retain data for 2 years.
+
+### 3.2 Tiered‑Storage Architecture  
+
+| Tier | Technology | Size | Purpose | Cost‑per‑GB (2026 estimate) | Rationale |
+|------|------------|------|---------|----------------------------|-----------|
+| **Tier 1 – Hot SSD** | NVMe (PCIe 4.0) | **1.5 TB** | Current week’s logs + OS & SMB metadata. This tier handles the burst writes. | $0.12/GB | NVMe gives > 3 GB/s sequential & low latency for many small writes. |
+| **Tier 2 – Warm SSD** | SATA 2.5‑in SSD (MLC) | **1.0 TB** | Logs older than 30 days but younger than 1 year. Still needs fast random I/O for occasional audit pulls. | $0.07/GB | SATA SSD is cheaper, still meets audit‑pull latency (< 200 ms). |
+| **Tier 3 – Cold Object Store** | On‑premises object store (e.g., MinIO or Azure Stack) or low‑cost cloud bucket (S3 Glacier Deep Archive) | **3 TB (archival)** | Logs older than 1 year. Access is rare (audit, legal). | $0.015/GB (cloud) or $0.02/GB (on‑prem) | Meets 2‑year retention at minimal cost; immutable bucket policy ensures USDA “write‑once‑read‑many” (WORM). |
+
+**Total physical provisioned on the VM host:** 2.5 TB (Tier 1 + Tier 2). The cold tier is off‑host, so the host’s local storage budget stays < 3 TB.
+
+### 3.3 Implementation Details  
+
+1. **Create two VHDX files on the host’s fast NVMe pool**  
+   * `HotLog.vhdx` – 1.5 TB, formatted NTFS (or ReFS) with SMB share “\\FileServer\LiveLogs”.  
+   * `WarmLog.vhdx` – 1.0 TB, mounted as a separate volume “\\FileServer\WarmLogs”.  
+
+2. **Enable **SMB Multichannel** and **SMB Direct** (if RDMA NICs exist) on the share to maximise parallelism during the burst.  
+
+3. **Automated Tier‑Migration Script** (PowerShell) runs every night at 02:00:  
+   * Move logs > 30 days from Hot → Warm (move operation, not copy, to keep the same path).  
+   * Move logs > 365 days from Warm → Cold (upload to object store via `aws s3 cp` or MinIO client, then delete local copy).  
+
+4. **WORM enforcement**  
+   * On the hot & warm volumes enable **ReFS with “Integrity Streams”** and **“File History”** snapshots that are set immutable for 2 years.  
+   * On the object store configure **Bucket Lock** (or equivalent) with a 2‑year retention period.  
+
+5. **Backup / Disaster Recovery**  
+   * Daily incremental backup of the hot volume to a separate 2‑TB SATA SSD (snapshots stored on a different host).  
+   * Weekly full copy of the warm volume to the same backup appliance.  
+   * Cold tier is already immutable; a separate “cold‑copy” to another region (e.g., another data‑center) is recommended for ransomware resilience.
+
+---
+
+## 4. Migration / Change‑Implementation Timeline (No Impact on Shift‑Change Windows)
+
+### 4.1 High‑Level Phases  
+
+| Phase | Window | Activities | Owner | Success Criteria |
+|-------|--------|------------|-------|------------------|
+| **A – Prep & Staging** | **Weekend Day‑1 (Saturday) 04:00‑12:00** (plant is idle; no scanners) | • Provision new host hardware (or add capacity to existing cluster). <br>• Install Hyper‑V, create VM with 12 vCPU/48 GB. <br>• Attach NVMe and SATA SSDs, format volumes, configure SMB shares. | Infrastructure Lead | VM boots, all services start, no production traffic. |
+| **B – Data Seeding (Hot + Warm)** | **Weekend Day‑2 (Sunday) 02:00‑10:00** | • Snapshot current 500 GB volume. <br>• Use `robocopy /mir /copyall /dcopy:T /r:2 /w:5` to copy existing logs to the new Hot volume (≈ 410 GB). <br>• Verify checksum (MD5) for a random 5 % sample. | Storage Engineer | All current logs present on new Hot volume; integrity OK. |
+| **C – Cut‑over (Production Share)** | **Weekday (Monday) 04:30‑06:30** (well before 07:00 shift‑change) | • Stop the SMB service on the old VM (graceful). <br>• Re‑point DNS/NetBIOS alias “\\FileServer\LotLogs” to the new VM IP. <br>• Bring the new SMB share online. <br>• Perform a quick “touch” test from a handheld scanner in a controlled zone (no production). | Network & Ops | Scanners can write to the new share; no error messages. |
+| **D – Validation Window** | **Monday 06:30‑07:00** | • Monitor CPU, I/O, network for 30 min. <br>• Confirm no latency spikes > 200 ms for write ops. <br>• Confirm logs appear in the hot volume. | Monitoring Team | All metrics within target; no alerts. |
+| **E – Post‑Cut‑over Monitoring** | **Monday 07:00‑23:00** (full day) | • Real‑time dashboard (CPU < 55 %, Disk QD < 2). <br>• Review scanner sync logs at 07:00, 15:00, 23:00. <br>• Keep the old VM powered‑on (but offline) for 48 h as rollback safety. | Ops Lead | No compliance events; CPU spikes reduced to ~55 %. |
+| **F – Decommission Old VM** | **Tuesday 02:00‑04:00** (off‑peak) | • Take final snapshot of old volume for archive. <br>• Delete old VM. <br>• Release its vCPU/RAM back to the pool. | Infrastructure Lead | Old VM removed; resources reclaimed. |
+| **G – Tier‑Migration Automation Go‑Live** | **Wednesday 02:00‑04:00** | • Enable nightly tier‑migration script. <br>• Verify first “warm‑to‑cold” upload (logs > 365 days). | Storage Engineer | Archive bucket contains expected objects, WORM lock active. |
+
+> **Total calendar impact:** ~2 full days (Saturday‑Sunday) plus a 2‑hour cut‑over early Monday. All three USDA‑critical shift‑change windows (07:00, 15:00, 23:00) remain untouched.
+
+### 4.2 Roll‑back Procedure (if anything goes wrong)
+
+1. **Re‑activate DNS alias** to the old VM IP within 5 minutes of detection.  
+2. **Power‑on the old VM** (still has the original data).  
+3. **Notify USDA compliance officer** immediately and document the brief outage (must be < 5 min).  
+4. **Post‑mortem** before re‑attempting migration.
+
+Because the cut‑over happens *before* the first shift‑change, the rollback window falls entirely in a non‑production period, satisfying USDA “no loss of coverage” rule.
+
+---
+
+## 5. Cost‑Impact Summary  
+
+| Item | Qty | Unit Cost (2026) | Annual Cost | 3‑Year Total |
+|------|-----|------------------|------------|--------------|
+| **Host CPU (vCPU)** | 12 vCPU (core‑upgrade) | $12 per core/mo (Azure‑like) | $1,728 | $5,184 |
+| **RAM** | 48 GB | $7 per GB/mo | $4,032 | $12,096 |
+| **NVMe SSD (1.5 TB)** | 1 | $0.12/GB (capex) | $180 (capex) | $180 |
+| **SATA SSD (1 TB)** | 1 | $0.07/GB (capex) | $70 (capex) | $70 |
+| **Cold Object Store (3 TB)** | 3 TB | $0.015/GB/mo | $540 | $1,620 |
+| **Backup appliance (2 TB)** | 1 | $0.02/GB/mo | $480 | $1,440 |
+| **Software (Windows Server CALs, SMB Direct)** | – | $120 per CAL (12 CALs) | $1,440 | $4,320 |
+| **Professional Services (migration, testing)** | – | $200/hr × 80 hrs | $16,000 (one‑time) | $16,000 |
+| **Total 1‑yr OPEX** | – | – | **≈ $7,500** | – |
+| **Total 3‑yr TCO** | – | – | – | **≈ $41,000** |
+
+*Numbers are ball‑park; exact pricing will depend on the hosting provider (on‑prem vs. Azure Stack vs. AWS). The major cost driver is the CPU/RAM upgrade; SSD and cold storage are relatively inexpensive per GB.*
+
+---
+
+## 6. How This Meets USDA Requirements  
+
+| USDA Requirement | How the plan satisfies it |
+|------------------|---------------------------|
+| **No loss of lot‑tracking coverage** (must be continuous, especially at shift changes) | Cut‑over performed **before** the 07:00 shift change; rollback window also before 07:00. No scanner downtime during any of the three daily windows. |
+| **Retention of all scan logs for 2 years** | Tier‑3 object store is configured with **WORM (Bucket Lock) for 2 years**; logs are never deleted, only migrated to cheaper cold storage. |
+| **Auditability / Immutability** | ReFS with integrity streams + snapshots for hot/warm volumes; immutable bucket lock on cold tier; daily backup snapshots retained for 30 days. |
+| **Performance during burst sync** | 12 vCPU, 48 GB RAM, 10 GbE NIC, and NVMe hot tier give **≥ 30 % CPU head‑room** and sub‑200 ms write latency even under 200‑plus concurrent scanner connections. |
+| **Documented change control** | Detailed migration timeline, rollback plan, and a post‑migration validation window provide the required change‑management evidence for USDA auditors. |
+
+---
+
+## 7. Ongoing Monitoring & Capacity Management  
+
+| Metric | Tool | Alert Threshold | Frequency |
+|--------|------|-----------------|-----------|
+| **CPU Utilisation (VM)** | Windows Performance Monitor + System Center Operations Manager (SCOM) | > 70 % sustained for > 5 min (pre‑emptive) | 1‑minute |
+| **Disk Queue Depth (Hot SSD)** | PerfMon `Avg. Disk Queue Length` | > 2 (NVMe) | 30‑seconds |
+| **Free space – Hot** | Custom PowerShell script | < 10 % (≈ 150 GB) | Hourly |
+| **Free space – Warm** | Same script | < 15 % (≈ 150 GB) | Hourly |
+| **Cold‑tier archive latency** | CloudWatch / Azure Monitor | > 5 seconds for retrieval (audit) | Daily test |
+| **Backup job health** | Veeam / Azure Backup | Failure or missed schedule | Immediate |
+
+**Capacity Forecast Automation** – a PowerShell/SQL report that projects when the hot tier will be 90 % full based on current weekly growth, and automatically triggers a “scale‑out” of the
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Recommendations for MSP to Address Poultry Plant's IT Infrastructure
+
+#### **1. Right-Sized VM Specifications (vCPU/RAM)**
+- **Current VM Issues**:  
+  - CPU sustains **91% utilization** during 20-minute shift-change bursts (07:00, 15:00, 23:00), indicating severe contention.  
+  - RAM is **adequate** (no performance issues reported), so it should remain unchanged.  
+
+- **Right-Sized VM Specs**:  
+  - **vCPU**: Reduce from **8 to 4 vCPUs**.  
+    - **Rationale**:  
+      - CPU usage is bursty and tied to scanner re-syncs, not sustained processing.  
+      - Hyper-V CPU scheduling efficiency degrades with excessive vCPUs. 4 vCPUs will reduce contention while maintaining responsiveness during bursts.  
+      - Post-reduction, CPU usage should drop to ~70-80% during peak times (sufficient for burst handling).  
+  - **RAM**: **Keep at 32GB**.  
+    - **Rationale**: No memory pressure reported; file I/O workloads rely on cache, which is stable at this level.  
+
+- **Expected Outcome**:  
+  - Lower CPU contention during shift changes, eliminating timeout risks for scanners.  
+  - Cost savings via reduced vCPU licensing/overhead.  
+
+---
+
+#### **2. Storage Plan (2-Year Retention Compliance)**
+- **Current Storage Issues**:  
+  - **500GB SSD at 82% full** (410GB used).  
+  - **Growth rate**: 23GB/week → **1,196GB over 2 years** (104 weeks).  
+  - **Compliance mandate**: Retain all logs for 2 years; no purging allowed.  
+
+- **Storage Solution**:  
+  - **Expand SSD to 2,000GB** (2TB).  
+    - **Breakdown**:  
+
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Right-sizing: current utilization is sustained 91% CPU for ~20 minutes at each of the three
+daily shift changes -- that is a real, recurring peak, not a one-off spike, so size for it
+with headroom rather than for the calmer baseline between shift changes. Recommend moving
+from 8 vCPU/32GB to 12 vCPU/48GB. That gives roughly 33% more CPU headroom over the 91%
+observed peak (targeting sustained utilization in the 65-70% range even during the burst) so
+a slightly larger re-sync burst doesn't immediately re-saturate the VM, and the added RAM
+gives the OS more file-cache room for the scan-log writes.
+
+Storage: 82% full and growing ~23GB/week from lot-tracking logs that must be retained for 2
+years under USDA rules -- you cannot solve this by purging old logs. Instead, add a second
+attached data volume (e.g., 1TB) dedicated to lot-tracking logs older than 90 days, moved
+there by a scheduled job, so the OS/application volume stops filling while the full 2-year
+retention is preserved untouched, just relocated. Size the new volume for at least 3 years of
+growth at the current ~23GB/week rate to avoid revisiting this again soon.
+
+Timeline: because the plant cannot tolerate scanner downtime during any of the three daily
+shift changes (07:00, 15:00, 23:00) -- a coverage gap there is itself a USDA finding -- do the
+vCPU/RAM resize and the storage attach in a single maintenance window scheduled well clear of
+all three windows, e.g., mid-morning around 10:00-11:00, when the VM is furthest from the next
+shift-change burst. Snapshot the VM before the resize so you can roll back immediately if the
+hypervisor-level change causes any issue, and verify scanner sync succeeds cleanly through the
+very next shift change afterward before considering the change complete.
+
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+As an MSP, your priority is maintaining the integrity of the lot-tracking data to avoid USDA compliance failures. The current system is hitting a "performance ceiling" due to the burst re-syncs and a "storage ceiling" due to the growth rate.
+
+Here is the recommended solution.
+
+### 1. Right-Sized VM Specification
+The current 91% CPU utilization during bursts indicates that the VM is "CPU-bound" during high I/O and synchronization events. Increasing vCPU will allow the OS to handle the interrupt storm and file-locking operations occurring when multiple handhelds hit the server simultaneously.
+
+*   **vCPU: 16 vCPUs**
+    *   *Rationale:* Doubling the vCPU count provides the necessary headroom to keep peak utilization during shift changes below 50-60%, preventing the "queueing" that leads to scanner latency or timeouts.
+*   **RAM: 64GB**
+    *   *Rationale:* While 32GB may suffice for the current load, increasing to 64GB allows the Windows File Server service to utilize more "System Cache." This allows the most recent (active) scan logs to be cached in memory, significantly reducing the I/O strain on the SSD during those 20-minute burst windows.
+*   **Storage Type:** Retain SSD for the OS and active write-volume; introduce a secondary volume for archived logs.
+
+### 2. Storage Plan (Tiered Capacity Management)
+Your current 500GB SSD is insufficient for the 2-year requirement.
+
+**The Math:**
+*   **Current usage:** 410GB.
+*   **Growth rate:** 23GB/week $\times$ 104 weeks (2 years) = **2,392 GB**.
+*   **Total projected need:** 410GB (current) + 2,392GB (growth) = **2,802 GB (~2.75 TB)**.
+*   **Safety Buffer (20%):** ~560 GB.
+*   **Total Recommended Capacity:** **~3.3 TB.**
+
+**The Strategy: Tiered Storage Implementation**
+Do not simply expand the existing 500GB SSD to 3.5TB, as this is cost-inefficient and keeps all data on expensive, high-performance tiering. Instead, implement a **Hot/Cold storage architecture**:
+
+1.  **Hot Volume (Current SSD):** Keep the current 500GB SSD for the OS and the "Active" shared folder (the last 30 days of scans). This ensures the scanners have maximum speed for real-time writes.
+2.  **Cold Volume (High-Capacity HDD/SATA):** Provision a 4TB Virtual Disk (VHDX) on a cheaper, high-capacity storage tier. 
+3.  **Automation:** Set up a simple PowerShell script to move files older than 30 days from the "Hot" shared folder to an "Archive" sub-folder on the "Cold" volume. This keeps the high-performance SSD clear for the scanners while meeting the 2-year USDA retention requirement.
+
+### 3. Implementation Timeline
+To comply with the "no downtime during shift changes" constraint, we must avoid the 07:00, 15:00, and 23:00 windows and their immediate 20-minute "burst" buffers.
+
+*   **Target Window: 01:00 AM.**
+    *   This is the safest period, occurring well after the 23:00 shift-change burst and several hours before the 07:00 shift-change burst.
+
+**Execution Steps (The "Zero-Gap" Workflow):**
+1.  **T-Minus 24 Hours:** Perform a full VM-level backup.
+2.  **00:30 AM:** Monitor the server to ensure the 23:00 burst has fully subsided and CPU is idling.
+3.  **01:00 AM (The Maintenance Window):**
+    *   **Step A:** Create the new 4TB VHDX and attach it to the VM.
+    *   **Step B:** Perform a "Live Migration" (if using a cluster) or a quick "Shut Down/Start" to resize the VM resources (vCPU/RAM).
+    *   **Step C:** Configure the secondary drive and the automated archival script.
+4.  **01:30 AM:** Verification of scanner connectivity and write-speeds.
+5.  **02:00 AM:** System fully returned to production.
+
+**Summary for Client:**
+By doubling compute capacity and implementing a tiered storage model, we ensure the scanners never experience latency during shift changes, and the plant remains 100% compliant with USDA 2-year data retention mandates without the risk of running out of disk space.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**High‑level goal**
+
+1. Scale the VM so that the 91 % CPU spikes at each shift change are eliminated (or at least pushed well below 80 %) while keeping the current memory footprint and network footprint intact.  
+2. Expand and re‑architect the storage so the plant can keep 2‑year‑old logs without running out of space.  
+3. Move the upgrade out of the three critical “shift‑change” windows (07:00, 15:00, 23:00) with a clear, low‑risk deployment plan that includes rollback and verification.
+
+Below is a concrete recommendation that meets those objectives.
+
+---
+
+## 1.  VM sizing – “right‑sized”
+
+| Item | Current | Target | Rationale |
+|------|--------|--------|-----------|
+| vCPU | 8 | **12** (or 16 if you expect future growth) | CPU is 91 % for ~20 min at each shift change. A 50 % increase (12 vCPU) gives headroom for bursts and future growth. |
+| RAM | 32 GB | **48 GB** (or 64 GB if you want a safety margin) | Memory‑bound I/O (SMB caching, Hyper‑V paging) can be alleviated with extra RAM. 48 GB is a 50 % increase; 64 GB is a 100 % increase if you expect heavier workloads. |
+| Disk type | 500 GB SSD (likely SATA) | **3 TB NVMe‑SSD** | 500 GB is already 82 % full. With a 23 GB/wk growth rate, you’ll hit capacity in ~2 years. A 3 TB NVMe gives a comfortable buffer (>2 TB) and ~10× faster I/O, which helps with the burst write load at shift changes. |
+| Disk I/O | 500 GB SATA | **NVMe 2 × 1.6 TB** in a mirrored or RAID‑10 pool | 2 × NVMe offers both capacity and redundancy. If you want extra reliability, a 3‑disk RAID‑10 (1.5 TB usable) can be added later. |
+
+> **Why 12 vCPU / 48 GB RAM?**  
+> * 12 vCPU → ~70 % CPU average even during the burst.  
+> * 48 GB RAM → 3–4 × SMB cache, Hyper‑V smart‑paging, and future growth buffer.  
+> * 3 TB NVMe → 2 TB usable after a 1 TB overhead for OS + backup + OS‑level logs, leaving >2 TB for 2‑year retention.
+
+---
+
+## 2.  Storage strategy – honoring the 2‑year retention rule
+
+| Requirement | Current | Issue | Proposed Solution | Notes |
+|-------------|---------|-------|-------------------|-------|
+| 2‑year retention of scan logs | 500 GB, 82 % full | Will hit capacity in ~2 years | **Tiered storage**: <ul><li>Primary write volume: 3 TB NVMe (fast, high I/O)</li><li>Archive volume: cold‑tiered storage (e.g., Azure Blob Cool / AWS S3 Glacier Deep Archive) for logs older than 12 months</li></ul> | • 23 GB/wk * 52 weeks ≈ 1.2 TB per year. <br>• 12 months → 1.2 TB; 2 years → 2.4 TB. <br>• Move 12‑month‑old logs to the archive tier automatically. |
+| Daily I/O burst | 500 GB SSD | I/O contention during shift change | **Separate “write‑cache” volume**: Use a 1 TB NVMe cache that is written to first; sync to the primary 3 TB volume during off‑peak. | Reduces contention on the main volume and keeps latency low during bursts. |
+| Backup & disaster recovery | None | Risk of data loss | **Snapshot + off‑site replication**: Hyper‑V checkpoints (daily) + external backup to tape or cold cloud. | Keeps a 2‑year backup for compliance. |
+
+### Detailed storage architecture
+
+```
+┌────────────────────────────┐
+│ 3 TB NVMe (primary)        │  <-- 2 TB usable for logs, 1 TB for OS + buffer
+│   • SMB share for scanners │
+│   • 1 TB NVMe cache (write‑cache)  <-- write‑cache + 10‑min sync
+└────────────────────────────┘
+          |
+          | (async, 1‑hour window)
+          v
+┌────────────────────────────┐
+│ Cold‑tier archive (Cloud or tape) │  <-- 1.2 TB per year (12‑month retention)
+└────────────────────────────┘
+```
+
+- **Archive policy**: After 12 months, automatically move files to the cold tier. After 24 months, delete from the primary volume and keep only the archived copy.
+- **Compression**: Enable GZIP or LZ4 compression on the archive tier to reduce cost.
+
+---
+
+## 3.  Deployment timeline – no downtime during shift changes
+
+### 3‑step approach
+
+| Step | Action | Time | Notes |
+|------|--------|------|-------|
+| **1. Preparation** | • Spin up a new Hyper‑V VM (12 vCPU, 48 GB RAM, 3 TB NVMe).<br>• Install Windows Server (same version as production).<br>• Join to domain, configure SMB 3.1.1, apply same security policy.<br>• Copy the current SMB share path and permissions. | 1 day (outside shift changes) | Test in staging first. |
+| **2. Live migration (blue‑green)** | • While the plant operates normally, start a **live migration** of the share: <br> 1. Use `Move-VM` to move the VM to the new host (if you have a cluster). <br> 2. If not clustered, use **Hyper‑V Replication** to replicate the VM to the new host for 2 days. <br> 3. Once replication catch‑up, switch the DNS/SMB alias to point to the new VM. | 2 days (shift‑change windows avoided) | No downtime; scanners always see a live share. |
+| **3. Cut‑over & rollback** | • During a **non‑shift‑change window** (e.g., 01:00–03:00 on a weekday), **shutdown** the old VM and de‑commission it. <br>• Verify that all logs are intact, permissions are correct, and CPU usage has dropped. <br>• Keep the old VM as a backup for 24 h in case rollback is needed. | 1 hour | If anything goes wrong, restore the old VM in the same window. |
+
+#### Choosing the exact window
+
+| Candidate Window | Why it works | Potential risk |
+|-------------------|--------------|----------------|
+| 01:00–03:00 (weekday) | Well after the 23:00 shift‑change, before 07:00. | Only 2 hours of downtime – but you can extend to 4 hours if you need to copy logs. |
+| 05:00–07:00 (weekday) | Still outside 07:00 shift‑change. | Very short window – risk if you need to copy large files. |
+| 23:00–01:00 (night) | Avoids the 23:00 shift‑change? **No** – you cannot start at 23:00. | Not acceptable. |
+
+**Recommendation:** Use 01:00–03:00 on a weekday that is not a public holiday. This gives a 2‑hour window that is fully outside any shift‑change and still allows for a quick switch‑over.
+
+---
+
+## 4.  Post‑deployment validation
+
+1. **CPU & I/O monitoring:** Verify that CPU spikes are < 70 % during shift changes.  
+2. **Latency test:** Run a stress test (e.g., `iometer` or `Hyper‑V performance monitor`) to confirm sub‑200 ms latency.  
+3. **Log integrity:** Spot‑check recent lot‑tracking logs for completeness.  
+4. **Compliance audit:** Ensure that the new 3 TB volume plus archive tier still satisfies the 2‑year retention.  
+5. **Rollback plan:** Keep the old VM snapshot for 24 h; if anything goes wrong, revert and schedule a new deployment window.
+
+---
+
+## 5.  Summary
+
+| Item | Recommendation |
+|------|----------------|
+| VM spec | 12 vCPU, 48 GB RAM, 3 TB NVMe SSD |
+| Storage | 3 TB NVMe primary + 1 TB write‑cache; cold‑tier archive for 12‑month‑old logs |
+| Upgrade window | 01:00–03:00 (weekday) – no shift‑change overlap |
+| Deployment | Blue‑green live‑migration → cut‑over → rollback if needed |
+| Post‑upgrade | Verify CPU < 70 %, confirm compliance, keep backup snapshot |
+
+This plan eliminates the CPU bottleneck, gives you a 2‑year‑safe storage footprint, and guarantees that scanner downtime never falls inside any of the plant’s critical shift‑change windows.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here’s a compliant, production-safe recommendation tailored for your Hyper-V environment, USDA retention mandates, and zero-downtime shift-change requirement.
+
+---
+### 🔹 Right-Sized VM Specification
+| Resource | Recommendation | Rationale |
+|----------|----------------|-----------|
+| **vCPU** | `12 vCPU` (Reserve 90%) | Current 8 vCPU consistently hits 91% during 20-min burst windows. 12 vCPU provides ~33% headroom to absorb scanner re-sync spikes without throttling. Setting a **CPU Reserve at 90%** ensures the VM gets guaranteed cores during burst windows, preventing host resource contention. |
+| **RAM** | `16 GB` (Dynamic Memory OFF) | 32 GB is overprovisioned for a pure file-sync workload. File servers cache frequently accessed metadata in RAM, but 16 GB is sufficient for barcode scan logs. Disabling Dynamic Memory eliminates memory ballooning during I/O
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Executive Summary**  
+To eliminate the CPU saturation during shift‑change bursts and to provide a sustainable storage solution for the 2‑year USDA log retention policy, the file‑and‑scan server should be **re‑provisioned** with a modest CPU upgrade, **architected** to off‑load long‑term storage to a purpose‑built tiered‑storage system, and **migrated** during a maintenance window that never overlaps the three daily shift‑change periods (07:00, 15:00, 23:00).
+
+---
+
+## 1. Right‑Sized VM Specification  
+
+| Current Config | Recommended Config | Rationale |
+|----------------|--------------------|-----------|
+| 8 vCPU, 32 GB RAM, 500 GB SSD | **12 vCPU, 48 GB RAM, 1 TB fast‑NVMe cache (local)** | • **CPU:** The 91 % sustained utilization occurs only during the 20‑minute scanner‑re‑sync window. Adding 4 extra vCPU (≈ 50 % increase) provides headroom for peak I/O and any background de‑duplication or compression tasks. <br>• **RAM:** 48 GB gives ample space for file‑system caches, indexing of the lot‑tracking database, and concurrent scanner connections without swapping. <br>• **Local SSD/NVMe:** Keep the *active* write‑buffer (last 7‑14 days) on fast local storage to preserve the sub‑second latency required for scanner acknowledgments. The extra capacity (1 TB) also gives breathing room for temporary spikes and for a short‑term cache of files that are being moved to cold storage. |
+
+**Why not go larger?**  
+A 16 vCPU / 64 GB VM would certainly eliminate the CPU issue, but it would be an over‑provision that drives higher Hyper‑V licensing/host costs without clear benefit—CPU usage never exceeds ~95 % even during the burst, and the bottleneck is primarily *I/O latency* rather than raw compute. The 12 vCPU / 48 GB configuration strikes the best balance of performance, cost, and future‑proofing (e.g., adding a lightweight antivirus scanner or audit‑log service).
+
+---
+
+## 2. Storage Architecture that Honors the 2‑Year Retention Requirement  
+
+### 2.1 Tiered Storage Layout  
+
+| Tier | Technology | Size (initial) | Data Held | Access Pattern | Management |
+|------|------------|----------------|-----------|----------------|------------|
+| **Tier 1 – Hot Cache** | Hyper‑V host‑local NVMe (or high‑performance SSD) | **1 TB** (as part of the VM’s C: volume) | Scans from the **last 7–14 days** (the period scanners may request for “recent” lot‑tracking queries) | Direct block‑level reads/writes, sub‑ms latency | Automatic file‑age sweep (scheduled PowerShell/Robocopy) moves files older than 14 days to Tier 2. |
+| **Tier 2 – Warm Nearline** | Dedicated NAS or iSCSI appliance with 10 TB spinning‑disk (e.g., SATA 7.2 K RPM) + Erasure‑Coding/Parity for resilience | **10 TB** (expandable) | Scans **15 days → 180 days** (≈ 6 months) | Sequential bulk reads; occasional random reads for audit | Retention policy enforced by the NAS (e.g., Synology/NetApp “Retention” feature) plus a weekly integrity checksum. |
+| **Tier 3 – Cold Archive** | Object‑storage solution (e.g., Wasabi, Amazon S3 Glacier Deep Archive, or an on‑prem tape‑library with robotic indexing) | **≈ 30 TB** projected for 2 years (23 GB/week × 104 weeks ≈ 2.4 TB raw; after compression/dedup ≈ 1.2 TB, plus safety margin) | Scans **181 days → 730 days** (2 years) | Infrequent access (primarily for USDA audits). Retrieval latency acceptable if < 24 h. | Immutable write‑once‑read‑many (WORM) bucket with legal hold; periodic (quarterly) integrity verification. |
+
+### 2.2 Data‑Flow & Automation  
+
+1. **Ingestion** – Handheld scanners write directly to the VM’s *hot* volume (Tier 1).  
+2. **Nightly Migration Job** (00:30 – 01:00) – A PowerShell script runs on the Hyper‑V host:  
+   ```powershell
+   $src = "C:\ScanData\"
+   $dstWarm = "\\NAS-Scans\Warm\"
+   $dstCold = "s3://usda‑scan‑archive/"   # via AWS CLI or Wasabi SDK
+
+   # 1️⃣ Move 14‑day‑old files to Warm tier
+   Get-ChildItem $src -Recurse | Where-Object {$_.LastWriteTime -lt (Get-Date).AddDays(-14)} |
+       Move-Item -Destination $dstWarm
+
+   # 2️⃣ Move 180‑day‑old files to Cold tier (using AWS CLI / Wasabi)
+   Get-ChildItem $src -Recurse | Where-Object {$_.LastWriteTime -lt (Get-Date).AddDays(-180)} |
+       % { aws s3 cp $_.FullName $dstCold --storage-class DEEP_ARCHIVE }
+   ```
+3. **Retention Enforcement** – The NAS and object‑storage services are configured with *immutable retention* (e.g., 730‑day WORM) so that accidental deletion is prevented.  
+4. **Compression / Deduplication** – Enable inline deduplication on the NAS (many vendors support it) and consider compressing the logs (e.g., `gzip` or `7z`) before sending to Glacier‑style storage. Historical data shows a **~60 % reduction** after compression + dedup, bringing the 2‑year footprint from ~2.4 TB raw to ~1 TB stored.  
+
+### 2.3 Why This Meets the 2‑Year Requirement  
+
+* **Legal‑hold / WORM** – Tier 3 provides cryptographically verifiable, non‑alterable storage for the full 730‑day window, satisfying USDA auditability.  
+* **Performance** – Hot tier remains on NVMe, guaranteeing the sub‑second response needed for scanner acknowledgments; the migration runs **after** the nightly shift‑change window (see timeline) and well before the next 07:00 shift, ensuring no impact on production.  
+* **Scalability** – Each tier can be expanded independently. The warm NAS can be clustered for capacity growth; the object store scales virtually indefinitely with low per‑GB cost.  
+
+---
+
+## 3. Implementation Timeline (Avoiding All Shift‑Change Windows)
+
+| Phase | Dates & Times (local) | Activities | Rationale for Timing |
+|-------|-----------------------|------------|----------------------|
+| **A. Planning & Procurement** | **Week 1 (Mon – Fri)** – Business hours (09:00‑17:00) | • Finalize VM spec order (12 vCPU/48 GB) <br>• Order/ provision NAS appliance (10 TB) <br>• Set up object‑storage bucket (WORM) <br>• Write & test migration scripts in a lab VM | No production impact; done during normal hours. |
+| **B. Build & Test Staging Environment** | **Week 2 (Mon‑Fri)** – 18:00‑22:00 (post‑23:00 shift) | • Deploy new Hyper‑V VM with provisional specs <br>• Attach temporary 2 TB “sandbox” volume <br>• Load a representative 3‑month dataset (≈ 30 GB) <br>• Run functional tests: scanner write latency, migration job, retrieval from archive | Operations run after the **23:00** shift‑change, well before the next **07:00** window. |
+| **C. Cut‑over Preparation** | **Saturday, Week 3** – 02:00‑04:00 (deep night) | • Snapshot current production VM (for rollback) <br>• Freeze writes to the production share (read‑only mode) <br>• Begin **initial bulk copy** of existing 82 GB data to the new VM’s hot volume (using `robocopy /MIR`) | This window is **outside** all three shift‑change periods (07:00, 15:00, 23:00). The brief read‑only pause (< 5 min) is acceptable because scanners will be idle (no shift change). |
+| **D. Cutover (Live Migration)** | **Saturday, Week 3** – 04:30‑05:30 | • Switch DNS/Share name from old VM to new VM (or update the VM’s IP if using static mapping). <br>• Verify scanner connectivity (run a few test scans). <br>• Re‑enable full write access. | Still well before the next shift‑change (07:00). |
+| **E. Post‑Cutover Validation** | **Saturday, Week 3** – 06:00‑07:00 | • Monitor CPU (should stay < 70 % even during upcoming 07:00 burst). <br>• Confirm that the hot volume receives new scans and that the nightly migration job (scheduled for 00:30) runs cleanly. | Validation completed right before the **07:00** shift, ensuring a smooth start to the day. |
+| **F. Decommission Old VM** | **Sunday, Week 3** – 02:00‑04:00 | • Power‑off old VM, detach storage, keep snapshot for 30 days as safety net. | Night after the weekend; no shift‑change impact. |
+| **G. Ongoing Ops** | **Ongoing** | • Nightly migration (00:30‑01:30) <br>• Weekly integrity checks on warm tier <br>• Quarterly audit of cold archive (download a random sample, verify checksum) | All scheduled well before the 07:00 shift‑change. |
+
+**Total Calendar Impact:** Only **one brief read‑only pause** (≈ 5 minutes) during the deep‑night window of Saturday, which does not coincide with any of the three mandated shift‑change periods. All other activities occur either during normal business hours (no production impact) or in deep‑night windows (02:00‑04:00, 06:00‑07:00) that are safely isolated from shift changes.
+
+---
+
+## 4. Risk Mitigation & Monitoring  
+
+| Risk | Mitigation |
+|------|------------|
+| **CPU still spikes during burst** | • Keep the hot‑tier on NVMe (low latency). <br>• Enable Hyper‑V *Dynamic Memory* with a 12 vCPU *reserve* to guarantee resources. <br>• Deploy a lightweight **QoS** policy on the VM host to cap background jobs during the 20‑minute window. |
+| **Network saturation during nightly migration** | • Use a dedicated 10 GbE VLAN for VM‑to‑NAS traffic. <br>• Throttle the migration script (`--limit-rate`) to ≤ 200 MB/s, well below plant LAN capacity. |
+| **Data loss during cutover** | • Full VM snapshot before any change. <br>• Dual‑write test: scanners write to both old and new shares for a 10‑minute overlap, then verify parity. |
+| **Compliance audit failure** | • Enable immutable WORM on Tier 3. <br>• Generate monthly **audit logs** (who accessed which bucket, timestamps) and store them in a separate compliance‑log server. |
+| **Future capacity exhaustion** | • Set up **auto‑scale alerts**: when Tier 2 reaches 80 % utilization, trigger a capacity‑expansion ticket. <br>• Review growth trend quarterly; add another 10 TB NAS shelf if needed. |
+
+**Monitoring Stack (recommended):**  
+- **Hyper‑V Performance Counters** (CPU, Memory, Disk Queues) → forwarded to **Azure Monitor / Grafana**.  
+- **NAS Health Alerts** (SMART, disk temps).  
+- **Object‑Storage Billing & Retrieval Metrics** (to detect unexpected large restores).  
+
+---
+
+## 5. Cost Snapshot (High‑Level)  
+
+| Item | Approx. Annual Cost* |
+|------|----------------------|
+| Hyper‑V Host (assuming existing) | — (no extra) |
+| Additional vCPU/RAM licensing (Windows Server/SQL) | $1,200 (12 vCPU vs 8) |
+| 1 TB NVMe cache (host‑local) | $300 (enterprise SSD) |
+| 10 TB NAS appliance (hardware + support) | $4,500 |
+| Object‑storage (Wasabi @ $5.99/TB‑mo, 1 TB stored) | $72/mo ≈ $864/yr |
+| Migration script development (1 FTE week) | $3,000 (consulting) |
+| **Total incremental OPEX** | **≈ $7,000 / yr** |
+
+\*Numbers are illustrative; actual pricing depends on vendor contracts and existing license agreements.
+
+---
+
+## 6. Final Recommendation  
+
+1. **Provision a new Hyper‑V VM** with **12 vCPU, 48 GB RAM, and a 1 TB NVMe cache** for the active scan buffer.  
+2. **Implement a three‑tier storage architecture** (Hot NVMe → Warm NAS → Cold WORM object store) with automated nightly migration and immutable 2‑year retention.  
+3. **Execute the cutover** during the **Saturday 02:00‑07:00 window**, ensuring zero overlap with the 07:00, 15:00, and 23:00 shift‑change periods.  
+4. **Validate** CPU utilization and scanner latency immediately after cutover; monitor storage growth and adjust tier capacities proactively.  
+
+By following this plan, the poultry processing plant will eliminate CPU saturation during critical shift‑change bursts, guarantee uninterrupted lot‑tracking compliance, and maintain a cost‑effective, auditable 2‑year log archive.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+This server is getting pretty loaded, so we'd recommend bumping it up to a bigger VM with more
+CPU and RAM to handle the extra load, maybe double the specs to be safe. For storage, since
+it's getting full, we can clean up some of the older log files to free up space, or just add a
+bigger disk. We can schedule the upgrade for whenever there's a slow time on the plant floor.
+Should be a quick change with minimal downtime. Let us know if you'd like us to proceed.
+
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## Recommended Solution
+
+### VM Specification
+**Right-sized VM specs: 12 vCPU, 64GB RAM, 1TB SSD volume**
+
+### Storage Plan
+1. **Primary Storage**: Keep current VM with 1TB SSD (38% utilization after migration)
+2. **Archival Strategy**: Implement automated log archiving to Azure Blob Storage or network-attached storage
+3. **Retention Management**: 
+   - Keep 2 years of active logs on primary storage (1TB)
+   - Archive logs older than 6 months to secondary storage
+   - Maintain 2-year compliance for audit purposes
+
+### Implementation Timeline
+
+**Week 1: Preparation**
+- Schedule maintenance window for Monday, 10:00-14:00
+- Back up current VM and test restore
+- Configure secondary storage for log archiving
+- Update scanner configuration for archival process
+
+**Week 2: Migration**
+- Move to new 12vCPU/64GB VM with 1TB SSD
+- Validate scanner connectivity and sync performance
+- Test archiving process and verify compliance
+
+**Week 3: Optimization**
+- Monitor performance post-migration
+- Fine-tune archiving schedule and retention policy
+- Conduct final compliance verification
+
+### Key Benefits
+- **Performance**: CPU utilization reduced from 91% to <30% during shift changes
+- **Capacity**: 1TB storage provides 3+ years of retention with 20% headroom
+- **Compliance**: Automated archiving ensures USDA compliance while maintaining performance
+- **Risk Mitigation**: No downtime during shift changes, backup in place
+
+This solution addresses both performance bottlenecks and storage constraints while maintaining USDA compliance requirements.
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+To ensure **continuous compliance with USDA regulations**, **prevent scanner downtime**, and **address the performance and storage constraints** of the file-and-scan server, here is a comprehensive and risk-mitigated plan.
+
+---
+
+### ✅ **1. Right-Sized VM Specifications**
+
+#### **Current Issue**:  
+Sustained 91% CPU usage during shift changes (3x/day, ~20 min each) due to scanner sync bursts. The server is struggling with concurrent I/O and file handling, likely due to insufficient CPU headroom and possibly disk contention.
+
+#### **Recommended VM Spec**:  
+**12 vCPU, 32GB RAM, 500GB SSD (system + active logs), + 1TB separate data disk (for log retention)**
+
+##### **Justification**:
+- **vCPU**: Increase from 8 → **12 vCPU** to handle the concurrent sync burst during shift changes. The sustained 91% usage indicates CPU saturation; adding 50% more cores provides headroom for concurrent file writes, metadata operations, and any background processes (e.g., backups, AV).
+- **RAM**: 32GB is **sufficient** — no need to increase, as this workload is likely I/O and CPU bound during bursts, not memory constrained.
+- **Storage**: Keep the 500GB SSD for OS and **active working directory** (current week/month), but **add a separate 1TB data disk** dedicated to archived scan logs to:
+  - Reduce I/O contention
+  - Support long-term retention
+  - Allow independent management and growth
+
+---
+
+### ✅ **2. Storage Plan (Respecting 2-Year Retention)**
+
+#### **Current Issue**:  
+- 82% full (410GB used), growing at **23GB/week**
+- **Total growth over 2 years** = 23 GB/week × 104 weeks ≈ **2,392 GB (~2.4 TB)**
+
+> **Important**: The current 500GB disk is inadequate for 2-year retention.
+
+#### **Solution: Tiered Storage with Automated Archiving**
+
+| Component | Specification | Purpose |
+|--------|---------------|--------|
+| **Primary (500GB SSD)** | OS + current week/month scan logs | Active I/O; fast access |
+| **Secondary (2.5TB HDD or cost-optimized SSD)** | Dedicated data disk (separate VHD) | Long-term log retention |
+| **Retention Policy** | Automated script to move logs older than 30 days to secondary disk | Prevent primary disk bloat |
+
+##### **Implementation Steps**:
+1. **Attach a new 2.5TB data disk** (initially 1TB can be provisioned with auto-expand or plan for growth).
+2. **Create a folder structure**:
+   ```
+   D:\ScanLogs\Archived\YYYY\MM\
+   ```
+3. **Schedule a weekly PowerShell or Python script** (run outside shift changes) to:
+   - Move files older than 30 days from the primary share to the archive disk.
+   - Verify file integrity (hash or size check).
+   - Log all actions for audit.
+4. **Enable file compression** on archived logs (if format allows) — can save 30–50% space.
+5. **Back up both disks** via regular backup solution (Veeam, etc.), ensuring recoverability.
+
+> 💡 **Why not increase primary disk only?**  
+> Avoid performance degradation from cluttered active disk. Separating active and archival data improves performance and manageability.
+
+---
+
+### ✅ **3. Implementation Timeline (Zero Downtime, Avoids Shift Changes)**
+
+#### **Constraints**:
+- **No downtime during shift changes**: 07:00, 15:00, 23:00 (each ~20 min window of high activity)
+- Safe change window: **Daily from 00:00–06:00**, or **during mid-shift (e.g., 09:30–13:30, 17:30–21:30)** if low scanner activity confirmed
+
+#### **Recommended Change Window**:  
+**00:00–06:00 — Daily (Lowest risk)**  
+- Scanners are in use, but sync bursts are not occurring
+- USDA tracking continues, but system load is lowest
+
+---
+
+### 📅 **Implementation Plan (Over 3 Nights)**
+
+| Night | Time | Task | Duration | Risk Mitigation |
+|------|------|------|---------|----------------|
+| **Night 1**<br>(e.g., Sunday) | 00:00–01:30 | 1. Take full backup of VM<br>2. Shut down VM<br>3. Add new 1TB data disk (expandable)<br>4. Power on VM<br>5. Initialize & format disk in OS | 90 min | - Full backup before change<br>- Scheduled outside shift change windows<br>- Test disk recognition |
+| **Night 2**<br>(e.g., Monday) | 00:00–02:00 | 1. Install/configure archival script<br>2. Test with non-critical logs<br>3. Run dry run (simulate move)<br>4. Verify permissions and paths | 120 min | - Script tested in isolation<br>- No live data moved yet |
+| **Night 3**<br>(e.g., Tuesday) | 00:00–03:00 | 1. Resize VM to **12 vCPU** (requires shutdown)<br>2. Power on<br>3. Run first archival job to move logs >30 days old to new disk<br>4. Validate scanner access to share<br>5. Monitor next shift change (07:00) remotely | 180 min | - Final change requires reboot — done in safe window<br>- Monitor CPU after 07:00 sync burst |
+
+> ✅ **Post-Implementation**:
+> - Monitor CPU utilization at next 3 shift changes (07:00 for 3 days) — expect drop to 60–70%
+> - Schedule monthly log growth reviews
+> - Plan to expand secondary disk to 2.5TB within 6 months
+
+---
+
+### ✅ **Summary: Final Recommendations**
+
+| Component | Recommendation |
+|--------|----------------|
+| **VM Size** | 12 vCPU, 32GB RAM |
+| **Storage** | 500GB SSD (active) + 2.5TB data disk (archival, expandable) |
+| **Retention** | Automated move of logs >30 days old to archival disk; retain 2 years |
+| **Change Window** | 00:00–06:00 over 3 consecutive nights (e.g., Sun–Tue) |
+| **Downtime Risk** | Zero scanner downtime; brief VM downtime only during reboots (off-peak) |
+
+---
+
+### 🔔 Compliance Note:
+All changes documented and retained as part of USDA audit trail. Include:
+- VM spec change log
+- Storage growth plan
+- Archival script logic and schedule
+- Backup and recovery procedures
+
+This approach ensures **ongoing USDA compliance**, **eliminates performance bottlenecks**, and **provides a scalable, auditable data lifecycle** — all without disrupting production.
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Recommendation:**
+
+**VM Sizing:**
+
+To handle the sustained 91% CPU utilization during shift changes, I recommend upgrading the VM to:
+
+* 12-16 vCPU (to handle the increased workload and provide headroom for future growth)
+* 48-64 GB RAM (to ensure sufficient memory for the VM and reduce potential paging)
+
+This upgraded configuration will provide a comfortable buffer for the VM to handle the burst of scanner re-syncs during shift changes.
+
+**Storage Plan:**
+
+Given the 2-year retention requirement, I recommend implementing a storage solution that balances performance and capacity:
+
+* Upgrade the existing 500GB SSD volume to a larger, higher-performance SSD (e.g., 1TB or larger) to accommodate the growing log files.
+* Implement a archival storage solution (e.g., a slower, larger storage tier) for older log files that are no longer actively being accessed. This could be a separate, slower SSD or a tape library.
+* Configure a data management policy to automatically move older log files (e.g., > 6-12 months old) to the archival storage tier, freeing up space on the primary SSD volume.
+
+**Timeline and Implementation Plan:**
+
+To avoid all three daily shift-change windows, I recommend the following timeline:
+
+* Schedule the upgrade and storage changes during a maintenance window on a non-shift-change day (e.g., a weekend or a non-production day).
+* Perform the upgrade in the following phases:
+	1. **Pre-upgrade** (1-2 days before the scheduled maintenance window):
+		+ Ensure all necessary backups are taken and verified.
+		+ Prepare the new storage configuration (e.g., provision the new SSD, configure archival storage).
+	2. **Upgrade and configuration** (during the scheduled maintenance window):
+		+ Upgrade the VM to the new configuration (12-16 vCPU, 48-64 GB RAM).
+		+ Configure the new storage solution (e.g., larger SSD, archival storage tier).
+		+ Test the VM and storage configuration to ensure everything is functioning as expected.
+	3. **Post-upgrade** (after the scheduled maintenance window):
+		+ Monitor the VM and storage performance to ensure the changes have resolved the CPU and storage issues.
+
+**Specific Timeline:**
+
+Assuming a weekend maintenance window, here's a possible timeline:
+
+* Friday (before the weekend):
+	+ Complete backups and verification.
+	+ Prepare the new storage configuration.
+* Saturday (during the maintenance window):
+	+ 08:00-10:00: Upgrade the VM to the new configuration.
+	+ 10:00-12:00: Configure the new storage solution.
+	+ 12:00-14:00: Test the VM and storage configuration.
+* Sunday:
+	+ Monitor the VM and storage performance to ensure everything is functioning as expected.
+
+This plan allows for a smooth transition to the upgraded VM and storage configuration, avoiding all three daily shift-change windows and minimizing the risk of USDA compliance findings.
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Executive Summary**
+
+| Item | Current State | Recommended Change | Why it matters |
+|------|---------------|--------------------|----------------|
+| **vCPU** | 8 vCPU – 91 % sustained during the 20‑min shift‑change burst | **12 vCPU** (or 2 × 8 vCPU with Hyper‑Threading) | Gives a 50 % head‑room for the three daily sync spikes and for future growth. |
+| **RAM** | 32 GB – enough for baseline but tight when many scanners write simultaneously | **64 GB** | Prevents paging during the burst and leaves room for OS, antivirus, and log‑service caches. |
+| **Storage (primary)** | 500 GB SSD, 82 % full, growing ~23 GB / wk | **2 TB SSD** (≈ 4 × current size) for the “hot” 0‑6‑month log set | Guarantees ≥ 2 years of retention (see calculation below) and absorbs the weekly growth without hitting the 85 %‑usage “danger zone.” |
+| **Storage (cold/archival)** | None – all logs sit on the hot SSD | **2 TB SATA/ SAS HDD** (or a second SSD tier) for logs > 6 months | Provides cheap, high‑capacity space for the bulk of the 2‑year archive while keeping the hot tier responsive. |
+| **Implementation window** | Must avoid 07:00‑09:00, 15:00‑17:00, 23:00‑01:00 (shift‑change windows) | **Saturday 02:00‑04:00 local time** (or any weekday 04:00‑06:00 when no shift change is occurring) | Guarantees zero impact on production scanners and satisfies USDA “no‑downtime” rule. |
+
+Below is the full rationale, the concrete sizing numbers, a storage‑tiering plan that satisfies the 2‑year USDA retention rule, and a step‑by‑step migration timeline that can be executed without touching a single shift‑change window.
+
+---
+
+## 1. Capacity & Performance Analysis
+
+### 1.1 CPU Spike at Shift‑Change
+* **Observed pattern:** 91 % CPU for ~20 min, three times per day, when all handheld scanners re‑sync.
+* **Implication:** The current 8‑vCPU configuration is running at the edge of its capacity. A 10 % safety margin is insufficient when the plant may add a few more scanners or when the sync routine gains extra logic (e.g., new barcode formats).
+* **sizing rule of thumb:** *Peak CPU % + 30 % buffer* → 91 % + 30 % ≈ **119 %** → round up to the next whole‑core count → **12 vCPU** (or 2 × 8 vCPU with hyper‑threading, which gives 16 logical cores but is more expensive; 12 dedicated cores is the cheaper, “right‑sized” choice).
+
+### 1.2 RAM
+* The sync service, Windows OS, anti‑virus, and the file‑share services all compete for memory.  
+* When the CPU is saturated, the system also begins to page if RAM is exhausted, which would further aggravate the spike.
+* **Rule of thumb:** *Current usage + 100 % head‑room* → 32 GB + 32 GB ≈ **64 GB**.
+
+### 1.3 Storage Growth & Retention
+* **Growth rate:** 23 GB / week → 23 GB × 52 ≈ 1 196 GB / year.  
+* **Two‑year USDA requirement:** 2 × 1 196 ≈ 2 392 GB (≈ 2.4 TB).  
+* **Current usage:** 82 % of 500 GB = **410 GB** used, **90 GB** free.  
+* **Head‑room for safety:** +20 % → ≈ 2.9 TB total needed.  
+* **Solution:** Move the hot‑access logs to a **2 TB SSD** (covers the most recent ~6‑9 months) and archive anything older than 6 months to a **2 TB HDD** (or a second SSD tier) that can be expanded later. This keeps the active log folder on fast storage for the scanners while still meeting the 2‑year legal window.
+
+---
+
+## 2. Right‑Sized VM Specification
+
+| Component | Recommended Value | Rationale |
+|-----------|-------------------|-----------|
+| **vCPU** | **12** (or 2 × 8 vCPU with HT, but 12 dedicated cores is simpler) | Provides 50 %+ head‑room over the observed 91 % peak; supports future scanner additions; isolates the sync process from other services. |
+| **RAM** | **64 GB** | Prevents paging during the 20‑minute burst; leaves memory for OS, page cache, and any future services (e.g., anti‑virus, backup agents). |
+| **OS Disk** | 100 GB (thin‑provisioned) SSD | Holds Windows, applications, and the shared‑folder metadata. |
+| **Data Disk (Hot)** | **2 TB** SSD (RAID‑10 or mirrored for fault tolerance) | Holds the current 0‑6‑month lot‑tracking logs; guarantees < 85 % utilization for at least 12 months. |
+| **Data Disk (Cold)** | **2 TB** SATA/SAS HDD (RAID‑10) | Stores logs > 6 months (the bulk of the 2‑year archive). Use a symbolic link/junction to keep the same UNC path visible to scanners. |
+| **Network** | 1 GbE (or 10 GbE if the plant already uses it) – unchanged | No change needed; just ensure the NIC is not a bottleneck during the sync burst (verify with a quick ping/throughput test after migration). |
+| **Backup** | Daily Veeam/Windows Server Backup to a separate LUN (off‑site copy) | Maintains compliance‑level redundancy without affecting the primary share. |
+
+> **Note:** If the Hyper‑V host has enough physical cores, you can also consider **12 vCPU + 128 GB RAM** to future‑proof for a possible migration to a containerised or micro‑service architecture later on. The extra RAM will not hurt and gives you head‑room for Windows updates or additional services.
+
+---
+
+## 3. Storage Plan that Honors the 2‑Year Retention Rule
+
+### 3.1 Tier‑ed Architecture Overview
+
+```
+\\PM-FILES\LotTracking      ← 2 TB SSD (hot tier) – active logs (last ~6 months)
+\\PM-FILES\Archive           ← 2 TB HDD  (cold tier) – logs older than 6 months
+```
+
+*The share `\\PM-FILES\LotTracking` is the **only** path exposed to the handheld scanners.  
+*Inside that share we create two sub‑folders: `Hot` (points to the SSD volume) and `Archive` (points to the HDD volume).  
+*The scanner software is configured to write to `\\PM-FILES\LotTracking\Hot`.  
+* A scheduled PowerShell script (run nightly at 02:30 AM) moves any file older than **180 days** from `Hot` to `Archive` and updates the NTFS junction so the path remains transparent to the scanners.
+
+### 3.2 How It Meets USDA Requirements
+
+| Requirement | How the design satisfies it |
+|-------------|------------------------------|
+| **2‑year retention** | All logs are kept for **≥ 730 days**. The hot tier holds only the most recent ~180 days; the cold tier holds the remainder, still accessible via the same UNC path. |
+| **No deletion** | The script *moves* files; it never deletes them. The archival location retains them indefinitely (or until a separate archival policy is enacted). |
+| **Continuous availability** | The share stays online during the move (the script works on files older than 180 days; new files are always written to `Hot`). The move operation is I/O‑light because it’s just a rename + copy; the scanner never sees a “missing” folder. |
+| **Auditability** | All move operations are logged (`Move-LotLogs.ps1` writes to an event log entry). This satisfies USDA audit trails. |
+
+### 3.3 Capacity Calculations (including head‑room)
+
+| Tier | Size | Expected usage after 2 years | Utilisation |
+|------|------|------------------------------|-------------|
+| Hot SSD | 2 TB | Holds ~180 days × 23 GB / wk ≈ **1.1 TB** (peak) | ~55 % (comfortably below 85 % threshold) |
+| Cold HDD | 2 TB | Holds the remaining ~1 300 GB (≈ 650 GB / year × 2) | ~65 % (still well under 85 %) |
+
+If growth accelerates (e.g., additional scanners), you can add a **third 2 TB HDD** and extend the archive tier without any downtime (just add the LUN and extend the share).
+
+---
+
+## 4. Migration Timeline – Zero Impact on Shift‑Change Windows
+
+### 4.1 High‑Level Milestones
+
+| Week | Activity | Owner | Success Criteria |
+|------|----------|-------|-------------------|
+| **0** | Project kickoff – gather baseline metrics (CPU, disk I/O, free space, scanner count). | IT Ops | Documented baseline; spikes confirmed. |
+| **1** | Detailed sizing & procurement of new VM (12 vCPU/64 GB) and storage LUNs (2 TB SSD + 2 TB HDD). | Procurement / VMware team | Hardware on order; VM template ready. |
+| **2** | Build a **test VM** on a spare host; attach test LUNs; simulate scanner traffic with a load generator (e.g., JMeter or a custom PowerShell script). | Ops | CPU stays < 70 % at 150 % of expected load; no errors. |
+| **3** | Draft migration run‑book (step‑by‑step, rollback plan, verification checklist). | Project Lead | Documented, reviewed, approved by plant QA. |
+| **4** | **Cut‑over rehearsal** – perform a “dry‑run” during a low‑traffic window (e.g., a weekday 04:00‑06:00 when no shift change is happening). Verify that scanners can still write and that the move‑to‑archive script runs cleanly. | Ops | No scanner error logs; all files visible; archive migration successful. |
+| **5** | **Production Migration Window** – schedule **Saturday 02:00‑04:00** (or any weekday 04:00‑06:00 when no shift change occurs). Steps: <br>1️⃣ Take VM snapshot (backup). <br>2️⃣ Expand the VM’s vCPU/RAM in Hyper‑V (live‑scale, no reboot required). <br>3️⃣ Add the new 2 TB SSD LUN, format, mount as `E:`. <br>4️⃣ Create the `Hot` and `Archive` folders, set permissions, and recreate the `\\PM-FILES\LotTracking` share. <br>5️⃣ Move the existing logs (if any) from the old 500 GB volume to the new `Hot` folder (robocopy /MIR). <br>6️⃣ Deploy the nightly “move‑to‑archive” PowerShell script and test it manually. <br>7️⃣ Update scanner workstation configuration (if the UNC path changed) and run a quick functional test (scan a few barcodes). | Ops / Plant Production Lead | All steps complete, scanners see the share, no error messages, CPU at 30‑40 % during the test burst. |
+| **6** | **Post‑migration monitoring** – 72‑hour window of heightened alerting (CPU, disk I/O, free space). | Ops | No CPU > 85 % spikes, disk > 80 % usage, or scanner disconnects. |
+| **7** | Project close‑out – document lessons learned, update SOPs, schedule quarterly capacity reviews. | PM | Sign‑off from USDA compliance officer. |
+
+### 4.2 Why the Chosen Window Avoids All Shift‑Change Windows
+
+| Shift‑Change Window | Typical Plant Activity | Chosen Migration Window |
+|--------------------|------------------------|--------------------------|
+| 07:0
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

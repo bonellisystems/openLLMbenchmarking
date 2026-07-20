@@ -45,8 +45,20 @@ def get(battery_id: int) -> Battery:
         # import battery modules lazily so registration side-effects run
         if battery_id == 1:
             from llmtest.batteries import b1_business  # noqa: F401
+        elif battery_id == 2:
+            from llmtest.batteries import b2_toolcalling  # noqa: F401
+        elif battery_id == 3:
+            from llmtest.batteries import b3_hallucination  # noqa: F401
+        elif battery_id == 4:
+            from llmtest.batteries import b4_longcontext  # noqa: F401
         elif battery_id == 5:
             from llmtest.batteries import b5_serving  # noqa: F401
+        elif battery_id == 6:
+            from llmtest.batteries import b6_agenticcoding  # noqa: F401
+        elif battery_id == 7:
+            from llmtest.batteries import b7_harnessmatrix  # noqa: F401
+        elif battery_id == 8:
+            from llmtest.batteries import b8_harness  # noqa: F401
     if battery_id not in _REGISTRY:
         raise KeyError(f"unknown battery {battery_id}")
     return _REGISTRY[battery_id]()

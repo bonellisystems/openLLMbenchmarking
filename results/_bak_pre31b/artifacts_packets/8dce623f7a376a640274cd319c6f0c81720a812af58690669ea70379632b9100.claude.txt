@@ -1,0 +1,1154 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Review this diff for a clinic's patient-lookup API endpoint (the clinic is a HIPAA covered
+entity). Identify every security or compliance issue the diff introduces, cite the specific
+line(s) it appears on, and give corrected code for the query-construction line.
+
+```diff
+--- a/patient_lookup.py
++++ b/patient_lookup.py
+@@ -10,12 +10,14 @@ def lookup_patient(request):
+     mrn = request.args.get("mrn")
+-    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+-    cursor.execute(query, (mrn,))
++    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
++    cursor.execute(query)
++    logging.info(f"Patient lookup request: {request.args}")
+     row = cursor.fetchone()
+     return jsonify(row)
+```
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+The diff adds an ssn field and a logging line, and changes the query slightly. Might want to
+double check the query still works correctly with the f-string formatting, and maybe review
+whether logging the request args is necessary. Otherwise looks like a reasonable change to
+add more patient info to the response.
+
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Based on the provided diff, here is the review of the security and compliance issues introduced to this HIPAA-covered entity's API.
+
+### 1. SQL Injection (Security Issue)
+The diff introduces a critical vulnerability by using Python f-strings to interpolate the user input (`mrn`) directly into the SQL statement. This allows an attacker to manipulate the `mrn` parameter to execute arbitrary SQL commands, potentially compromising the integrity and confidentiality of the patient database.
+
+*   **Cited Line:**
+    ```python
+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
+    ```
+
+### 2. HIPAA "Minimum Necessary" Violation (Compliance Issue)
+The diff adds the `ssn` (Social Security Number) field to the `SELECT` query. Under HIPAA (45 CFR § 164.501), Social Security Numbers are classified as "Unique Identifiers" (UI). Retrieving and returning SSNs via an API response is a violation of the **Minimum Necessary** Standard unless the request is specifically authorized by the patient or strictly required for a valid business purpose (which is rarely the case for a generic lookup API).
+
+*   **Cited Line:**
+    ```python
+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
+    ```
+    *(Specifically the inclusion of `ssn` in the selection list)*
+
+### 3. Exposure of PHI in Application Logs (Compliance/Security Issue)
+The diff introduces logging of `request.args`. Since the `mrn` parameter is passed in the URL arguments, this line will log the MRN into the application log files. MRNs are Protected Health Information (PHI). Storing or transmitting PHI in unencrypted logs creates a risk of uncontrolled disclosure, violating HIPAA's requirements for protecting electronic PHI.
+
+*   **Cited Line:**
+    ```python
+    logging.info(f"Patient lookup request: {request.args}")
+    ```
+
+---
+
+### Corrected Code for Query Construction
+
+To fix the SQL injection vulnerability and remove the sensitive `ssn` field (to adhere to the Minimum Necessary rule), the query construction line must revert to a parameterized query format.
+
+**Corrected Query Line:**
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+```
+
+**Required Execution Update:**
+Because the query now uses a placeholder (`%s`), the execute call in the diff must be reverted to pass the parameters securely, as shown below:
+
+```python
+# Secure execution with parameterized query
+cursor.execute(query, (mrn,))
+```
+
+*Additionally, the logging statement should be updated to exclude the MRN (e.g., `logging.info("Patient lookup initiated.")`).*
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+# Security & Compliance Review — `patient_lookup.py` Diff
+
+This diff introduces **four critical security and compliance violations** for a HIPAA-covered entity. Each is detailed below with affected line(s) and a corrected implementation.
+
+---
+
+## 1. **SQL Injection (Critical)**
+
+**Affected Lines:** 12, 13
+
+| Diff Line | Issue |
+|-----------|-------|
+| 12 | `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` — uses f-string interpolation instead of parameterization. |
+| 13 | `cursor.execute(query)` — omits the parameter tuple entirely, completing the injection vector. |
+
+An attacker can supply a crafted MRN (e.g., `' OR 1=1 --`) to execute arbitrary SQL. This is a textbook SQL injection vulnerability.
+
+**Corrected line:**
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))
+```
+
+---
+
+## 2. **Unnecessary Exposing of SSN (HIPAA — Minimum Necessary Rule)**
+
+**Affected Line:** 12
+
+| Diff Line | Issue |
+|-----------|-------|
+| 12 | `ssn` is added to the `SELECT` list. Under HIPAA §164.502(b), covered entities must disclose only the **minimum necessary** PHI for the purpose. SSN is among the most sensitive PHI fields and is not required for a basic patient lookup. |
+
+Returning SSN unnecessarily violates the Minimum Necessary Standard and increases the risk of downstream data breaches.
+
+**Corrected line:**
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+```
+
+---
+
+## 3. **Logging of Request Arguments Containing PHI (HIPAA — Safeguards Rule)**
+
+**Affected Line:** 14
+
+| Diff Line | Issue |
+|-----------|-------|
+| 14 | `logging.info(f"Patient lookup request: {request.args}")` — logs the full query string, which includes the `mrn`. MRNs are patient identifiers and constitute PHI under HIPAA when linked to other health-related data. Unencrypted PHI in logs creates audit and breach-exposure risk. |
+
+**Corrected line:**
+```python
+logging.info("Patient lookup request received")
+```
+
+---
+
+## 4. **Potential PHI Leakage in JSON Response (HIPAA — Safeguards Rule)**
+
+**Affected Line:** 16
+
+| Diff Line | Issue |
+|-----------|-------|
+| 16 | `return jsonify(row)` — returns the DB row directly. If `ssn` were still selected (see Issue 2), it would be exposed in the response body. Even without SSN, returning raw DB columns without field-level access control is a control gap. |
+
+**Corrected line:**
+```python
+result = dict(row) if row else None
+if result:
+    return jsonify(result)
+else:
+    return jsonify({"error": "Patient not found"}), 404
+```
+
+---
+
+## Summary Table
+
+| # | Issue | Severity | HIPAA Impact | Affected Line(s) |
+|---|-------|----------|--------------|------------------|
+| 1 | SQL Injection | Critical | No direct HIPAA clause, but breach of PHI storage | 12, 13 |
+| 2 | Unnecessary SSN in SELECT | High | §164.502(b) — Minimum Necessary | 12 |
+| 3 | PHI in application logs | Medium | §164.312(a)(2)(iv) — Audit Controls | 14 |
+| 4 | Uncontrolled response payload | Medium | §164.312(a)(2)(iv) — Integrity | 16 |
+
+---
+
+## Corrected `patient_lookup.py`
+
+```python
+def lookup_patient(request):
+    mrn = request.args.get("mrn")
+    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+    cursor.execute(query, (mrn,))
+    logging.info("Patient lookup request received")
+    row = cursor.fetchone()
+    result = dict(row) if row else None
+    if result:
+        return jsonify(result)
+    return jsonify({"error": "Patient not found"}), 404
+```
+
+This version restores parameterized queries, respects the Minimum Necessary rule, avoids logging PHI, and safely handles missing records.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## Summary of the new security & HIPAA compliance problems  
+
+| New line (after the diff) | Issue | Why it matters for a HIPAA‑covered entity |
+|---------------------------|-------|-------------------------------------------|
+| **13** `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | **SQL‑Injection risk** – the MRN value is interpolated directly into the statement. An attacker who can control the `mrn` query‑parameter can inject arbitrary SQL (e.g., `mrn=123' OR '1'='1`). | HIPAA requires **reasonable and appropriate safeguards** (45 CFR §164.306). An injectable query can lead to unauthorized disclosure of PHI. |
+| **14** `cursor.execute(query)` | **Continues the injection vulnerability** – the database driver receives a fully‑built string, so no parameter‑binding safety is applied. | Same as above. |
+| **13** (the same line) also **adds `ssn` to the SELECT list** | **Unnecessary exposure of PHI** – Social Security Numbers are a “limited data set” element that must be protected with the same rigor as any other PHI. They should only be returned when the caller is explicitly authorized. | HIPAA’s Minimum Necessary Standard (45 CFR §164.502(b)) requires you to limit the amount of PHI disclosed to the smallest amount needed. |
+| **15** `logging.info(f"Patient lookup request: {request.args}")` | **Logging of PHI** – `request.args` contains the MRN (and potentially other identifiers). Writing that to a log file creates an audit trail that may be stored unencrypted, accessible to anyone with file‑system access, and retained longer than required. | Logs that contain PHI are themselves PHI and must be protected (45 CFR §164.310). Unrestricted logging violates the Minimum Necessary rule and may breach the Security Rule. |
+| **Return of `row` via `jsonify(row)`** (unchanged but now includes `ssn`) | **Potential over‑exposure in API response** – the API now returns SSN to the client without any check that the caller is permitted to see it. | If the caller is not a “covered entity” or does not have a Business Associate Agreement (BAA) covering SSN, this is a direct HIPAA violation. |
+
+> **Bottom line:** The diff replaces a safe, parameterised query with a string‑interpolated one, adds a highly sensitive field to the result set, and writes PHI to the application log—all of which break the HIPAA Security Rule and open the system to classic SQL‑injection attacks.
+
+---
+
+## Corrected code (focus on the query‑construction line)
+
+Below is a **secure, HIPAA‑compliant** rewrite of the three lines that were added. It restores parameter binding, removes the SSN from the default result set, and eliminates unsafe logging of PHI. (If the business requirement truly is to return SSN, it must be gated behind an explicit authorization check – that logic is shown in comments.)
+
+```python
+def lookup_patient(request):
+    mrn = request.args.get("mrn")
+
+    # ------------------------------------------------------------------
+    # 1️⃣ Use a parameterised query – prevents SQL injection
+    # 2️⃣ Do NOT select SSN unless the caller is explicitly authorised
+    # ------------------------------------------------------------------
+    # Example of a minimal‑necessary query (no SSN)
+    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+    cursor.execute(query, (mrn,))
+
+    # If SSN is required for a privileged user, do a separate, audited
+    # check (pseudo‑code):
+    # if request.user.has_permission('view_ssn'):
+    #     query = "SELECT id, name, dob, ssn FROM patients WHERE mrn = %s"
+    #     cursor.execute(query, (mrn,))
+    # ------------------------------------------------------------------
+
+    # 3️⃣ Log only non‑PHI information, or mask the MRN
+    logging.info(
+        "Patient lookup request received – endpoint: %s",
+        request.path
+    )
+
+    row = cursor.fetchone()
+    return jsonify(row)
+```
+
+### What changed compared with the diff
+
+| Line in diff | Fixed version | Explanation |
+|--------------|---------------|-------------|
+| `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | `query = "SELECT id, name, dob FROM patients WHERE mrn = %s"` | Uses a **parameter placeholder** (`%s`) instead of f‑string interpolation, removing the injection vector, and removes `ssn` from the default result set. |
+| `cursor.execute(query)` | `cursor.execute(query, (mrn,))` | Supplies the MRN as a bound parameter, the correct way for the DB‑API to safely escape data. |
+| `logging.info(f"Patient lookup request: {request.args}")` | `logging.info("Patient lookup request received – endpoint: %s", request.path)` | Logs only the endpoint path (non‑PHI). If you need to audit the MRN, store it in a **protected, encrypted audit log** rather than the general application log. |
+
+### Optional: Returning SSN only for authorised callers
+
+If the application *must* sometimes return the SSN, do **not** embed it in the same query used for all callers. Instead:
+
+```python
+if request.user.has_permission('view_ssn'):
+    query = "SELECT id, name, dob, ssn FROM patients WHERE mrn = %s"
+    cursor.execute(query, (mrn,))
+else:
+    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+    cursor.execute(query, (mrn,))
+```
+
+* Ensure that `request.user` is derived from a **strong authentication & authorization** mechanism (e.g., OAuth2 with scopes, SAML, or a JWT containing verified claims).  
+* Log the privileged access **separately** in a tamper‑evident audit log that is encrypted at rest and retained according to your organization’s HIPAA retention schedule.
+
+---
+
+## Checklist for future changes to this endpoint
+
+| ✅ Item | Why it matters |
+|--------|----------------|
+| **Always use parameterised queries** (no string concatenation or f‑strings) | Prevents SQL injection → satisfies 45 CFR §164.306(a). |
+| **Apply the Minimum Necessary Standard** – only select columns that the caller is allowed to see | Reduces exposure of PHI, especially SSN. |
+| **Never log raw request parameters that contain PHI** (MRN, name, DOB, SSN) | Logs are PHI; they must be protected, encrypted, and retained only as long as necessary. |
+| **Audit privileged accesses separately** (e.g., when SSN is returned) | Required by the HIPAA Security Rule and for breach detection. |
+| **Validate input types** (e.g., ensure MRN matches expected pattern) before using it, even with bound parameters. | Adds defense‑in‑depth and helps catch malformed data early. |
+| **Return data via a schema that masks or redacts PHI if the client does not need it** | Supports the “least privilege” principle. |
+| **Ensure the database connection uses TLS** and that the DB user has the least privileges (SELECT only on the needed columns). | Aligns with 45 CFR §164.312(e) – transmission security. |
+
+By reverting to a parameterised query, removing the SSN from the default result set, and cleaning up the logging, the endpoint returns to a state that meets both **technical security** and **HIPAA compliance** requirements.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Security and Compliance Issues**
+
+The provided diff introduces several security and compliance issues:
+
+1. **SQL Injection Vulnerability** (line 14)
+   * The diff changes the query construction from a parameterized query to a string-formatted query, which allows an attacker to inject malicious SQL.
+   * **HIPAA Compliance Issue**: This vulnerability could lead to unauthorized access to protected health information (PHI).
+
+2. **Sensitive Data Exposure** (line 14)
+   * The query now retrieves the patient's social security number (SSN), which is highly sensitive and protected under HIPAA.
+   * **HIPAA Compliance Issue**: Exposing SSN without proper authorization and safeguards is a HIPAA violation.
+
+3. **Insecure Logging** (line 15)
+   * The diff adds a logging statement that includes the entire `request.args`, which may contain sensitive information (e.g., patient identifiers).
+   * **HIPAA Compliance Issue**: Logging sensitive information without proper safeguards can lead to unauthorized access to PHI.
+
+**Corrected Code**
+
+To address these issues, use the following corrected code for the query-construction line:
+
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))
+```
+
+Additionally, consider the following recommendations:
+
+* Only retrieve necessary fields, and avoid exposing sensitive information like SSN.
+* Implement proper authorization and authentication mechanisms to ensure only authorized personnel can access patient information.
+* Use secure logging practices, such as logging only necessary information and avoiding sensitive data exposure.
+
+**Updated Code Snippet**
+
+```python
+def lookup_patient(request):
+    # ...
+    mrn = request.args.get("mrn")
+    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+    cursor.execute(query, (mrn,))
+    logging.info(f"Patient lookup request for MRN: {mrn}")
+    row = cursor.fetchone()
+    # Only return necessary fields
+    return jsonify({"id": row[0], "name": row[1], "dob": row[2]})
+```
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Security and Compliance Issues Identified:
+
+1. **SQL Injection Vulnerability**  
+   - **Lines**: `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`  
+   - **Issue**: Directly embedding user input (`mrn`) into the SQL string using f-strings allows attackers to manipulate the query. For example, if `mrn = "1'; DROP TABLE patients; --"`, it could execute malicious commands.  
+   - **Compliance Impact**: Violates HIPAA’s Security Rule (§164.306(a)(2)) by failing to implement safeguards against unauthorized access to PHI (Protected Health Information).  
+
+2. **Exposure of Sensitive Data (SSN)**  
+   - **Lines**: `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`  
+   - **Issue**: The query now retrieves the `ssn` column (Social Security Number), which is highly sensitive PHI. The original query excluded SSN for security, and its inclusion unnecessarily exposes PHI.  
+   - **Compliance Impact**: Violates HIPAA’s Minimum Necessary Rule (§164.502(b)), requiring PHI access to be restricted to the minimum needed for the intended purpose.  
+
+3. **Logging of Sensitive Data**  
+   - **Lines**: `logging.info(f"Patient lookup request: {request.args}")`  
+   - **Issue**: Logs the entire request payload (including `mrn` and any other parameters) in plaintext. If `mrn` or other parameters contain PHI, this exposes sensitive information in logs.  
+   - **Compliance Impact**: Violates HIPAA’s Privacy Rule (§164.502(d)) by failing to protect PHI during logging.  
+
+---
+
+### Corrected Code for Query-Construction Line:  
+**Original Vulnerable Line:**  
+```python
+query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
+```
+
+**Corrected Secure Line:**  
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+```
+
+### Explanation of Fixes:  
+1. **Prevent SQL Injection**:  
+   - Use **parameterized queries** (`%s`) instead of f-strings. This ensures user input is treated as a literal value, not executable code.  
+   - **Result**: Mitigates SQL injection risk.  
+
+2. **Exclude Sensitive Data**:  
+   - Removed `ssn` from the `SELECT` clause to align with the "minimum necessary" principle.  
+   - **Result**: Reduces exposure of PHI.  
+
+3. **Address Logging Issue (Additional Fix Needed):**  
+   - The added logging line must be **removed** to prevent logging sensitive data. Replace it with:  
+     ```python
+     logging.info(f"Patient lookup request for MRN: {mrn}")  # Log only non-sensitive data
+     ```  
+     Or omit logging entirely if PHI logging is prohibited.  
+
+---
+
+### Full Corrected Function:  
+```python
+def lookup_patient(request):
+    mrn = request.args.get("mrn")
+    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"  # Fixed: Parameterized query, no SSN
+    cursor.execute(query, (mrn,))
+    # logging.info(f"Patient lookup request: {request.args}")  # REMOVED: Logs sensitive data
+    # logging.info(f"Patient lookup request for MRN: {mrn}")  # Alternative: Log only non-sensitive data
+    row = cursor.fetchone()
+    return jsonify(row)
+```
+
+### Key Compliance Takeaways:  
+- **Parameterize all database queries** to prevent SQL injection.  
+- **Exclude non-essential PHI** (e.g., SSN) from results.  
+- **Avoid logging raw request data** containing PHI.  
+- Audit the entire codebase for similar vulnerabilities.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Two real issues introduced by this diff:
+
+1. SQL injection (lines with the new `query =` and `cursor.execute(query)`): the original
+   code used a parameterized query -- `"SELECT id, name, dob FROM patients WHERE mrn = %s"`
+   passed to `cursor.execute(query, (mrn,))`, with `mrn` supplied as a separate parameter so
+   the DB driver escapes it safely. The diff replaces this with an f-string that interpolates
+   the raw, user-controlled `mrn` value directly into the SQL text (`WHERE mrn =
+   '{mrn}'`) and executes it with no parameters at all. Any `mrn` value containing a single
+   quote and additional SQL (e.g. `' OR '1'='1`) is now executed as part of the query --
+   textbook SQL injection, and a total loss of the query's ability to distinguish data from
+   code.
+
+2. PHI over-exposure: the SELECT list gained `ssn`. This is a patient-lookup endpoint;
+   previously it never returned SSN at all. Returning SSN from a general lookup call is a
+   HIPAA minimum-necessary violation -- the endpoint should return only what its stated
+   purpose requires, and nothing in the diff's context establishes that this endpoint's
+   callers need SSN.
+
+Secondary, lower-severity finding: the added `logging.info(f"Patient lookup request:
+{request.args}")` logs raw, unvalidated request parameters. Depending on what ends up in
+`request.args` over time, this risks writing identifying search terms into logs that may not
+have the same access controls as the patient database itself -- worth flagging, though less
+severe than the injection and SSN issues.
+
+Corrected query-construction line:
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))
+```
+(and drop `ssn` from the SELECT list entirely, since the endpoint didn't expose it before).
+
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## Security and Compliance Issues
+
+### 1. **SQL Injection Vulnerability** (Lines 13-14)
+**Issue**: Direct string interpolation in SQL query creates severe SQL injection risk
+**Location**: Line 13 where `mrn` is embedded directly into the query string
+**Impact**: Malicious MRN values could execute arbitrary SQL commands
+
+### 2. **HIPAA Compliance Violation** (Line 13)
+**Issue**: Including SSN in the query response violates Minimum Necessary standard
+**Location**: Line 13 where `ssn` is selected in the query
+**Impact**: Exposes protected health information (PHI) unnecessarily
+
+### 3. **Insecure Logging** (Line 15)
+**Issue**: Logging request arguments may expose PHI in log files
+**Location**: Line 15 where `request.args` is logged
+**Impact**: Could lead to PHI exposure in logs
+
+## Corrected Code
+
+```python
+# Corrected query construction (line 13)
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))
+
+# Corrected logging (line 15) - remove sensitive data
+logging.info("Patient lookup request processed")
+```
+
+## Additional Security Recommendations
+
+1. **Implement proper input validation** for MRN format
+2. **Add authentication/authorization** checks before patient lookup
+3. **Use parameterized queries** exclusively (already correct in the fix)
+4. **Implement audit logging** without PHI exposure
+5. **Consider implementing rate limiting** to prevent abuse
+6. **Add proper error handling** to avoid information leakage
+7. **Review access controls** to ensure only authorized users can perform lookups
+
+The primary fix addresses the SQL injection vulnerability by using parameterized queries and removes the SSN from the response to comply with HIPAA's minimum necessary requirement.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here is a breakdown of every security and HIPAA compliance issue introduced by the diff, with line citations and regulatory references.
+
+### 🔴 Issue 1: SQL Injection Vulnerability
+**Lines:** 
+`+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`
+`+    cursor.execute(query)`
+**Risk:** The original code used parameterized queries (`%s` + tuple binding). The diff replaces this with f-string interpolation and drops the parameter tuple from `cursor.execute()`. An attacker can inject arbitrary SQL (e.g., `mrn=' OR 1=1 --`), bypassing access controls and exfiltrating or modifying PHI.
+**HIPAA Reference:** Violates 45 CFR § 164.312(a)(1) (Access Control) and § 164.312(e)(1) (Transmission Security/Integrity) by enabling unauthorized manipulation of the patient database.
+
+### 🔴 Issue 2: Unauthorized PHI Exposure (SSN)
+**Line:** `+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`
+**Risk:** The query now explicitly returns the patient's Social Security Number. SSN is far more sensitive than MRN/DOB and significantly increases breach severity and identity-theft liability. APIs should only return the minimum PHI necessary for their function.
+**HIPAA Reference:** Violates 45 CFR § 164.502(b) & § 164.514(d) (Minimum Necessary Standard). Returning SSN requires documented business justification, appropriate authorization, and additional safeguards (e.g., encryption in transit, stricter access policies).
+
+### 🔴 Issue 3: Unprotected Audit Logging of PHI
+**Line:** `+    logging.info(f"Patient lookup request: {request.args}")`
+**Risk:** Logs raw `request.args`, which will contain the unredacted MRN and potentially other sensitive query parameters in plaintext. Audit logs must themselves be treated as PHI-adjacent and protected against unauthorized access.
+**HIPAA Reference:** Violates 45 CFR § 164.312(b) (Audit Controls) and § 164.312(e)(2)(ii) (Integrity). Unencrypted audit trails containing PHI violate the Safeguards rule and could trigger a reportable breach under 45 CFR § 164.408.
+
+### 🔴 Issue 4: Missing Input Validation / None Handling
+**Lines:** `mrn = request.args.get("mrn")` → `f"WHERE mrn = '{mrn}'"`
+**Risk:** If `mrn` is `None` (e.g., missing query param), the query becomes `WHERE mrn = 'None'`, which may return unexpected rows or mask injection attempts. HIPAA requires integrity controls to ensure PHI is only accessed via validated, well-formed requests.
+**HIPAA Reference:** 45 CFR § 164.312(a)(1) requires reasonable safeguards to limit access to PHI only to authorized persons.
+
+---
+
+### ✅ Corrected Code
+
+```python
+# Query-construction line (corrected)
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))  # Must also restore parameter binding
+```
+
+**Notes on the correction:**
+1. Reverts to parameterized queries to eliminate SQL injection.
+2. Removes `ssn` per the Minimum Necessary Standard. If the endpoint genuinely requires SSN, it must be gated by explicit authorization, returned over TLS with strict access controls, and logged via a separate, redacted audit trail.
+3. The `logging.info(...)` line should be replaced with a sanitized audit entry: `logging.info(f"Audit: patient_lookup attempted by user_id={user_id} mrn_hash={hashlib.sha256(mrn.encode()).hexdigest()}")` to satisfy HIPAA audit controls without exposing plaintext PHI.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+The provided diff introduces **multiple critical security and compliance issues** that violate **HIPAA regulations** and **secure coding best practices**, especially because the clinic is a **HIPAA-covered entity**. Below is a breakdown of all issues, their locations, and how to correct them.
+
+---
+
+### ✅ **Summary of Issues**
+
+| Issue | Severity | Line(s) | Description |
+|------|--------|--------|-----------|
+| 1. SQL Injection Vulnerability | Critical | 13 | Use of string formatting and inline user input in SQL query |
+| 2. Excessive Data Disclosure (PII) | Critical | 13 | Returning SSN (a highly sensitive identifier) unnecessarily |
+| 3. Logging of Sensitive Request Data | Critical | 14 | Logging full request.args may expose MRN, SSN, or other PII |
+| 4. Use of f-strings for SQL Queries | High | 13 | Insecure query construction |
+| 5. Missing Input Validation | Medium | 11 | No validation of `mrn` parameter |
+
+---
+
+### 🔴 **1. SQL Injection Vulnerability**  
+**Line 13**:  
+```python
+query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
+```
+
+- **Issue**: Using f-strings to embed user input (`mrn`) directly into the SQL query string enables **SQL injection**. An attacker could supply a malicious MRN like `123' OR '1'='1` to dump all patient records.
+- **Violation**: This violates **HIPAA §164.312(a)(1)** (Technical Safeguards - Access Control) and secure coding standards (OWASP Top 10: Injection).
+- **Fix**: Use **parameterized queries** with placeholders.
+
+---
+
+### 🔴 **2. Excessive Data Disclosure – SSN in Query**  
+**Line 13**:  
+```python
+SELECT id, name, dob, ssn FROM patients ...
+```
+
+- **Issue**: Social Security Number (SSN) is **Protected Health Information (PHI)** under HIPAA (45 CFR §160.103). It should **not be included unless absolutely necessary** for the use case. Exposing SSN increases breach risk and violates the **Minimum Necessary Standard** (HIPAA §164.502(b)).
+- **Fix**: Remove `ssn` from the query unless explicitly required and authorized.
+
+---
+
+### 🔴 **3. Logging of Sensitive Request Data**  
+**Line 14**:  
+```python
+logging.info(f"Patient lookup request: {request.args}")
+```
+
+- **Issue**: `request.args` may contain sensitive data like MRN (which is PHI). Logging PHI violates **HIPAA §164.514(a)** (Standards for Privacy of Individually Identifiable Health Information) and can lead to unauthorized access if logs are not protected.
+- **Fix**: Avoid logging request parameters containing PHI. If logging is needed, log only metadata (e.g., timestamp, endpoint) or anonymized/non-identifying data.
+
+---
+
+### 🔴 **4. Use of f-strings for SQL Queries**  
+**Line 13**:  
+```python
+query = f"SELECT ..."
+```
+
+- **Issue**: Even if input were sanitized, **f-strings should never be used to build SQL queries**. This is a well-known anti-pattern. Parameterized queries are the correct approach.
+- **Fix**: Use parameterized queries with proper placeholders.
+
+---
+
+### 🟡 **5. Missing Input Validation**  
+**Line 11**:  
+```python
+mrn = request.args.get("mrn")
+```
+
+- **Issue**: No validation that `mrn` exists or is properly formatted. While not directly exploitable here, it's a best practice to validate inputs to reduce attack surface and improve reliability.
+- **Fix**: Add validation and sanitization.
+
+---
+
+### ✅ **Corrected Code**
+
+```python
+--- a/patient_lookup.py
++++ b/patient_lookup.py
+@@ -10,12 +10,14 @@ def lookup_patient(request):
+     mrn = request.args.get("mrn")
+-    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+-    cursor.execute(query, (mrn,))
++    if not mrn:
++        return jsonify({"error": "MRN is required"}), 400
++
++    # Use parameterized query; exclude SSN (PHI) unless explicitly needed
++    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
++    cursor.execute(query, (mrn,))
++
++    # Avoid logging sensitive data
++    logging.info("Patient lookup request received")
+     row = cursor.fetchone()
+     return jsonify(row)
+```
+
+---
+
+### ✅ **Additional Recommendations**
+
+1. **Encrypt Logs**: If logs must include identifiers, ensure log files are encrypted at rest and access-controlled (HIPAA §164.312(a)(2)(iv)).
+2. **Audit Access**: Log access to patient data in an audit trail without including PHI.
+3. **Role-Based Access Control (RBAC)**: Ensure only authorized personnel can perform lookups.
+4. **Mask SSN in All Outputs**: Never return SSN unless required, and even then, only in secure contexts with proper authorization.
+
+---
+
+### ✅ **References**
+
+- **HIPAA Security Rule**: 45 CFR §164.306, §164.312 (Technical Safeguards)
+- **HIPAA Privacy Rule**: 45 CFR §164.502, §164.514 (Minimum Necessary, PHI)
+- **OWASP Top 10**: A03:2021 – Injection
+- **NIST SP 800-52**: Guide to Secure Web Applications
+
+---
+
+### ✅ Final Note
+
+The original diff introduces **critical vulnerabilities** in a healthcare context. Always:
+- Use **parameterized queries**
+- Follow the **principle of least privilege and minimum necessary**
+- **Never log PHI**
+- **Validate and sanitize inputs**
+
+These are not just best practices—they are **legal requirements** under HIPAA.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Identified Security & Compliance Issues
+
+| Issue | Affected Line(s) in Diff | Explanation |
+|-------|--------------------------|-------------|
+| **1. SQL Injection Vulnerability** | `+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`<br>`+    cursor.execute(query)` | Direct string interpolation (`f-string`) bypasses database parameterization. The user-supplied `mrn` value is injected raw into the SQL string, allowing attackers to break out of the query, bypass authentication, exfiltrate data, or execute arbitrary database commands. |
+| **2. HIPAA Minimum Necessary Rule Violation** | `+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | The diff adds `ssn` to the `SELECT` clause. Social Security Numbers are highly sensitive PHI. Under 45 CFR § 164.502(b) (Minimum Necessary Rule), a covered entity must make reasonable efforts to limit PHI retrieved, displayed, or transmitted to the minimum necessary to accomplish the intended purpose. Unless explicitly justified and documented, returning SSN violates HIPAA. |
+| **3. Unsanitized PHI Logging** | `+    logging.info(f"Patient lookup request: {request.args}")` | `request.args` contains the `mrn` parameter, which is PHI. Logging raw PHI in plaintext violates HIPAA Security Rule requirements for audit controls and data handling (45 CFR § 164.312(a)(2)(ii)). PHI in logs must be strictly access-controlled, encrypted, and ideally redacted or hashed to prevent exposure during log aggregation, rotation, or debugging. |
+
+---
+
+### Corrected Query-Construction Line
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+```
+*(Reverts to the safe parameterized placeholder and removes `ssn` to comply with the Minimum Necessary Rule.)*
+
+---
+
+### 🔑 Additional Required Fixes (Context)
+While only the query-construction line was requested, the diff breaks the secure execution pattern and logging hygiene. To fully remediate:
+```python
+# 1. Revert to parameterized execution (prevents SQLi)
+cursor.execute(query, (mrn,))
+
+# 2. Sanitize logging (HIPAA compliance)
+logging.info(f"Patient lookup requested: mrn=[REDACTED]")
+# OR log a non-PII correlation ID / hashed MRN
+```
+These changes restore the original secure pattern, enforce HIPAA's Minimum Necessary principle, and prevent PHI leakage into audit trails.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Security / HIPAA compliance problems introduced by the diff**
+
+| # | Issue | Where it appears in the diff (original line numbers) | Why it is a problem (HIPAA / security) |
+|---|-------|---------------------------------------------------|----------------------------------------|
+| 1 | **String‑concatenated / f‑string SQL query** – directly interpolates user‑supplied `mrn` | `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` (line **+13** in the diff) | Allows **SQL injection**. An attacker can supply a malicious `mrn` value (e.g., `'; DROP TABLE patients;--`) that will be executed by the DB engine. HIPAA‑covered entities must protect PHI from unauthorized access or alteration, and injection can lead to data breach or data loss. |
+| 2 | **SELECT of protected health information (PHI) that is not needed** – adds `ssn` column | Same line **+13** | The `ssn` field is considered **high‑risk PHI**. Returning it to the caller (or even reading it internally) without a strict access control increases the attack surface and violates the “minimum necessary” rule of the Privacy Rule. |
+| 3 | **Logging of raw request arguments** – `logging.info(f"Patient lookup request: {request.args}")` | `logging.info(f"Patient lookup request: {request.args}")` (line **+15**) | `request.args` contains the MRN (and possibly other identifiers). Logging it in clear text can expose PHI to logs that may be accessed by many systems, violating the “access control” and “audit control” requirements of HIPAA. |
+| 4 | **No input validation / sanitisation** – the code assumes `mrn` is always present | Implicit in the diff (the query is built regardless of `mrn`) | If the client omits `mrn`, `mrn` will be `None` and the query will become `WHERE mrn = ''`, returning *all* rows or causing an error. This can lead to unintended data exposure or denial‑of‑service. |
+| 5 | **Parameterisation missing** – using a literal string instead of a DB‑parameter placeholder | Same line **+13** (the `cursor.execute(query)` call) | The query is executed with the interpolated value (`cursor.execute(query)`). This bypasses the DB‑driver’s automatic escaping and makes the code vulnerable to the injection described in #1. |
+| 6 | **Returning raw DB row without sanitisation** – `return jsonify(row)` | Not highlighted in the diff but implied by the flow | If the row contains PHI (e.g., SSN) that the caller should not see, it will be exposed in the JSON response. |
+
+---
+
+## Corrected code – query‑construction line
+
+The only line that directly builds the SQL statement is:
+
+```python
+query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"
+```
+
+**Fix:** Use a **parameterised query** and **remove any unnecessary PHI columns** (e.g., `ssn`). Also, never interpolate user input.
+
+```python
+# Corrected query‑construction line (replaces the vulnerable line)
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+# The %s placeholder will be bound safely by the DB‑API cursor.execute call below.
+```
+
+**Full corrected snippet (including safe logging and basic validation):**
+
+```python
+def lookup_patient(request):
+    # ------------------------------------------------------------------
+    # 1. Validate that the required MRN parameter is present
+    # ------------------------------------------------------------------
+    mrn = request.args.get("mrn")
+    if not mrn:
+        # Return a controlled error – no PHI leaked, no DB query executed
+        return jsonify({"error": "Missing MRN parameter"}), 400
+
+    # ------------------------------------------------------------------
+    # 2. Build a *parameterised* query – never interpolate user input
+    # ------------------------------------------------------------------
+    query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+
+    # ------------------------------------------------------------------
+    # 3. Execute safely – the DB driver will handle escaping / binding
+    # ------------------------------------------------------------------
+    cursor.execute(query, (mrn,))
+
+    # ------------------------------------------------------------------
+    # 4. Retrieve and return only the columns we are authorised to expose
+    # ------------------------------------------------------------------
+    row = cursor.fetchone()
+    if row:
+        # Optionally filter out columns that contain PHI before returning
+        return jsonify({"id": row[0], "name": row[1], "dob": row[2]})
+    else:
+        return jsonify({"error": "Patient not found"}), 404
+
+    # ------------------------------------------------------------------
+    # 5. Logging – avoid logging raw request arguments that may contain PHI
+    # ------------------------------------------------------------------
+    logging.info("Patient lookup initiated (endpoint: %s)", request.path)
+```
+
+### What changed?
+
+| Change | Reason |
+|--------|--------|
+| `query = f"...'{mrn}'"` → `query = "SELECT id, name, dob FROM patients WHERE mrn = %s"` | Eliminates string interpolation → prevents SQL injection. |
+| Removed `ssn` from the SELECT list | Limits exposure of high‑risk PHI; follows the “minimum necessary” principle. |
+| Added validation `if not mrn:` | Guarantees the endpoint does not query the DB when no identifier is supplied. |
+| `cursor.execute(query, (mrn,))` | Uses the DB‑API parameter placeholder (`%s`) and passes the value separately, letting the driver safely escape/bound it. |
+| Logging message changed from `request.args` to a generic path log | Prevents PHI (like MRN) from being written to logs. |
+| Returned only the needed fields (`id`, `name`, `dob`) and wrapped them in a JSON dict | Guarantees that no extra PHI is inadvertently sent back. |
+
+These adjustments restore **confidentiality**, **integrity**, and **availability** of the patient‑lookup service while staying compliant with HIPAA’s Security Rule (access controls, audit logs, secure transmission, and safe handling of PHI).
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Security / compliance issues introduced by the diff**
+
+| # | Issue | Why it matters for a HIPAA‑covered entity | Line(s) where it appears |
+|---|-------|-------------------------------------------|--------------------------|
+| 1 | **SQL‑injection vulnerability** – the `mrn` value is interpolated directly into the query string without any escaping or parameterisation. An attacker could supply a malicious `mrn` (e.g. `12345' OR '1'='1`) and alter the query, potentially exposing all patient rows. | Lines +5‑6 (`query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` and `cursor.execute(query)`) |
+| 2 | **Unnecessary disclosure of PHI (Social Security Number)** – the original query returned only `id`, `name`, and `dob`. The new query adds `ssn`, which is highly sensitive protected health information. Adding `ssn` to the response surface violates the principle of minimum necessary data unless there is a documented, role‑based justification. | Line +5 (`... dob, ssn FROM patients ...`) |
+| 3 | **Logging of raw request arguments (PII)** – `logging.info(f"Patient lookup request: {request.args}")` writes the entire query‑string dictionary (which now includes `mrn` and could include other parameters) to the logs. Logs are often stored long‑term and may be accessed by personnel not covered by the same need‑to‑know restrictions, creating a risk of inadvertent PHI exposure. | Line +7 (`logging.info(f"Patient lookup request: {request.args}")`) |
+| 4 | **Missing parameter binding for the cursor execution** – after switching to a string‑formatted query, the developer removed the tuple argument from `cursor.execute`. While this does not directly cause a new vulnerability beyond #1, it is a regression: the original code used safe parameter binding, and the new code abandons that protection. | Line +6 (`cursor.execute(query)`) |
+
+*(The removal of the original parameterised query on lines ‑5‑6 is not itself a new issue, but it enables the injection risk above.)*
+
+---
+
+### Corrected code for the query‑construction line
+
+To eliminate the SQL‑injection risk **and** adhere to the “minimum necessary” principle, the query should:
+
+1. **Use parameterised SQL** (the DB API’s placeholder – `%s` for many drivers, `?` for others).  
+2. **Return only the fields that are required for the lookup** (the original `id`, `name`, `dob`).  
+3. **Log only the identifier needed for audit, not the full request dictionary** (optional correction, shown below).
+
+```python
+# Corrected query construction (line +5)
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))
+```
+
+**Optional logging fix** (to avoid logging the entire request, which may contain PII):
+
+```python
+# Safer logging (line +7)
+logging.info("Patient lookup request received for MRN: %s", mrn)
+```
+
+With these changes:
+
+* The `mrn` value is safely bound, eliminating SQL injection.  
+* No unnecessary `ssn` column is requested, respecting the minimum‑necessary data rule.  
+* Logging no longer writes the full request object, reducing the risk of inadvertent PHI exposure.  
+
+These modifications bring the endpoint back into alignment with HIPAA’s Security Rule (especially the *Access Control*, *Audit Controls*, and *Integrity* provisions) and the Privacy Rule’s “minimum necessary” standard.
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+This diff introduces several critical security vulnerabilities and HIPAA compliance violations.
+
+### Identified Issues
+
+| Issue Type | Line(s) | Description |
+| :--- | :--- | :--- |
+| **SQL Injection** | `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | The code switches from using parameterized queries to Python f-strings for query construction. This allows an attacker to supply a malicious `mrn` (e.g., `' OR '1'='1`) to bypass logic and dump the entire database. |
+| **HIPAA: Minimum Necessary Standard** | `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | By adding `ssn` to the `SELECT` statement, the code violates the HIPAA "Minimum Necessary" rule. An API endpoint performing a patient lookup should only return the specific data fields required for that specific business function. |
+| **PHI/PII Leakage in Logs** | `logging.info(f"Patient lookup request: {request.args}")` | This logs the entire `request.args` object. Since the `mrn` (Medical Record Number) is a type of Protected Health Information (PHI), writing it in plain text to application logs violates HIPAA security rules regarding the protection of PHI and increases the risk of data exposure via log management systems. |
+
+---
+
+### Corrected Code
+
+To fix the SQL injection and adhere to the principle of least privilege (removing the SSN), the query construction should return to using parameterized placeholders.
+
+**Corrected query-construction line:**
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+```
+
+**Note on full remediation:** To fully secure this function, you must also revert the `cursor.execute` line to pass the parameter separately and remove or sanitize the `logging.info` line to prevent PHI leakage.
+
+```python
+# Fully remediated version of the logic:
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))  # Use parameterization to prevent SQLi
+logging.info(f"Patient lookup request for MRN hash: {hash(mrn)}") # Log an identifier, not the PHI itself
+```
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Security / HIPAA‑compliance issues introduced in the diff**
+
+| # | Line in the diff | Issue | Why it matters |
+|---|-------------------|-------|----------------|
+| 1 | `+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | **SQL Injection** | The MRN value is interpolated directly into the SQL string. If a caller supplies a value that contains quotes, semicolons, or other SQL syntax, they can alter the query, read data they shouldn’t have, or even drop tables. This is the classic injection vector. |
+| 2 | `+    query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"` | **Unnecessary PII exposure** | The query now returns the SSN column. SSN is *Highly Sensitive Personal Health Information (PHI)* under HIPAA. Returning it for a simple “lookup” increases the risk of accidental disclosure. |
+| 3 | `+    cursor.execute(query)` | **Missing parameter binding** | Because the query is a plain string, the driver can’t apply the same protections that would be provided by a parameterised query (e.g., escaping, type‑checking). |
+| 4 | `+    logging.info(f"Patient lookup request: {request.args}")` | **Logging sensitive data** | `request.args` may contain the MRN (and possibly other query parameters). Logging that directly at the *info* level could expose PII in log files that may be read by developers, ops staff, or auditors. HIPAA requires that PHI not be written to logs unless absolutely necessary and protected. |
+| 5 | `+    logging.info(f"Patient lookup request: {request.args}")` | **No log sanitisation** | Even if the log entry is filtered or rotated, the raw request arguments may remain in the file, creating a persistence risk for PHI. |
+
+> **Summary** – The diff introduces an injection vulnerability, exposes additional PHI (SSN) that is not required, and logs potentially sensitive query parameters. All of these violate HIPAA’s requirements for *minimum necessary* data handling and *secure coding* best practices.
+
+---
+
+### Corrected query‑construction line
+
+Below is a safe, HIPAA‑compliant way to build the query.  
+* It uses a **parameterised query** to eliminate injection.  
+* It omits the SSN unless you have a business need for it; if you do, keep the same pattern but remember the PHI‑handling implications.  
+
+```python
+# Safe, parameterised query – only returns non‑PII fields
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+
+# If SSN must be returned, keep the same pattern but add a policy to limit its use
+# query = "SELECT id, name, dob, ssn FROM patients WHERE mrn = %s"
+cursor.execute(query, (mrn,))
+```
+
+**Optional: avoid logging raw request arguments**
+
+```python
+# Log only non‑PII metadata
+logging.info(f"Patient lookup requested for MRN: {mrn}")
+```
+
+By switching back to the original parameterised form (or a similarly safe version) and removing the SSN column and raw logging, the endpoint now complies with HIPAA’s “minimum necessary” principle and protects against SQL injection.
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Security and Compliance Issues
+
+1.  **SQL Injection Vulnerability**
+    *   **Location:** `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`
+    *   **Risk:** The code has reverted from a parameterized query (`%s` passed to `execute`) to string interpolation. This allows an attacker to manipulate the `mrn` input to execute arbitrary SQL commands, potentially compromising database integrity or exposing data. This is a critical technical safeguard failure under HIPAA Security Rule § 164.312(a)(2)(i).
+
+2.  **Unauthorized PHI Disclosure (SSN)**
+    *   **Location:** `query = f"SELECT id, name, dob, ssn FROM patients WHERE mrn = '{mrn}'"`
+    *   **Risk:** The query now explicitly retrieves the Social Security Number (`ssn`). SSN is sensitive Protected Health Information (PHI). Returning this data violates the HIPAA **Minimum Necessary Rule** (§ 164.502(b)), which requires limiting access to the minimum amount of PHI necessary to accomplish the intended purpose.
+
+3.  **Logging of Protected Health Information**
+    *   **Location:** `logging.info(f"Patient lookup request: {request.args}")`
+    *   **Risk:** This line logs the full query arguments (`request.args`), which may contain the `mrn` (PHI). Storing unencrypted PHI in plain-text application logs violates HIPAA Security Rule requirements for **Audit Controls** (§ 164.312(b)) and **Information Access Management** (§ 164.308(a)(1)(ii)(D)), creating an unnecessary exposure point for unauthorized personnel.
+
+---
+
+### Corrected Query-Construction Code
+
+To fix the SQL injection and remove the SSN, the query must be parameterized and restricted to necessary fields. Note that `cursor.execute` must also be updated to accept the parameters tuple to fully mitigate the SQLi risk.
+
+```python
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+# Ensure execution uses parameters: cursor.execute(query, (mrn,))
+```
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here are the security and compliance issues identified in the diff, followed by the corrected code.
+
+### 1. Critical Security Issue: SQL Injection
+*   **Lines:** 13 and 14
+*   **The Issue:** The code switched from a parameterized query (Line 13 old: `WHERE mrn = %s`) to string formatting (Line 13 new: `WHERE mrn = '{mrn}'`). By interpolating the user input (`mrn`) directly into the SQL string, the application is vulnerable to SQL Injection. An attacker could manipulate the `mrn` parameter to bypass authentication, extract the entire database, or drop tables.
+*   **Impact:** Total compromise of the database and patient data.
+
+### 2. HIPAA Compliance Issue: Violation of "Minimum Necessary" Standard / Unnecessary PHI Exposure
+*   **Lines:** 13
+*   **The Issue:** The new query explicitly selects `ssn` (Social Security Number). Under HIPAA regulations, covered entities must implement the "Minimum Necessary" standard, meaning they should only access or disclose the minimum Protected Health Information (PHI) required to perform the task. Returning the SSN for a standard patient lookup (which typically only requires ID, Name, and DOB) is likely unnecessary and creates an excessive security risk if the endpoint is compromised or intercepted.
+*   **Impact:** HIPAA violation; increased risk of identity theft.
+
+### 3. Security/Privacy Issue: PII/PHI Leakage in Logs
+*   **Lines:** 15
+*   **The Issue:** The code logs `request.args`. Since `mrn` is retrieved from `request.args`, logging the arguments will likely write the patient's MRN (a unique identifier) to the application logs. Logs are often aggregated in centralized logging systems which may have less stringent access controls than the production database. Logging unmasked patient identifiers violates HIPAA Privacy and Security rules regarding the confidentiality of PHI.
+*   **Impact:** Potential PHI exposure via log management systems; HIPAA audit failure.
+
+---
+
+### Corrected Code
+
+Here is the corrected code for the query construction and execution, addressing the SQL injection and removing the SSN exposure.
+
+```python
+# Line 13 (Corrected): Use parameterized query and remove SSN from selection
+query = "SELECT id, name, dob FROM patients WHERE mrn = %s"
+
+# Line 14 (Corrected): Pass parameters as a tuple to prevent injection
+cursor.execute(query, (mrn,))
+```
+
+*Note: Line 15 should also be updated to avoid logging sensitive query parameters (e.g., `logging.info("Patient lookup initiated")` instead of logging the raw args).*
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

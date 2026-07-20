@@ -1,11 +1,32 @@
-suite_version: suite-v2.0.0-shakedown   # re-declared suite-v2.0.0 at P8 freeze tag
-condition_order: [runtime, spec, kv, ctx, cond, conc]
+suite_version: suite-v2.0.0
+# B8 additive keys (harness, task, attempt_id, execution_provenance_sha)
+# appended at the END -- canonical_condition (schema.py) only emits keys
+# present in a given battery's own parts dict, so B1-B7's condition strings
+# (whose parts never contain these four keys) are byte-identical whether
+# these keys exist here or not. See llmtest/batteries/b8_harness.py module
+# docstring for the full row-identity rationale (task-7-brief.md).
+condition_order: [runtime, spec, kv, ctx, cond, conc, sysp, temp, toolfmt,
+                  harness, task, attempt_id, execution_provenance_sha]
 condition_vocab:
   runtime: [fork, ollama, vllm]
   spec: [ngram32, off]
   kv: [f16, q8, q4]
-  cond: [PEAK, SUSTAINED32K, B1, SELFTEST]
+  cond: [PEAK, SUSTAINED32K, B1, B2, B3, B4, B6, B7, B8, SELFTEST]
   conc: [1, 2, 4, 8, 16, 32, 64, 128]
+  # B7 harness/config-matrix dimensions (see b7: block below + b7-report.md
+  # for the interpretation note -- TESTPLAN 5.7 names an external-harness
+  # axis reserved for P6; sysp/temp/toolfmt are this ticket's buildable
+  # substitute axis, reusing cond=B7 as the battery marker).
+  sysp: [default, minimal]
+  temp: [t0, tdef]
+  toolfmt: [native, prompted]
+  # B8 harness axis -- OpenCode only today (Task 4); Hermes/WSL2 and a
+  # LiteLLM-fronted Claude Code land later (see b7-report.md's P6 note).
+  # `task`/`attempt_id`/`execution_provenance_sha` are NOT enumerated here
+  # (unlike the small closed vocab above) -- they're open-ended identifiers
+  # (a task id, a uuid/session id, a sha256 hex digest), the same reason
+  # task_id itself never appears in condition_vocab for any other battery.
+  harness: [opencode]
 n_runs_judged: 3
 n_runs_harness: 2
 b1:
@@ -33,3 +54,173 @@ b1:
                 finance, operations, helpdesk, knowledge_mgmt, legal_compliance,
                 data_analytics, project_mgmt, hr_people_ops]
   industries: [life_sciences, oil_gas_energy, legal, financial_services, aec, manufacturing_ag, healthcare_compliance, generic_smb, public_sector, msp_internal]
+b2:
+  n_runs: 3
+  # 40960, not b1's 32768: axis-7's long-context task deliberately targets
+  # 32k+ tokens of filler HISTORY, which needs headroom left over for the
+  # tool schemas + final prompt + response inside the same context window
+  # (condition label "40k" mirrors this, distinct from b1's "32k").
+  ctx: 40960
+  # Tool-calling responses are typically short (a JSON call or two, maybe a
+  # brief follow-up sentence) -- much smaller than B1's prose budgets.
+  max_tokens: 2000
+  # Documents the canonical TESTPLAN 5.2 axis numbering that
+  # llmtest/batteries/b2_fixtures.py's det_checks keys ("axisN_...") and
+  # needs_judging routing use. Not consumed by code -- reference only.
+  axes: {1: schema_adherence, 2: tool_selection, 3: parallel_calls,
+         4: chained_calls, 5: error_recovery, 6: abstention,
+         7: long_context_call, 8: faithfulness}
+  judged_axes: [5, 8]
+  # Cohort quorum for the AXIS-5/8 JUDGED packets (spec 1.6 / P1-T7): a
+  # packet scores once >= this many roster models are present, rather than
+  # requiring the full roster like B1's cohorts -- missing members are
+  # recorded on the map (missing_models), never a silently smaller
+  # anonymous rebuild. Default = today's full non-quant-arm roster count
+  # (16 models -- same set llmtest/judging/runner.py::resolve_cohort_models
+  # returns), i.e. this default preserves run_pending's pre-knob strict
+  # behavior (it used to hardcode b2_quorum=len(cohort_models)). Treat this
+  # as a FLOOR: lower it for a partial-roster judging wave (mirrors
+  # b1.cohort_models); llmtest/judging/runner.py::run_pending's b2_quorum
+  # param defaults to len(cohort_models) whenever this key is absent.
+  quorum: 16
+b3:
+  n_runs: 3
+  # Shares B1's ctx (headroom for reasoning-model hidden thinking before the
+  # answer, same P3 Task 12 lesson) so the ServerManager can config-match
+  # reuse an already-running B1 endpoint (TESTPLAN 7.3).
+  ctx: 32768
+  # Hedge/refuse answers are short; a hallucinating model that plays along
+  # with a false premise or drafts a fabricated-artifact walkthrough can run
+  # long — "standard" covers that without inflating every trivial control
+  # task's budget.
+  max_tokens_by_class: {short: 1500, standard: 3000, long: 5000}
+  # Controlled vocabulary for fixture 'category' (validate_cmd lint + preflight
+  # per-category selftest rows). closed_domain_control is the anti-gaming
+  # check: a real, knowable fact, so an always-refuse model doesn't look
+  # perfectly calibrated.
+  categories: [closed_domain_control, abstention_unanswerable, false_premise,
+               fabricated_citation, fabricated_package, fabricated_endpoint,
+               multi_turn_consistency]
+  industries: [life_sciences, oil_gas_energy, legal, financial_services, aec, manufacturing_ag, healthcare_compliance, generic_smb, public_sector, msp_internal]
+b4:
+  # TESTPLAN 5.4: 256k target, 128k floor. n_runs=1 -- long-context prefill is the
+  # dominant cost (§8.1: "1.5-2h/model, dominated by prefill"); N>=3 belongs to judged
+  # tasks (§4), not deterministic needle-retrieval checks.
+  n_runs: 1
+  # 16k/64k/128k/256k. Tiers beyond a model's claimed_ctx are dropped for that model
+  # (not run at all) UNLESS every configured tier exceeds claimed_ctx, in which case
+  # the model's own max rides as a single row instead of zero rows for that model
+  # (TESTPLAN 5.4: "tested at their max ... tagged fits-short-context, not skipped").
+  ctx_tiers: [16384, 65536, 131072, 262144]
+  # Headroom subtracted from the requested ctx before padding the document, so the
+  # instructions + planted needles + question + generation budget all still fit
+  # inside the endpoint's context window.
+  reserve_tokens: 1024
+  max_tokens: 300
+  # CAPABILITY sweep (TESTPLAN 5.4 "Capability" bullet): every non-quant-arm roster
+  # model gets this single kv arm across its claimed_ctx-filtered ctx tiers, pruned
+  # to arms that physically fit on T1 (b4_longcontext._arm_fits_estimate) -- this is
+  # what keeps the full-roster grid from planning launches that would never boot.
+  standard_kv: q8
+  # KV-QUANT QUALITY sweep (TESTPLAN 5.4 "KV-quant quality cost" bullet): the
+  # designated model(s) get the FULL kv_sweep across claimed_ctx-filtered tiers,
+  # NOT physically-fit-pruned -- infeasible arms still get PLANNED (trusting
+  # TESTPLAN's explicit intent to empirically discover the boundary) but are tagged
+  # fits-short-context as an advisory rather than silently dropped.
+  kv_sweep: [f16, q8, q4]
+  kv_sweep_models: [qwen3.6-35b-a3b]
+  # TESTPLAN 5.4 full-attention spot-check: "qwen3.6-27b-dense (32k, f16-vs-q4, NIAH
+  # slice, ~15 min) -- the primary model's ~75%-linear attention makes it the LEAST
+  # KV-quant-sensitive architecture on the roster; the q8 standard must not be
+  # generalized from the easy case." Named point rides through unfiltered (same as
+  # kv_sweep_models) even though the physical-fit estimate predicts the f16 arm is
+  # tight on T1 (~25.7 GB vs 23.5 GB usable) -- flagged fits-short-context, not pruned.
+  kv_spot_check:
+    model: qwen3.6-27b-dense
+    ctx_tiers: [32768]
+    kv_sweep: [f16, q4]
+b6:
+  n_runs: 3
+  # ctx/token sizing follows the same P3 Task 12 lesson as b1 (§ above): reasoning
+  # models burn output budget on hidden thinking before ever emitting the fenced
+  # code block, so headroom is generous rather than tight. ctx_label is the
+  # condition-string token (matches b1's "32k" pattern); ctx is the actual
+  # request_endpoint() context length.
+  ctx: 32768
+  ctx_label: "32k"
+  # scratch tasks (full program/CLI) get more budget than bugfix tasks (one
+  # corrected file/snippet, usually smaller than a from-scratch build).
+  max_tokens_by_track: {scratch: 12000, bugfix: 9000}   # raised (P8): reasoning models truncated at 6000/4000 (38 empty rows, all predicted_n==max_tokens)
+b7:
+  # TESTPLAN 5.7 reproducibility line: "N>=2 for harness cells (B7)".
+  n_runs: 2
+  ctx: 8192
+  max_tokens: 6000   # raised from 900 (P8): reasoning models burned 900 on hidden thinking (228 empty rows); 6000 fits per-slot 8192 with a short probe
+  # signal_agreement_vs_baseline pass threshold (fraction of shared
+  # content-signal pass/fail results that must match the baseline cell's
+  # result for the variant cell to count as "not degraded").
+  agreement_threshold: 0.8
+  probes_dir: suite/b7_harnessmatrix/probes
+  # Harness/config sensitivity matrix: ONE-FACTOR-AT-A-TIME from a fixed
+  # "baseline" reference cell (TESTPLAN 5.7 Control: "harness is the only
+  # variable" -- extended here to config knobs, isolating each dimension's
+  # individual effect rather than a full factorial cross). Battery code
+  # (llmtest/batteries/b7_harnessmatrix.py::_matrix_cells) reads this block
+  # generically: baseline cell + one variant cell per non-baseline value per
+  # dimension. Adding a dimension or a 3rd value here grows the matrix
+  # without code changes.
+  matrix:
+    dimensions:
+      sysp:
+        values: [default, minimal]
+        baseline: default
+      temp:
+        values: [t0, tdef]
+        baseline: t0
+      toolfmt:
+        values: [native, prompted]
+        baseline: native
+      spec:
+        # "off" MUST be quoted -- YAML 1.1 boolean-literal folding (PyYAML
+        # default resolver) turns a bare `off` into Python False, silently
+        # breaking canonical_condition (same gotcha B5 avoids by hardcoding
+        # the string "off" in Python rather than sourcing it from YAML).
+        values: [ngram32, "off"]
+        baseline: ngram32
+b8:
+  # Real-harness battery (Part 2 Phase 2): OpenCode (Task 4) driving models
+  # through the suite/b8_harness/task-*.yaml manifests, scored by the
+  # anti-gaming completion oracle (llmtest.harness.tasks.run_oracle), not
+  # static content signals. `models` is a deliberately SMALL subset (not
+  # the full non-quant-arm roster B1/B6/B7 use) -- each replicate is a
+  # real, possibly slow, external-process harness run against a live
+  # endpoint. Grow this list once the OpenCode/Hermes/LiteLLM-CC pipeline
+  # has been live-smoked against more of the roster.
+  models: [gpt-oss-20b]
+  harnesses: [opencode]
+  # >=5 per (model, harness, task) cell -- physical harness runs are noisy
+  # (real subprocess, real timing, real tool-call variance); replicate_n is
+  # the LOGICAL repeat axis (rides in run_n), orthogonal to attempt_id (the
+  # PHYSICAL-execution axis, rides in condition) -- see b8_harness.py.
+  replicates: 5
+  ctx: 32768
+  kv: q8_0
+  # Per-run budgets an execute() call enforces. wall_clock_s is plumbed
+  # straight into the adapter's own timeout (OpenCodeAdapter's
+  # `wall_clock_s` constructor arg overrides its per-task budgets.
+  # wall_clock_s fallback). tokens/steps are recorded here for provenance
+  # and future enforcement -- the OpenCode adapter interface (Task 4) does
+  # not yet accept a token/step cutoff of its own; each task manifest's own
+  # `budgets.steps`/`budgets.tokens` (llmtest.harness.tasks.B8Task) are the
+  # authoritative per-task figures today.
+  budgets:
+    wall_clock_s: 180
+    tokens: 4000
+    steps: 20
+  # In-Sandbox execution seam (see b8_harness.py module docstring's SANDBOX
+  # SEAM note + llmtest.harness.sandbox): OpenCode runs on the HOST today
+  # because the pinned sandbox image has no Node runtime. Flipping this to
+  # true before that image exists makes execute() raise NotImplementedError
+  # loudly rather than silently keep running on the host.
+  sandbox:
+    enabled: false

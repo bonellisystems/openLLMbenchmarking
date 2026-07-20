@@ -1,0 +1,535 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Cybersecurity -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+Severity is triaged correctly against the actual impact described, response actions follow containment before eradication before recovery, and any CVE, CWE, or ATT&CK reference used is real and correctly applied (never invented). Evidence-preservation is called out before disruptive remediation, and breach-notification or compliance timelines are flagged when the scenario implies regulated or sensitive data. The answer is calibrated about what needs live forensics versus what can be assessed from the facts given.
+Example character: a triaged action list that isolates the affected system first, preserves logs, then patches, with the real CVE cited only where it is genuinely relevant.
+
+## 7 -- Strong
+The response plan is sound and correctly ordered (containment before eradication), and is directly usable by a responder. References to standards or CVEs are generic rather than specific, or evidence-preservation/notification timing gets only a light mention. Severity is judged reasonably even if not formally scored.
+Example character: a correct incident-response sequence that never names a specific CVE or ATT&CK technique even where the prompt supports one.
+
+## 5 -- Adequate
+The advice reads as a generic security checklist (patch systems, enable MFA, monitor logs) that is directionally correct but not prioritized by the actual severity or tailored to the specific incident described.
+Example character: a list of general hardening steps with no sense of which one matters most given the described exposure.
+
+## 3 -- Weak
+The response gets the ordering wrong (patches or removes an attacker's access before containing them), misjudges severity, or pads the answer with boilerplate ("enable a firewall") that does not engage the specific scenario.
+Example character: jumps straight to "eradicate the malware" on an active intrusion without isolating the host first.
+
+## 0 -- Unusable
+Cites a fabricated CVE, CWE, or CVSS score as if verified, or recommends actively dangerous steps (disable logging, do not isolate an active breach) as sound practice. Empty or off-task response.
+
+## Unit-specific red flags (deduct hard)
+- Fabricated CVE, CWE, or CVSS identifiers presented as real.
+- Eradication or patching recommended before containment on an active incident.
+- Recommending disabling logging or otherwise destroying evidence.
+- Ignoring implied breach-notification or regulatory timelines when sensitive data is involved.
+- Treating every finding as equally critical with no severity differentiation.
+
+## Unit-specific excellence markers
+- Severity correctly triaged and prioritized against the described impact.
+- Containment-before-eradication-before-recovery ordering respected.
+- Real, correctly-applied CVE/CWE/ATT&CK references where relevant.
+- Evidence-preservation explicitly called out.
+- Notification or compliance timeline awareness when data exposure is implied.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+You are the on-call SOC analyst for an MSP client: a veterinary diagnostics laboratory that
+runs contract drug-safety trials for animal-health pharmaceutical sponsors. The lab's EDR
+and Windows event log pipeline just surfaced the following excerpt. All timestamps are UTC.
+
+  2026-02-11 03:14:22 WIN-LABDC01 Security 4625 Failed logon: user=svc_backup,
+    source=10.20.4.187, logon_type=3, status=0xC000006A
+  2026-02-11 03:14:26 WIN-LABDC01 Security 4625 Failed logon: user=svc_backup,
+    source=10.20.4.187, logon_type=3, status=0xC000006A
+  2026-02-11 03:15:03 WIN-LABDC01 Security 4624 Successful logon: user=svc_backup,
+    source=10.20.4.187, logon_type=3
+  2026-02-11 03:16:47 WIN-LIMS02 Sysmon 1 ProcessCreate: parent=svchost.exe,
+    image=C:\Windows\Temp\psexesvc.exe, user=svc_backup,
+    commandline="psexesvc.exe -accepteula \\WIN-LIMS02 -u svc_backup cmd.exe"
+  2026-02-11 03:17:12 WIN-LIMS02 Sysmon 3 NetworkConnect: image=cmd.exe,
+    dest=198.51.100.44, dest_port=443
+
+WIN-LIMS02 is the Laboratory Information Management System (LIMS) server that stores
+confidential, unpublished trial results for the lab's pharmaceutical sponsors. The MSP's
+written escalation policy states: "P1 = confirmed lateral movement into a system holding
+confidential trial data, 1-hour SLA. P2 = suspicious authentication activity only, no
+confirmed lateral movement, 4-hour SLA." Triage this alert: name the MITRE ATT&CK
+technique(s) represented in the log excerpt, state which SLA tier applies and why, and state
+the single containment action that should happen FIRST, before anything else.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+### MITRE ATT&CK Techniques
+| Log Event | Technique(s) | Rationale |
+|-----------|--------------|-----------|
+| `03:14:22` & `03:14:26` Failed logons (status `0xC000006A`) | **T1110.001** – Brute Force: Password Guessing | Repeated credential failures against `svc_backup` with wrong-password status before success. |
+| `03:16:47` PsExec execution on WIN-LIMS02 | **T1021.002** – Lateral Movement: SMB<br>**T1570** – Lateral Tool Transfer | PsExec deployed via SMB using compromised `svc_backup` credentials to spawn a remote `cmd.exe` session. |
+| `03:17:12` `cmd.exe` → outbound 443 | **T1071.004** – Application Layer Protocol: Web Protocols<br>**T1105** – Ingress Tool Transfer | `cmd.exe` establishing HTTPS callback to external IP; classic C2/post-exploitation beacon pattern. |
+| PsExec spawning `cmd.exe` | **T1059.001** – Command and Scripting Interpreter: Command Line | Parent-child chain `svchost.exe → psexesvc.exe → cmd.exe` indicates command-line execution in post-exploitation. |
+
+### SLA Tier: **P1 (1-hour SLA)**
+**Why:** The escalation policy defines P1 as `confirmed lateral movement into a system holding confidential trial data`. The log sequence demonstrates unambiguous lateral movement: credential compromise → successful network logon → PsExec/SMB execution → remote `cmd.exe` session on `WIN-LIMS02`, which is explicitly documented as the LIMS server storing confidential, unpublished trial results. The outbound 443 callback confirms active post-exploitation, moving this well beyond "suspicious authentication only" (P2).
+
+### First Containment Action (BEFORE anything else)
+**Network-isolate / quarantine `WIN-LIMS02`** via EDR network-disable, switch port shutdown, or NAC/802.1X VLAN quarantine.
+
+**Rationale:** This is the single first step because it immediately severs the active C2 channel (`cmd.exe` → `198.51.100.44:443`) and halts further lateral spread to adjacent lab systems. Credential disablement, forensic imaging, and sponsor notification are critical follow-on steps, but network isolation must occur first to stop active data exfiltration and command-and-control communication before any other containment or investigation actions.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**MITRE ATT&CK Techniques**
+- **T1110 (Brute Force)** – Rapid successive 4625 events followed by a 4624 for `svc_backup`
+- **T1078 (Valid Accounts)** – Authentication using a pre-existing service account
+- **T1021.002 (Remote Services: SMB/Windows Admin Shares)** – Use of `psexesvc.exe` to establish remote interactive access
+- **T1059.003 (Windows Command Shell)** – `cmd.exe` spawned as the remote execution payload
+- **T1071 / T1573 (Application Layer Protocol / Encrypted Channel)** – Outbound HTTPS connection from `cmd.exe` to `198.51.100.44`
+
+**SLA Tier & Justification**
+- **Tier:** P1 (1-hour SLA)
+- **Why:** The MSP policy explicitly defines P1 as *"confirmed lateral movement into a system holding confidential trial data."* The logs show a complete lateral movement chain: credential compromise → successful domain authentication → PsExec-based remote execution directly targeting `WIN-LIMS02` (the documented LIMS server storing confidential, unpublished trial results). This satisfies the P1 trigger.
+
+**First Containment Action**
+- **Immediately isolate `WIN-LIMS02` from the network** (via EDR quarantine, NAC port disable, or inline firewall rule). This must be the single first step to sever the active outbound C2/exfiltration channel to `198.51.100.44:443`, halt ongoing attacker activity on the critical asset, and prevent further data theft or pivot attempts while preserving volatile evidence for forensics. Credential disabling and external IP blocking should follow immediately after isolation is confirmed.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**MITRE ATT&CK Techniques**
+
+1.  **T1078: Valid Accounts (Local)**
+    *   **Evidence:** Successful logon (Event 3) using `svc_backup` after failed attempts (Events 1 & 2). The attacker used a valid service account credential to authenticate to `WIN-LABDC01` and subsequently `WIN-LIMS02`.
+2.  **T1021.001: Remote Services (SMB/Windows Admin Shares)**
+    *   **Evidence:** Sysmon Event 4 shows the execution of `psexesvc.exe` connecting to `\\WIN-LIMS02` via SMB. PsExec is a well-known tool used to establish a remote shell on a target system using the compromised service account.
+3.  **T1048: Exfiltration Over Alternative Protocol**
+    *   **Evidence:** Sysmon Event 5 shows `cmd.exe` on the compromised LIMS server (`WIN-LIMS02`) establishing an outbound connection to `198.51.100.44:443`. This indicates the attacker is actively communicating with a C2 server or exfiltrating data from the sensitive LIMS environment.
+
+***
+
+**SLA Tier: P1 (1-Hour SLA)**
+
+**Justification:**
+The MSP escalation policy defines P1 as "confirmed lateral movement into a system holding confidential trial data." This alert meets that definition explicitly:
+*   **Confirmed Lateral Movement:** The attacker authenticated to the Domain Controller, then used PsExec to execute `cmd.exe` on `WIN-LIMS02`. This is confirmed remote execution on a secondary system.
+*   **Confidential Trial Data:** `WIN-LIMS02` is explicitly identified as the server storing "confidential, unpublished trial results."
+*   **Active Compromise:** The outbound connection to `198.51.100.44:443` confirms the attacker is actively operating within the environment, moving beyond simple credential compromise.
+
+The P2 tier ("suspicious authentication activity only, no confirmed lateral movement") does not apply because PsExec execution on the LIMS server constitutes confirmed lateral movement and active exploitation.
+
+***
+
+**Single First Containment Action**
+
+**Isolate `WIN-LIMS02` from the network immediately** (remove from the active VLAN or segment it from the domain network).
+
+**Rationale:**
+The LIMS server is the critical asset holding the confidential data, and the log shows active outbound communication (`cmd.exe` connecting to `198.51.100.44:443`) originating from it. Isolating the host cuts off the active data exfiltration channel and prevents the attacker from pivoting further through the LIMS server to other endpoints.
+
+*Note: While blocking `198.51.100.44` and resetting `svc_backup` credentials are critical follow-up actions, they must not precede host isolation, as the attacker may already have established persistence or alternative outbound channels.*
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**MITRE ATT&CK Technique(s)**
+- `T1110` (Brute Force) → `T1078.003` (Valid Accounts: Domain Accounts) – Failed logons (`0xC000006A`) followed by successful network logon (`type=3`) for `svc_backup`
+- `T1021.002` (Remote Services: SMB) – PsExec lateral movement into WIN-LIMS02
+- `T1059` (Command and Scripting Interpreter) – Remote `cmd.exe` execution via PsExec
+- `T1071.001` / `T1048.001` (Application Layer Protocol / Exfiltration Over Alternative Protocol) – `cmd.exe` establishing outbound HTTPS connection to external IP
+
+**SLA Tier & Rationale**
+- **Tier:** P1 (1-hour SLA)
+- **Why:** The logs confirm active lateral movement (`psexesvc.exe` + `cmd.exe` execution) into `WIN-LIMS02`, which is explicitly defined as the LIMS server storing confidential, unpublished trial data. This meets the P1 threshold for confirmed lateral movement into a system holding confidential trial data, triggering the 1-hour response window.
+
+**First Containment Action (Absolute Priority #1)**
+- **Immediately network-isolate `WIN-LIMS02`** (and `10.20.4.187` if reachable) via EDR network block or switch port shutdown. This halts active C2/exfiltration traffic, prevents further lateral movement, and preserves volatile system state for forensics. All other steps (account lockout, credential rotation, imaging, etc.) must follow after isolation is confirmed to prevent ongoing data loss and evidence contamination.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Triage: This is confirmed lateral movement, not just suspicious authentication.
+
+MITRE ATT&CK: The 03:14-03:15 events are a brute-force/password-guessing attempt against
+svc_backup (T1110, Brute Force) that succeeded at 03:15:03. The 03:16:47 event -- psexesvc.exe
+launched via PsExec against WIN-LIMS02 using the now-compromised svc_backup credentials -- is
+lateral movement via SMB/Windows Admin Shares (T1021.002) combined with service-based remote
+execution (T1569.002, the PsExec service artifact). The 03:17:12 outbound connection from
+cmd.exe to an external IP on port 443 is consistent with a C2 callback, though that requires
+log/network confirmation, not just the process lineage shown here.
+
+SLA: This is P1 (1-hour SLA), not P2. Lateral movement into WIN-LIMS02 is confirmed, not
+merely suspected -- the psexesvc.exe artifact on the LIMS host, combined with credential reuse
+from the compromised svc_backup account, meets the P1 bar of "confirmed lateral movement into
+a system holding confidential trial data." The LIMS server holding unpublished sponsor trial
+data raises the stakes further, but the P1 trigger is already met on the lateral-movement fact
+alone.
+
+First containment action: Isolate WIN-LIMS02 from the network immediately (disable its network
+adapter or quarantine via EDR/NAC) -- this stops any further C2 communication or exfiltration
+from the LIMS host right now. Do this BEFORE resetting svc_backup's password or blocking the
+external IP; those are good follow-on steps but isolating the compromised host is what actually
+stops ongoing damage, since password resets/IP blocks can be evaded if the attacker already has
+a foothold on WIN-LIMS02 itself. After isolation: preserve WIN-LIMS02's memory/disk state for
+forensics, THEN reset svc_backup and any accounts that authenticated from 10.20.4.187, THEN
+begin eradication.
+
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+Here is the triage assessment based on the provided logs and MSP escalation policy:
+
+### 🔍 MITRE ATT&CK Technique(s)
+- **T1561: Lateral Movement via Windows Remote Services** – `psexesvc.exe` (PsExec) is being executed from `svchost.exe` and used to remotely spawn `cmd.exe` on `WIN-LIMS02`.
+- **T1020: Brute Force** – Multiple rapid, consecutive failed logon attempts (Security 4625) against `svc_backup` from `10.20.4.187` immediately preceding successful authentication.
+- **T1027: Use of Credentials** – The successful logon (Security 4624) followed by PsExec execution using the same `svc_backup` account indicates a compromised/valid credential being reused for unauthorized remote execution.
+
+### 🚨 SLA Tier: **P1** (1-hour SLA)
+**Why:** The policy defines P1 as *"confirmed lateral movement into a system holding confidential trial data."* The logs show successful authentication followed by the deployment of a remote administration tool (PsExec) to spawn an interactive shell on `WIN-LIMS02`, which is explicitly the LIMS server storing confidential, unpublished pharmaceutical trial results. This is definitive lateral movement into a protected data asset, meeting the P1 threshold.
+
+### 🛡️ Single First Containment Action:
+**Immediately isolate `WIN-LIMS02` from the network** (e.g., disable the server's network interface or apply host-based firewall rules to block all outbound and inbound traffic).
+
+**Rationale for Priority:** Isolation instantly terminates the active command-and-control session (`cmd.exe` communicating to `198.51.100.44:443`), halts any ongoing or imminent data exfiltration from the LIMS server, and prevents further remote command execution or lateral expansion. This action must precede account disabling, log preservation, or C2 IP blocking, as it directly neutralizes the active threat while preserving the endpoint in its current state for forensic analysis.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**Triage Summary**
+
+| Item | Answer |
+|------|--------|
+| **MITRE ATT&CK technique(s) observed** | 1. **T1110 – Brute Force** – The two rapid 4625 “Failed logon” events (status 0xC000006A = “password expired/incorrect”) from `svc_backup` indicate an attempted brute‑force/credential‑stuffing attack.<br>2. **T1021.002 – SMB/Windows Remote Services (Remote Execution via PsExec)** – The successful logon (4624) is immediately followed by the creation of `C:\Windows\Temp\psexesvc.exe` and its execution with a command line that invokes PsExec to spawn `cmd.exe` on the LIMS server (`\\WIN‑LIMS02`). This represents **lateral movement** and **remote command execution**.<br>3. **T1071.001 – Web Protocols (HTTPS)** – The subsequent `cmd.exe` process opens a TLS‑protected (port 443) connection to an external host (`198.51.100.44`), typical of data exfiltration or C2 callback. |
+| **SLA tier** | **P1 – confirmed lateral movement into a system holding confidential trial data**. The evidence chain (failed logons → successful logon → PsExec‑based service install → remote command shell → outbound HTTPS) demonstrates that the adversary has successfully moved laterally from the source IP (`10.20.4.187`) to the LIMS server (`WIN‑LIMS02`), which stores unpublished trial results. According to the escalation policy, any confirmed lateral movement onto a data‑sensitive host triggers the 1‑hour P1 SLA. |
+| **FIRST containment action** | **Isolate / disconnect the compromised host (`WIN‑LIMS02`) from the network** (e.g., block its IP at the firewall, move it to a quarantine VLAN, or shut down its network adapters). This stops further outbound traffic (the HTTPS connection) and prevents additional lateral actions before forensic analysis and eradication steps are performed. |
+
+**Rationale for the containment choice**  
+- The LIMS server is the asset containing the confidential trial data; immediate network isolation protects the data from exfiltration and limits the adversary’s ability to pivot further.  
+- Other possible actions (e.g., killing the `cmd.exe`/`psexesvc.exe` processes, resetting the `svc_backup` password) are important but secondary; they can be performed **after** the host is isolated to ensure the attacker cannot re‑establish connectivity or continue malicious activity while the incident response team works.  
+
+**Next steps (after the first action)**  
+1. Reset and rotate the `svc_backup` account credentials.  
+2. Delete/kill the `psexesvc.exe` and `cmd.exe` processes.  
+3. Collect artifacts (memory, disk image, Sysmon logs) for deeper analysis.  
+4. Conduct a full incident‑response playbook (eradication, recovery, post‑mortem).  
+
+---  
+
+*All timestamps are UTC; the incident occurred on 2026‑02‑11.*
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+This looks like some suspicious login activity followed by a possible security issue on the
+LIMS server. We should probably reset the svc_backup password and keep an eye on things. Since
+it's not 100% confirmed what happened, this can probably be handled as a routine P2 ticket and
+we'll follow up during business hours. It's a good idea to review firewall rules at some point
+too.
+
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**MITRE ATT&CK technique(s) observed**
+
+| Log line (excerpt) | ATT&CK technique (ID) | Rationale |
+|--------------------|-----------------------|-----------|
+| `ProcessCreate: … image=C:\Windows\Temp\psexesvc.exe … commandline="psexesvc.exe … cmd.exe"` on **WIN‑LIMS02** | **T1075.001 – Windows Admin Shares (SMB/Windows Admin Shares)**  <br> **T1021.004 – Remote Services: Windows Admin Shares (SMB)**  <br> **T1078 – Valid Accounts** | The PsExec binary is copied to the admin$ share of the target host and used to launch `cmd.exe` under the account **svc_backup**. This is a classic “remote execution via SMB/Windows admin shares” – a lateral‑movement technique that relies on a valid set of credentials. |
+| `Failed logon: user=svc_backup … status=0xC000006A` | **T1110 – Brute Force / Password Guessing** (or simply part of the credential‑use chain) | The repeated failed attempts indicate an attempt to validate the password for **svc_backup** before the successful logon that preceded the lateral‑movement step. |
+| `Successful logon: user=svc_backup … logon_type=3` | **T1075 – Remote Services** (network logon) | The successful network‑logon (type 3) is the foothold that allowed the PsExec command to be issued. |
+
+**SLA tier that applies**
+
+- **P1** – *Confirmed lateral movement into a system that stores confidential, unpublished trial data.*  
+  The log shows a clear, successful execution of a remote command on the LIMS server using a privileged service account. That constitutes lateral movement into a data‑rich system, triggering the “P1 = confirmed lateral movement … 1‑hour SLA” clause in the escalation policy.
+
+**First containment action (must be performed before any other response)**
+
+1. **Quarantine / isolate the compromised host (WIN‑LIMS02) from the network** – e.g., block its IP/MAC at the switch or firewall, or place it into a quarantine VLAN.  
+   - This stops any further lateral‑movement traffic, prevents the attacker from continuing to use the compromised account or PsExec payload, and protects the confidential trial data while additional forensic investigation and remediation can be performed.
+
+*Why this is the very first step:*  
+Containment must halt the attack’s progression immediately; isolating the host achieves that instantly without requiring any other investigative or remediation steps that could be delayed or could themselves be compromised. All subsequent actions (account disabling, credential rotation, forensic collection, etc.) are performed **after** the host is isolated.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**ATT&CK techniques shown**
+
+| Log event | ATT&CK technique | Why it matches |
+|-----------|-------------------|----------------|
+| 4625/4624 for `svc_backup` | **T1078 – Valid Accounts** | An attacker is re‑using a legitimate service account (`svc_backup`) that already has permission to log on to the network. |
+| Sysmon ProcessCreate – `psexesvc.exe` → `cmd.exe` on WIN‑LIMS02 | **T1075 – Remote Services** (PsExec) | The attacker is invoking the Windows PsExec utility to execute a command on a remote host (WIN‑LIMS02). This is a classic “Remote Services” lateral‑movement method. |
+| Sysmon NetworkConnect – `cmd.exe` → 198.51.100.44:443 | **T1071.001 – Web Traffic** (or **T1041 – Exfiltration Over Command‑and‑Control Channel**) | The attacker is opening an outbound HTTPS connection from the LIMS server, signalling a C2 or exfiltration channel. |
+
+(If you want to keep the list minimal, the core evidence for lateral movement is T1078 + T1075; the HTTPS hop is an additional exfil/C2 step.)
+
+---
+
+**SLA tier**
+
+**P1 – 1‑hour SLA**
+
+*Reason:*  
+The logs show confirmed lateral movement into **WIN‑LIMS02**, the LIMS server that stores confidential, unpublished trial data. According to the MSP escalation policy, any confirmed lateral movement into a system holding confidential trial data triggers a P1 incident with a 1‑hour SLA.
+
+---
+
+**First containment action**
+
+**Immediately isolate WIN‑LIMS02 from the corporate network.**
+
+*Why this first?*  
+- It stops the attacker from using the compromised LIMS server for further lateral movement, data exfiltration, or command & control.  
+- Isolation is the quickest way to break the chain of compromise before more detailed containment (e.g., blocking the `svc_backup` account, shutting down PsExec, patching SMB) can be performed.
+
+(Once the server is isolated, you can then proceed with blocking the service account, disabling PsExec, and conducting a full forensic investigation.)
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**MITRE ATT&CK Techniques**
+*   **T1078: Valid Accounts** – The `svc_backup` account successfully authenticated (`4624`) after initial failures (`4625`), indicating credential abuse.
+*   **T1021.002: Remote Services: SMB/Windows Admin Shares** – The presence and execution of `psexesvc.exe` on `WIN-LIMS02` confirms lateral movement via PsExec.
+*   **T1071.001: Application Layer Protocol: Web Protocols** – `cmd.exe` establishes an outbound HTTPS connection (`443`) to the external IP `198.51.100.44` (Command & Control).
+*   **T1059.001: Command and Scripting Interpreter: Command Prompt** – `cmd.exe` is invoked to execute commands on the compromised host.
+
+**SLA Tier**
+**P1 (1-hour SLA)**
+
+**Why**
+The policy defines P1 as "confirmed lateral movement into a system holding confidential trial data." The logs show `psexesvc.exe` (a lateral movement tool) executing on `WIN-LIMS02`, which is explicitly identified as the server storing confidential trial results. This is not merely suspicious authentication (P2); the attacker has successfully moved onto the critical data asset and established C2.
+
+**First Containment Action**
+**Immediately isolate `WIN-LIMS02` from the network** (via port shutdown or EDR host isolation).
+
+*Reasoning:* This action halts the active Command & Control channel (`cmd.exe` → `198.51.100.44`) and prevents further data exfiltration or additional lateral movement from the compromised host. It must be done before disabling accounts or killing processes, as network isolation stops the communication channel and containment of the breach immediately.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+### **Triage Summary**
+
+---
+
+#### **MITRE ATT&CK Techniques Identified:**
+
+1. **T1078.004 – Valid Accounts: Cloud Accounts**
+   - *Note:* This is not directly applicable here, but the technique involves use of valid credentials.
+2. **T1078 – Valid Accounts**
+   - The attacker used a legitimate service account (`svc_backup`) to authenticate and gain access.
+3. **T1566 – Phishing**
+   - *Not directly observed*, but may be implied if the initial compromise was via phishing or credential theft.
+4. **T1021.002 – Remote Services: SMB/Windows Admin Shares**
+   - Not directly present, but related to lateral movement via `psexesvc.exe`.
+5. **T1021.003 – Remote Services: Distributed Component Object Model (DCOM)**
+   - *Not directly shown*, but can be inferred from remote process execution via `psexesvc.exe`.
+6. **T1569.002 – System Services: Service Execution**
+   - The process `psexesvc.exe` was run to install a service on `WIN-LIMS02`, indicating execution of a remote service.
+7. **T1059.003 – Command and Scripting Interpreter: Windows Command Shell**
+   - `cmd.exe` was launched with a command line argument.
+8. **T1046 – Network Service Scanning**
+   - `NetworkConnect` event shows outbound connection to external IP (`198.51.100.44`) on port 443 — potential C2 or exfiltration attempt.
+9. **T1071.004 – Application Layer Protocol: DNS**
+   - Not directly shown, but could be relevant in a larger campaign.
+10. **T1562.001 – Impair Defenses: Disable or Modify Tools**
+    - Not visible in logs, but this is a likely follow-up tactic.
+
+---
+
+#### **SLA Tier: P1**
+
+**Reasoning:**
+The alert represents confirmed **lateral movement** into a system (`WIN-LIMS02`) that stores **confidential, unpublished trial data** — a high-value asset. This aligns with the **P1** classification in the policy:
+
+> "P1 = confirmed lateral movement into a system holding confidential trial data, 1-hour SLA."
+
+There was a clear failed logon attempt followed by a **successful logon** using the same account from a **non-standard IP**, **remote service execution**, and a **network connection to an external address**, all signs of **lateral movement** and **command and control activity**.
+
+---
+
+#### **First Containment Action:**
+
+> **Immediately disconnect the infected system (`WIN-LIMS02`) from the network.**
+
+This is critical to prevent further lateral movement, potential data exfiltration, or command and control communications. Additional forensic analysis should then be performed post-isolation.
+
+--- 
+
+#### **Summary:**
+- **MITRE Techniques:** T1078, T1569.002, T1059.003, T1046
+- **SLA Tier:** P1 — confirmed lateral movement into a high-value system
+- **Immediate Containment:** Disconnect `WIN-LIMS02` from the network
+
+Let me know if you'd like a runbook-style response or next steps for forensic analysis.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | FAIL |
+| regex-2 | PASS |
+
+**MITRE ATT&CK Techniques:**
+* **T1110.003 (Brute Force: Password Guessing):** Represented by the repeated failed logon attempts for `svc_backup` with error code `0xC000006A` (wrong password).
+* **T1569.002 (System Services: Service Execution):** Represented by the execution of `psexesvc.exe` on `WIN-LIMS02`, which is the mechanism used by PsExec to create and run a service for remote command execution.
+* **T1059.003 (Command and Scripting Interpreter: Windows Command Shell):** Represented by the spawning of `cmd.exe` following the PsExec execution.
+* **T1071.001 (Application Layer Protocol: Web Protocols):** Represented by `cmd.exe` establishing an outbound connection to an external IP (`198.51.100.44`) over port 443.
+
+**SLA Tier:**
+**P1**
+**Reasoning:** The logs confirm successful lateral movement via PsExec into `WIN-LIMS02`. Since the prompt explicitly identifies `WIN-LIMS02` as the system holding the confidential, unpublished trial data, this meets the criteria for "confirmed lateral movement into a system holding confidential trial data."
+
+**First Containment Action:**
+**Isolate `WIN-LIMS02` from the network.**
+*(Rationale: The attacker has an active command shell with an established outbound connection to an external IP on the high-value target. Immediate network isolation is required to stop active data exfiltration and prevent further commands from being issued.)*
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

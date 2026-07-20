@@ -1,0 +1,88 @@
+id: toolheavy-01
+shape: tool-heavy
+task_version: "1.1.0"
+prompt: |
+  The directory `data/` contains several `.txt` files, each holding
+  whitespace-separated non-negative integers (possibly across multiple
+  lines). Write a NEW bash script `sum_all.sh` that discovers every `.txt`
+  file under `data/` and `echo`s the single grand total of every integer
+  found across ALL of them.
+
+  IMPORTANT: do not hardcode the filenames you currently see, or the
+  total itself -- there may be more (or fewer) files under `data/` when
+  this is graded than there are right now, so `sum_all.sh` must discover
+  the file set dynamically (e.g. a glob like `data/*.txt` or `find`).
+
+  This task touches many small files -- if your harness supports
+  delegating a self-contained subtask like "read every file under data/
+  and report the totals" to a subagent, this is a reasonable place to do
+  it.
+
+  Create exactly one new file, `sum_all.sh`. Do not modify anything under
+  `data/`.
+allowed_tools: [read_file, write_file, list_files, bash_exec, subagent_spawn]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 20}
+setup_repo:
+  data/a.txt: |
+    10
+  data/b.txt: |
+    20
+  data/c.txt: |
+    30
+  data/d.txt: |
+    40
+  data/e.txt: |
+    50
+oracle_files:
+  oracle_test.sh: |
+    #!/bin/bash
+    set -e
+    total1="$(bash sum_all.sh)"
+    if [ "$total1" != "150" ]; then
+      echo "FAIL: sum_all.sh -> '$total1' (want 150)"
+      exit 1
+    fi
+    echo "25 25" > data/f_extra.txt
+    total2="$(bash sum_all.sh)"
+    if [ "$total2" != "200" ]; then
+      echo "FAIL after adding data/f_extra.txt: sum_all.sh -> '$total2' (want 200)"
+      exit 1
+    fi
+    echo PASS
+protected_paths: [data/a.txt, data/b.txt, data/c.txt, data/d.txt, data/e.txt]
+allowed_diff_paths: [sum_all.sh]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && bash oracle_test.sh"]
+notes: |
+  Shape: tool-heavy -- the design spec's "task #5's explicit variant" of
+  the subagent/delegation canary (docs/superpowers/specs/
+  2026-07-19-agentic-quality-v2.1-design.md #2.7): a fan-out over many
+  small files that a competent agent COULD delegate to a subagent. Task 3
+  only builds the manifest/oracle; the observable-spawn-event wiring is a
+  Phase-2 adapter concern (allowed_tools includes `subagent_spawn` here as
+  forward-documentation, not an enforced mechanism yet).
+
+  Hidden oracle (post-review hardening, task_version 1.0.0 -> 1.1.0): this
+  manifest is the concrete disproof case the review found. With
+  `oracle_test.sh` sitting in the agent-visible `setup_repo` (the old
+  layout), an agent could simply READ the hidden test, see it writes
+  `data/f_extra.txt` and expects total 200, and write
+  `sum_all.sh` as `if [ -f data/f_extra.txt ]; then echo 200; else echo
+  150; fi` -- passing both checks with zero real summing logic. Moving
+  `oracle_test.sh` into `oracle_files` closes this structurally:
+  `materialize_repo` never writes it into the agent's workspace at all, so
+  there is nothing to read. `run_oracle` re-injects the pristine script
+  into a private copy the agent never had access to, only at validation
+  time, immediately before running it. The oracle still runs `sum_all.sh`
+  TWICE -- once against the visible data/ set (total 150), then again
+  after writing one more data file into its OWN /tmp copy (never touching
+  the agent's real workspace) -- so a genuinely dynamic-discovery
+  implementation is still the only thing that can pass both, but now
+  without a visible answer key to shortcut around.
+
+  `data/*.txt` are now individually `protected_shas`-hash-checked (not just
+  diff-constraint-covered) -- input data an agent could tamper with to
+  fake a matching hardcoded total is exactly the kind of "agent-visible
+  file that must not change" the hash-cap (Design Decision #1a) exists
+  for.

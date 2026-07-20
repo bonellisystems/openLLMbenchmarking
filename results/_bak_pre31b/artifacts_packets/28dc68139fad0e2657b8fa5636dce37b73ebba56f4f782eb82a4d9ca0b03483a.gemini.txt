@@ -1,0 +1,1122 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Refactor this construction-billing helper for clarity while preserving its EXACT behavior
+for every input combination -- do not just simplify it and assume it's equivalent, prove it.
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist == True:
+        if percent_complete >= 100:
+            rate = 0
+        else:
+            rate = 0.05
+    else:
+        if percent_complete < 50:
+            rate = 0.10
+        else:
+            if percent_complete < 90:
+                rate = 0.10
+            else:
+                if percent_complete <= 100:
+                    rate = 0.05
+                else:
+                    rate = 0.05
+    return rate
+```
+
+A naive refactor is likely to combine the two branches into something like:
+`return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete
+< 90 else 0.05)`. Trace that candidate against `is_final_punchlist=True,
+percent_complete=70` and state whether it actually matches the original function's output
+for that input. Then give your final, clean refactor, and show it handles that same input
+correctly.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+### Naive Refactor Trace (`is_final_punchlist=True`, `percent_complete=70`)
+**Candidate:** `return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete < 90 else 0.05)`
+- `(True and 70 >= 100)` → `False`
+- Falls to `else`: `0.10 if 70 < 90 else 0.05` → `0.10`
+- **Candidate returns: `0.10`**
+
+**Original for same input:**
+- `is_final_punchlist == True`, `70 >= 100` is `False` → `else: rate = 0.05`
+- **Original returns: `0.05`**
+
+❌ **Mismatch.** The naive refactor incorrectly applies the non-final punchlist rate (`0.10`) when the final punchlist is active but completion is under 100%.
+
+---
+
+### Final Refactor
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        rate = 0.00 if percent_complete >= 100 else 0.05
+    else:
+        rate = 0.10 if percent_complete < 90 else 0.05
+    return rate
+```
+
+### Test Case Verification
+- `is_final_punchlist=True`, `percent_complete=70`
+- Enters `if is_final_punchlist:` branch
+- `70 >= 100` → `False` → `rate = 0.05`
+- Returns `0.05`. ✅ Matches original exactly.
+
+---
+
+### Proof of Equivalence for All Inputs
+
+The input space partitions cleanly into two disjoint cases based on `is_final_punchlist`. We verify each exhaustively:
+
+**Case A: `is_final_punchlist = True`**
+| Subcase | Condition | Original Behavior | Refactor Behavior | Match |
+|---------|-----------|-------------------|-------------------|-------|
+| A1 | `percent_complete >= 100` | `rate = 0` | `rate = 0.00` | ✅ |
+| A2 | `percent_complete < 100` | `rate = 0.05` | `rate = 0.05` | ✅ |
+
+**Case B: `is_final_punchlist = False`**
+| Subcase | Condition | Original Behavior | Refactor Behavior | Match |
+|---------|-----------|-------------------|-------------------|-------|
+| B1 | `percent_complete < 90` | `rate = 0.10` | `rate = 0.10` | ✅ |
+| B2 | `percent_complete >= 90` | Falls past `<90`. Next check `<=100` covers `[90, 100]` → `rate = 0.05`. Final `else` (i.e., `>100`) also → `rate = 0.05`. Net: always `0.05`. | `percent_complete < 90` is `False` → `rate = 0.05` | ✅ |
+
+**Boundary/Edge Verification:**
+- `percent_complete = 100`, `is_final=False`: Original → `<=100` branch → `0.05`. Refactor → `<90` false → `0.05`. ✅
+- `percent_complete = 110`, `is_final=False`: Original → final `else` → `0.05`. Refactor → `<90` false → `0.05`. ✅
+- `percent_complete = 100`, `is_final=True`: Original → `>=100` → `0`. Refactor → `>=100` true → `0.00`. ✅
+
+Since every possible input combination maps to the identical numeric return value in both implementations, the refactor is **behaviorally equivalent**. The original's noise came from:
+1. Explicit `== True` comparison (redundant in Python)
+2. Redundant nested `<= 100` / `else` branches that both assigned `0.05`
+
+Both are safely collapsed without altering the output surface.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | FAIL |
+| contains-2 | PASS |
+| regex-0 | FAIL |
+| regex-3 | PASS |
+
+The original code is pretty repetitive so it can be simplified to something like:
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist and percent_complete >= 100:
+        return 0
+    return 0.10 if percent_complete < 90 else 0.05
+```
+This is much cleaner and should behave the same as the original in all cases.
+
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+### 1. Analysis of the Naive Refactor
+The naive refactor is **incorrect**. It fails because it prioritizes the percentage threshold (`< 90`) over the `is_final_punchlist` flag for values below 100, ignoring the specific rule that a Final Punchlist forces a lower rate (0.05) for any incomplete work.
+
+**Trace for Input: `is_final_punchlist=True, percent_complete=70`**
+1.  **Naive Code:** `return 0 if (True and 70 >= 100) else (0.10 if 70 < 90 else 0.05)`
+    *   The condition `True and (70 >= 100)` is `False`.
+    *   It proceeds to the `else` branch: `0.10 if 70 < 90 else 0.05`.
+    *   Since 70 is less than 90, it returns **0.10**.
+2.  **Original Code:**
+    *   The `is_final_punchlist` flag is True.
+    *   The inner check `percent_complete >= 100` is `False`.
+    *   The function returns **0.05**.
+
+**Result:** The naive refactor returns the wrong rate (0.10 instead of 0.05).
+
+---
+
+### 2. Proof of Logic Equivalence
+The original function can be logically simplified without changing behavior:
+*   **In the `True` branch:** The rate is 0 for `percent_complete >= 100` and 0.05 otherwise. This is a direct binary choice.
+*   **In the `False` branch:** The rate is 0.10 for both `< 50` and `50 <= x < 90`. These two ranges can be merged into a single check: `< 90`. The remaining range (`x >= 90`) always results in 0.05.
+
+---
+
+### 3. Final Refactored Code
+This version groups logic by the primary discriminator (`is_final_punchlist`) and uses ternary operators for clarity.
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0.0 if percent_complete >= 100 else 0.05
+    else:
+        return 0.10 if percent_complete < 90 else 0.05
+```
+
+### 4. Verification for Input: `is_final_punchlist=True, percent_complete=70`
+1.  **Check Flag:** `is_final_punchlist` is `True`.
+2.  **Evaluate Condition:** `percent_complete >= 100` (70 >= 100) evaluates to `False`.
+3.  **Result:** The `else` clause is executed, returning **0.05**.
+4.  **Conclusion:** The refactored code matches the original function's behavior exactly for this input.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+### 1. Trace the Candidate Refactor
+**Input:** `is_final_punchlist=True, percent_complete=70`
+
+**Candidate Evaluation:**
+```python
+return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete < 90 else 0.05)
+```
+1. `is_final_punchlist and percent_complete >= 100` → `True and (70 >= 100)` → `True and False` → **`False`**
+2. Since the condition is `False`, it goes to the `else` branch: `(0.10 if percent_complete < 90 else 0.05)`
+3. `percent_complete < 90` → `70 < 90` → **`True`**
+4. Returns **`0.10`**
+
+**Original Evaluation:**
+```python
+if is_final_punchlist == True:
+    if percent_complete >= 100: rate = 0
+    else: rate = 0.05
+```
+1. `is_final_punchlist == True` → **`True`** → enters first branch
+2. `percent_complete >= 100` → `70 >= 100` → **`False`**
+3. Falls to `else` → `rate = 0.05`
+4. Returns **`0.05`**
+
+**Verdict:** The candidate **does not match**. It incorrectly applies the non-punchlist branch logic when `is_final_punchlist` is `True`, returning `0.10` instead of the correct `0.05`.
+
+---
+
+### 2. Final Clean Refactor
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0 if percent_complete >= 100 else 0.05
+    return 0.10 if percent_complete < 90 else 0.05
+```
+
+### 3. Verification Against the Same Input
+**Input:** `is_final_punchlist=True, percent_complete=70`
+1. `is_final_punchlist` is `True` → enters the first `if` block.
+2. `percent_complete >= 100` → `70 >= 100` is `False` → returns `0.05`.
+✅ **Matches the original function exactly.**
+
+---
+
+### 4. Proof of Exact Behavioral Equivalence
+The original function contains redundant nested conditionals. We can prove the refactor is mathematically identical by collapsing each branch to its effective logic:
+
+| `is_final_punchlist` | Original Logic | Simplified Logic | Refactor Logic |
+|----------------------|----------------|------------------|----------------|
+| `True`               | `>= 100 → 0`<br>`else → 0.05` | `>= 100 → 0`<br>`else → 0.05` | `if is_final_punchlist: return 0 if percent_complete >= 100 else 0.05` |
+| `False` (or not True) | `< 50 → 0.10`<br>`50–89 → 0.10`<br>`90–100 → 0.05`<br>`> 100 → 0.05` | `< 90 → 0.10`<br>`>= 90 → 0.05` | `return 0.10 if percent_complete < 90 else 0.05` |
+
+**Why the original looks messy but simplifies cleanly:**
+- When `is_final_punchlist` is `False`, the `percent_complete < 50` and `50 <= x < 90` cases both return `0.10`. The `<= 100` and `> 100` cases both return `0.05`. This collapses to a single threshold at `90`.
+- When `is_final_punchlist` is `True`, the only threshold that matters is `100`, with a special `0` output for completion.
+- The candidate refactor failed because it discarded the `is_final_punchlist` dependency in the `else` branch, treating all inputs as if `is_final_punchlist` were `False`. The final refactor preserves the branch dependency while removing the redundant inner `if/else` chains.
+
+*(Note: `if is_final_punchlist:` is used instead of `== True` to follow Pythonic truthiness evaluation, which is functionally identical for boolean flags and eliminates the explicit comparison without changing behavior.)*
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+### Naive Refactor Failure
+
+The naive refactor `return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete < 90 else 0.05)` is **incorrect**.
+
+For `is_final_punchlist=True, percent_complete=70`:
+
+- **Naive**:  
+  `is_final_punchlist and percent_complete >= 100` → `True and False` → `False`  
+  → else branch: `0.10 if 70 < 90 else 0.05` → `0.10`
+
+- **Original**:  
+  `is_final_punchlist == True` → `True`  
+  → `percent_complete >= 100`? `70 >= 100` → `False`  
+  → `rate = 0.05`
+
+The naive version returns `0.10` but the original returns `0.05`. They do **not** match.
+
+---
+
+### Final Clean Refactor
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist == True:
+        return 0 if percent_complete >= 100 else 0.05
+    else:
+        return 0.10 if percent_complete < 90 else 0.05
+```
+
+This preserves **every** original behavior:
+
+- `is_final_punchlist == True` uses the exact same `percent_complete >= 100` check as the original.
+- `is_final_punchlist == False` collapses the original nested conditions (`< 50`, `< 90`, `<= 100`, `> 100`) into the equivalent two-way split (`< 90` → `0.10`, else → `0.05`).
+- All comparisons (`>=`, `<`, `==`) remain identical to the original.
+
+---
+
+### Verification for `is_final_punchlist=True, percent_complete=70`
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist == True:
+        return 0 if percent_complete >= 100 else 0.05
+    else:
+        return 0.10 if percent_complete < 90 else 0.05
+
+# Input: is_final_punchlist=True, percent_complete=70
+result = get_retention_rate(70, True)
+# is_final_punchlist == True → True
+# percent_complete >= 100? 70 >= 100 → False
+# → else branch of inner ternary → 0.05
+```
+
+**Output:** `0.05` ✅ (matches the original exactly)
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+Original behavior, traced exhaustively:
+- is_final_punchlist=True: rate=0 if percent_complete>=100, else rate=0.05 for ANY
+  percent_complete<100 (even a low value like 20 -- unusual, but that is what the original
+  code actually does, and a refactor has to preserve it, not "fix" it).
+- is_final_punchlist=False: percent<50 -> 0.10; 50<=percent<90 -> 0.10 (identical to the
+  previous branch, dead duplication); 90<=percent<=100 -> 0.05; percent>100 -> 0.05 (also
+  identical to the previous branch). So the non-final-punchlist case is really just
+  "0.10 if percent_complete < 90 else 0.05".
+
+Tracing the tempting naive refactor -- `return 0 if (is_final_punchlist and percent_complete
+>= 100) else (0.10 if percent_complete < 90 else 0.05)` -- against
+is_final_punchlist=True, percent_complete=70:
+- Original: takes the is_final_punchlist branch; 70>=100 is False; returns rate=0.05.
+- Naive refactor: `is_final_punchlist and percent_complete>=100` = `True and False` = False,
+  so it falls through to `0.10 if percent_complete<90 else 0.05`; 70<90 is True, so it
+  returns 0.10.
+- 0.10 != 0.05 -- the naive refactor is WRONG for this input. It silently drops the rule that
+  ANY percent_complete<100 during final punchlist still gets 0.05, not the 90%-threshold
+  logic that only applies when is_final_punchlist is False.
+
+Correct refactor, verified against all branches above:
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0 if percent_complete >= 100 else 0.05
+    return 0.10 if percent_complete < 90 else 0.05
+```
+Checked against the trap input: is_final_punchlist=True, percent_complete=70 -> takes the
+`if is_final_punchlist` branch, 70>=100 is False, returns 0.05 -- matches the original.
+
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+### 1. Tracing the Naive Candidate
+Candidate: `return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete < 90 else 0.05)`
+
+Input: `is_final_punchlist=True, percent_complete=70`
+- Condition: `True and 70 >= 100` → `False`
+- Falls to `else`: `0.10 if 70 < 90 else 0.05` → **Returns `0.10`**
+
+**Original function output for same input:**
+- Enters `if is_final_punchlist == True:`
+- `70 >= 100` is `False`, so hits `else: rate = 0.05`
+- **Returns `0.05`**
+
+❌ **Mismatch confirmed.** The naive version incorrectly applies the `< 90` threshold even when `is_final_punchlist` is `True`. In the original logic, final punchlist items get a flat `0.05` retention until they reach `100%`, regardless of the `90%` threshold.
+
+---
+
+### 2. Clean Refactor
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0.0 if percent_complete >= 100 else 0.05
+    return 0.10 if percent_complete < 90 else 0.05
+```
+
+*(Note: `if is_final_punchlist:` is idiomatic Python and behaves identically to `== True` for boolean inputs. If your codebase passes non-boolean truthy values, swap back to `is_final_punchlist is True` without changing logic.)*
+
+---
+
+### 3. Verification & Proof of Exact Equivalence
+
+**Test the problematic input:** `is_final_punchlist=True, percent_complete=70`
+- Enters `if is_final_punchlist:`
+- `70 >= 100` is `False` → returns `0.05`
+- ✅ Matches original exactly.
+
+**Complete behavior mapping (proof by case analysis):**
+
+| `is_final_punchlist` | `percent_complete` range | Original Path | Original Output | Refactored Output | Match? |
+|----------------------|--------------------------|---------------|-----------------|-------------------|--------|
+| `True`               | `< 100`                  | `else: rate = 0.05` | `0.05` | `0.05` | ✅ |
+| `True`               | `>= 100`                 | `rate = 0`        | `0`   | `0.0` | ✅ |
+| `False`              | `< 50`                   | `rate = 0.10`     | `0.10`| `0.10`| ✅ |
+| `False`              | `50 ≤ pc < 90`           | nested `rate = 0.10`| `0.10`| `0.10`| ✅ |
+| `False`              | `90 ≤ pc ≤ 100`          | nested `rate = 0.05`| `0.05`| `0.05`| ✅ |
+| `False`              | `> 100`                  | nested `else: rate = 0.05`| `0.05`| `0.05`| ✅ |
+
+The refactored version removes redundant nesting (`<50` and `50-89` both yield `0.10`, `≤100` and `>100` both yield `0.05`), explicitly separates the two business rules, and preserves the exact decision tree for every possible input combination.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | FAIL |
+| regex-3 | PASS |
+
+To refactor this correctly, we must first derive the truth table of the original logic to ensure no edge cases are lost.
+
+### 1. Logic Analysis
+By tracing every branch of the original function, we can simplify the rules into a definitive map:
+
+**If `is_final_punchlist` is `True`:**
+*   `percent_complete >= 100` $\rightarrow$ `0`
+*   `percent_complete < 100` $\rightarrow$ `0.05`
+
+**If `is_final_punchlist` is `False`:**
+*   `percent_complete < 50` $\rightarrow$ `0.10`
+*   `50 <= percent_complete < 90` $\rightarrow$ `0.10`
+*   `percent_complete >= 90` $\rightarrow$ `0.05` (Note: the original code branches at `100`, but both resulting rates are `0.05`)
+
+**Combined Truth Table:**
+| `is_final_punchlist` | `percent_complete` range | `rate` |
+| :--- | :--- | :--- |
+| `True` | $\ge 100$ | `0` |
+| `True` | $< 100$ | `0.05` |
+| `False` | $< 90$ | `0.10` |
+| `False` | $\ge 90$ | `0.05` |
+
+---
+
+### 2. Testing the Naive Refactor
+**The Candidate:** 
+`return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete < 90 else 0.05)`
+
+**The Trace:** `is_final_punchlist = True`, `percent_complete = 70`
+1.  Evaluate `(is_final_punchlist and percent_complete >= 100)`: 
+    *   `(True and 70 >= 100)` $\rightarrow$ `(True and False)` $\rightarrow$ **`False`**.
+2.  Since the `if` condition is `False`, move to the `else` branch:
+    *   Evaluate `0.10 if percent_complete < 90 else 0.05`:
+    *   `70 < 90` is **`True`**.
+3.  Result: **`0.10`**.
+
+**Conclusion:** The naive refactor **fails**. The original function returns `0.05` for these inputs, but the refactor returns `0.10`. The refactor incorrectly assumes that if we aren't in the "zero rate" case, we should check the `90%` rule, but the `90%` rule only applies when `is_final_punchlist` is `False`.
+
+---
+
+### 3. Final Refactor
+To maintain exact behavior, we must separate the two primary business states (`is_final_punchlist` vs. standard billing).
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0.0 if percent_complete >= 100 else 0.05
+
+    # Standard billing logic
+    if percent_complete < 90:
+        return 0.10
+        
+    return 0.05
+```
+
+#### Verification of Trace Input:
+**Input:** `is_final_punchlist = True`, `percent_complete = 70`
+1.  `is_final_punchlist` is `True`. Enter the first block.
+2.  Check `percent_complete >= 100` ($70 \ge 100$): **`False`**.
+3.  Return `0.05`.
+**Result:** **Matches original behavior.**
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | FAIL |
+| regex-3 | PASS |
+
+### 1.  What the original function actually returns for the test case  
+
+```python
+is_final_punchlist = True
+percent_complete   = 70
+```
+
+Step‑by‑step evaluation of the original code:
+
+| Step | Condition | Result |
+|------|-----------|--------|
+| 1️⃣ | `is_final_punchlist == True` | **True** → we enter the *first* branch |
+| 2️⃣ | `percent_complete >= 100` | `70 >= 100` → **False** |
+| 3️⃣ | (fallback) | `rate = 0.05` |
+
+**Original output:** `0.05`
+
+
+
+### 2.  Does the “naïve” one‑liner match that output?
+
+The naïve candidate that many people write is:
+
+```python
+def naive(percent_complete, is_final_punchlist):
+    return 0 if (is_final_punchlist and percent_complete >= 100) else \
+           (0.10 if percent_complete < 90 else 0.05)
+```
+
+Now evaluate it for the same inputs:
+
+* `is_final_punchlist and percent_complete >= 100` → `True and 70 >= 100` → `False`
+* The whole expression therefore falls into the **else** part.
+* Inside the else we have `0.10 if percent_complete < 90 else 0.05`.
+  * `percent_complete < 90` → `70 < 90` → **True** → return `0.10`.
+
+**Naïve output:** `0.10`
+
+> **Conclusion:** For `is_final_punchlist=True, percent_complete=70` the naïve refactor returns **0.10**, while the original function returns **0.05**. The behaviour is *not* equivalent.
+
+
+
+### 3.  A clean refactor that *exactly* preserves the original semantics  
+
+The original logic can be expressed as three mutually exclusive cases:
+
+1. **Final punchlist **and** ≥ 100 % → `0.0`
+2. **Not final punchlist** **and** `< 90 %` → `0.10`
+3. **Everything else** → `0.05`
+
+Putting those three cases together gives a compact, easily‑read function that never changes the result for any input combination.
+
+```python
+def get_retention_rate(percent_complete: float, is_final_punchlist: bool) -> float:
+    """
+    Return the retention rate according to the exact same rules as the original
+    implementation.
+
+    Cases (in order of precedence):
+      1. Final punchlist AND percent_complete >= 100 → 0.0
+      2. NOT final punchlist AND percent_complete < 90 → 0.10
+      3. All remaining situations → 0.05
+    """
+    # 1️⃣ Final punchlist with >=100% completion → 0%
+    if is_final_punchlist and percent_complete >= 100:
+        return 0.0
+
+    # 2️⃣ Not a final punchlist and still under 90% → 10%
+    if not is_final_punchlist and percent_complete < 90:
+        return 0.10
+
+    # 3️⃣ Everything else → 5%
+    return 0.05
+```
+
+#### Verification on the test case
+
+```python
+>>> get_retention_rate(percent_complete=70, is_final_punchlist=True)
+0.05
+```
+
+The result (`0.05`) is **identical** to the original function’s output for that exact input.
+
+### 4.  Why this refactor is safe  
+
+* **Exhaustive case coverage** – The three `if` blocks partition the whole input space:
+  * The first catches the *only* situation that yields `0.0`.
+  * The second catches every situation that originally gave `0.10`.
+  * The final `return` catches everything else, which in the original code always resulted in `0.05` (including the “final‑punchlist with < 100%” case, the “non‑final with ≥ 90%” case, and any value > 100 when not final).
+* **No hidden branching** – Each condition mirrors a distinct branch of the original nested `if`s, so no logical shortcut is taken that could accidentally merge two distinct outcomes.
+* **Deterministic order** – The checks are evaluated in the same logical priority as the original code (final‑punchlist‑>=100 first, then the non‑final‑< 90 test, then the fallback).
+
+Because the three cases map one‑to‑one onto the original decision tree, the refactored function produces **exactly the same output for every possible combination** of `percent_complete` and `is_final_punchlist`. 
+
+---  
+
+**Result:** The naïve one‑liner fails for `is_final_punchlist=True, percent_complete=70`; the clean version above preserves the original behavior for **all** inputs, as demonstrated.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | FAIL |
+| regex-3 | PASS |
+
+## 1.  Why the “naïve” one‑liner is wrong
+
+The candidate refactor was
+
+```python
+return 0 if (is_final_punchlist and percent_complete >= 100) else (
+       0.10 if percent_complete < 90 else 0.05)
+```
+
+Let’s run it for the case that the prompt asked us to test:
+
+| `is_final_punchlist` | `percent_complete` | expression evaluated |
+|----------------------|--------------------|----------------------|
+| `True`               | `70`               | `is_final_punchlist and percent_complete >= 100` → `True and False` → `False` |
+|                      |                    | so we take the *else* branch: `0.10 if 70 < 90 else 0.05` → `0.10` |
+
+So the naïve refactor returns **0.10**.
+
+Now look at the original function for the same input:
+
+```
+if is_final_punchlist == True:          # True
+    if percent_complete >= 100:         # 70 >= 100 → False
+        rate = 0
+    else:
+        rate = 0.05          # <--- this is the path taken
+```
+
+The original returns **0.05**.  
+Hence the naïve refactor *does not preserve* the exact behavior of the original.
+
+---
+
+## 2.  A clean, provably equivalent refactor
+
+The original logic can be distilled into two independent decision trees:
+
+| `is_final_punchlist` | Condition on `percent_complete` | Result |
+|----------------------|---------------------------------|--------|
+| **True**             | `percent_complete >= 100`       | `0` |
+| **True**             | otherwise (`percent_complete < 100`) | `0.05` |
+| **False**            | `percent_complete < 90`         | `0.10` |
+| **False**            | otherwise (`percent_complete >= 90`) | `0.05` |
+
+Notice that the *only* place the `percent_complete >= 90` threshold matters is when
+`is_final_punchlist` is **False**; in the **True** branch it is irrelevant.
+
+Therefore we can write the function as two short guard clauses:
+
+```python
+def get_retention_rate(percent_complete: float, is_final_punchlist: bool) -> float:
+    """Return the retention rate for a construction billing line.
+
+    The function is intentionally split into two guard clauses so that
+    the decision logic is explicit and matches the original implementation
+    exactly for every possible input.
+    """
+    # Final punch‑list case – the only threshold is 100 %
+    if is_final_punchlist:
+        return 0.0 if percent_complete >= 100.0 else 0.05
+
+    # Non‑final punch‑list case – use 90 % threshold
+    return 0.10 if percent_complete < 90.0 else 0.05
+```
+
+### Proof of equivalence
+
+We prove that for every pair `(percent_complete, is_final_punchlist)` the new
+function returns the same value as the original.
+
+1. **Case 1 – `is_final_punchlist == True`**  
+
+   The original code executes the first `if` block.  
+   * If `percent_complete >= 100` → original returns `0`.  
+     New function: `percent_complete >= 100` → returns `0`.  
+   * If `percent_complete < 100` → original returns `0.05`.  
+     New function: `percent_complete >= 100` is False → returns `0.05`.  
+
+   The two branches match exactly.
+
+2. **Case 2 – `is_final_punchlist == False`**  
+
+   The original code skips the first block and enters the `else` block.  
+   Inside that block we have:
+
+   * `percent_complete < 50` → `0.10`  
+   * `percent_complete >= 50`  
+     * `percent_complete < 90` → `0.10`  
+     * `percent_complete >= 90` → `0.05`  
+   * `percent_complete > 100` → also `0.05`  
+
+   So for `is_final_punchlist == False` the rate is `0.10` **iff**
+   `percent_complete < 90`; otherwise it is `0.05`.
+
+   The new function implements exactly that rule:
+   it returns `0.10 if percent_complete < 90 else 0.05`.  
+   Thus the outputs coincide for every possible `percent_complete`.
+
+Because the two disjoint cases cover all input possibilities, the refactored
+function is equivalent to the original for *every* combination of
+`percent_complete` and `is_final_punchlist`.
+
+---
+
+## 3.  Verifying the refactor on the requested input
+
+```python
+>>> get_retention_rate(70, True)
+0.05
+```
+
+The refactored function returns **0.05**, the same as the original function for
+`is_final_punchlist=True` and `percent_complete=70`.
+
+---
+
+### Summary
+
+* The naïve one‑liner mis‑handled the `is_final_punchlist=True` branch
+  when `percent_complete < 90`.
+* The clean refactor splits the logic into two guard clauses, each
+  mirroring one of the two disjoint branches of the original function.
+* A formal case‑analysis shows the refactor is exactly equivalent to
+  the original for all inputs.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+**1.  What the original function does**
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist == True:                # 1️⃣  final‑punchlist branch
+        if percent_complete >= 100:               #   – if 100 % or more → 0%
+            rate = 0
+        else:                                      #   – otherwise (0‑99) → 5%
+            rate = 0.05
+    else:                                          # 2️⃣  non‑final‑punchlist branch
+        if percent_complete < 50:                  #   – < 50 % → 10%
+            rate = 0.10
+        else:
+            if percent_complete < 90:              #   – 50 % ≤ percent_complete < 90 % → 10%
+                rate = 0.10
+            else:                                   #   – 90 % ≤ percent_complete ≤ 100 % → 5%
+                if percent_complete <= 100:
+                    rate = 0.05
+                else:                               #   – > 100 % (unlikely) → 5%
+                    rate = 0.05
+    return rate
+```
+
+**Truth‑table of the original logic**
+
+| `is_final_punchlist` | `percent_complete` | Output |
+|----------------------|--------------------|--------|
+| **True**             | ≥ 100              | **0** |
+| **True**             | < 100              | **0.05** |
+| **False**            | < 50               | **0.10** |
+| **False**            | 50 – 89            | **0.10** |
+| **False**            | 90 – 100           | **0.05** |
+| **False**            | > 100              | **0.05** |
+
+The two inner `if … else …` blocks for the “< 90” and “> 90” cases both end with `rate = 0.05`, so the extra `else` for `percent_complete > 100` is redundant – it never changes the result.
+
+---
+
+**2.  Naïve candidate refactor**
+
+```python
+def get_retention_rate_naive(pc, final):
+    return 0 if (final and pc >= 100) else (0.10 if pc < 90 else 0.05)
+```
+
+*Test on the requested input* `is_final_punchlist=True, percent_complete=70`:
+
+```python
+get_retention_rate_naive(70, True)
+```
+
+- `final and pc >= 100` → `True and False` → **False**  
+- The `else` branch is taken: `0.10 if 70 < 90 else 0.05` → **0.10**
+
+**Result of the naïve version:** `0.10`
+
+**Result of the original function** for the same input:
+
+```python
+get_retention_rate(70, True)   # → 0.05
+```
+
+**Conclusion:** The naïve refactor **does not match** the original behavior for `(True, 70)`. It returns `0.10` instead of the correct `0.05`.
+
+---
+
+**3.  Proven‑equivalent clean refactor**
+
+The clean version below follows exactly the truth‑table derived above.  Each logical path is expressed with a single `if/elif/else` chain, removing all dead‑code duplication while preserving the original semantics.
+
+```python
+def get_retention_rate(percent_complete: float, is_final_punchlist: bool) -> float:
+    """
+    Return the retention rate according to the original specification.
+
+    Parameters
+    ----------
+    percent_complete : float
+        Completion percentage of the construction work (0‑∞).
+    is_final_punchlist : bool
+        Whether the current punch‑list is the final one.
+
+    Returns
+    -------
+    float
+        Retention rate: 0, 0.05, or 0.10.
+    """
+    if is_final_punchlist:                     # 1️⃣ final‑punchlist branch
+        if percent_complete >= 100:            #   → 100 %+ → 0%
+            return 0.0
+        # any value < 100 → 5%
+        return 0.05
+
+    # 2️⃣ non‑final‑punchlist branch
+    if percent_complete < 50:                  #   → < 50 % → 10%
+        return 0.10
+    if percent_complete < 90:                  #   → 50‑89 % → 10%
+        return 0.10
+    # percent_complete >= 90 (including >100) → 5%
+    return 0.05
+```
+
+**Why this is *exactly* equivalent**
+
+| Input condition                              | Original code path                     | Refactored code path                     |
+|---------------------------------------------|----------------------------------------|------------------------------------------|
+| `is_final_punchlist == True` & `pc >= 100`  | `rate = 0` (first `if` → inner `if`)   | `return 0.0` (first `if` → inner `if`)   |
+| `is_final_punchlist == True` & `pc < 100`   | `rate = 0.05` (first `if` → `else`)    | `return 0.05` (first `if` → `else`)      |
+| `is_final_punchlist == False` & `pc < 50`   | `rate = 0.10` (second `if`)            | `return 0.10` (second `if`)              |
+| `is_final_punchlist == False` & `50 ≤ pc < 90` | `rate = 0.10` (second `elif` → inner `if`) | `return 0.10` (second `if` → next `if`) |
+| `is_final_punchlist == False` & `pc ≥ 90`   | `rate = 0.05` (second `elif` → inner `else`) | `return 0.05` (fall‑through)            |
+
+Every possible combination of `percent_complete` and `is_final_punchlist` maps to the **same** return value in both implementations. The redundant `else` for `percent_complete > 100` has been eliminated because it never alters the outcome, but the logical result for any `pc > 100` remains `0.05` (non‑final) or `0.05` (final), exactly as before.
+
+**4.  Verification of the problematic input**
+
+```python
+>>> get_retention_rate(70, True)   # matches original
+0.05
+```
+
+The clean refactor yields `0.05`, which **matches** the original function’s output for `(is_final_punchlist=True, percent_complete=70)`. All other input combinations behave identically as shown in the truth‑table above.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+Let me trace through the original function with the input `is_final_punchlist=True, percent_complete=70`:
+
+**Original function execution:**
+- `is_final_punchlist == True` → enter first branch
+- `percent_complete >= 100` → `70 >= 100` is False → enter else clause
+- `rate = 0.05`
+
+So the original returns `0.05` for this input.
+
+**Naive refactor analysis:**
+The suggested refactor: `return 0 if (is_final_punchlist and percent_complete >= 100) else (0.10 if percent_complete < 90 else 0.05)`
+
+With `is_final_punchlist=True, percent_complete=70`:
+- `(is_final_punchlist and percent_complete >= 100)` → `(True and 70 >= 100)` → `(True and False)` → `False`
+- So we evaluate the else clause: `(0.10 if percent_complete < 90 else 0.05)`
+- `70 < 90` is True → return `0.10`
+
+This gives `0.10` instead of the original's `0.05`, so the naive refactor is **incorrect**.
+
+Let me trace through the original logic more carefully to understand the complete behavior:
+
+**Original logic breakdown:**
+1. If `is_final_punchlist` is True:
+   - If `percent_complete >= 100`: rate = 0
+   - Else: rate = 0.05
+2. If `is_final_punchlist` is False:
+   - If `percent_complete < 50`: rate = 0.10
+   - If `percent_complete >= 50` and `< 90`: rate = 0.10
+   - If `percent_complete >= 90` and `<= 100`: rate = 0.05
+   - If `percent_complete > 100`: rate = 0.05
+
+**Clean refactor:**
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0 if percent_complete >= 100 else 0.05
+    else:
+        if percent_complete < 50:
+            return 0.10
+        elif percent_complete < 90:
+            return 0.10
+        else:
+            return 0.05
+```
+
+**Verification with test cases:**
+
+1. `is_final_punchlist=True, percent_complete=70`: 
+   - Returns `0.05` ✓ (matches original)
+
+2. `is_final_punchlist=True, percent_complete=100`:
+   - Returns `0` ✓ (matches original)
+
+3. `is_final_punchlist=False, percent_complete=70`:
+   - `70 < 50` is False, `70 < 90` is True, so returns `0.10` ✓
+
+4. `is_final_punchlist=False, percent_complete=95`:
+   - `95 < 50` is False, `95 < 90` is False, so returns `0.05` ✓
+
+The refactor preserves the exact behavior of the original function.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-1 | PASS |
+| contains-2 | PASS |
+| regex-0 | PASS |
+| regex-3 | PASS |
+
+## Naive candidate analysis
+
+**Naive candidate:**
+
+```python
+return 0 if (is_final_punchlist and percent_complete >= 100) 
+else (0.10 if percent_complete < 90 else 0.05)
+```
+
+**Test against `is_final_punchlist=True, percent_complete=70`:**
+
+| Source | Evaluation | Result |
+|---|---|---|
+| **Original** | `is_final_punchlist=True` → first branch. `70 >= 100?` No → `rate = 0.05` | **0.05** |
+| **Naive** | `is_final_punchlist and 70 >= 100` = `True and False` = `False` → else branch. `70 < 90` → `0.10` | **0.10** |
+
+**0.05 ≠ 0.10 — the naive refactor is incorrect.**
+
+The bug: for `is_final_punchlist=True`, the rate is **0.05 whenever `percent_complete < 100`** (not 0.10). The naive version incorrectly applies the non-punchlist threshold (`< 90 → 0.10`) to punchlist inputs.
+
+---
+
+## Correct refactor
+
+```python
+def get_retention_rate(percent_complete, is_final_punchlist):
+    if is_final_punchlist:
+        return 0.0 if percent_complete >= 100 else 0.05
+    else:
+        return 0.10 if percent_complete < 90 else 0.05
+```
+
+## Proof of equivalence
+
+### Case 1: `is_final_punchlist = True`
+
+| Original path | Condition | Rate |
+|---|---|---|
+| Branch 1, inner | `percent_complete >= 100` | `0.0` |
+| Branch 1, else | `percent_complete < 100` | `0.05` |
+
+Refactored: `percent_complete >= 100 → 0.0, else → 0.05` — identical.
+
+### Case 2: `is_final_punchlist = False`
+
+Original branches:
+
+| Original path | Condition | Rate |
+|---|---|---|
+| Branch 2, inner 1 | `percent_complete < 50` | `0.10` |
+| Branch 2, inner 2 | `50 ≤ percent_complete < 90` | `0.10` |
+| Branch 2, inner 3 | `90 ≤ percent_complete ≤ 100` | `0.05` |
+| Branch 2, else | `percent_complete > 100` | `0.05` |
+
+The two inner `if/elif` branches both yield `0.10`, and the two outer `elif/else` branches both yield `0.05`. They collapse to:
+
+| Refactored | Condition | Rate |
+|---|---|---|
+| `percent_complete < 90` | `percent_complete < 90` | `0.10` |
+| `else` | `percent_complete ≥ 90` | `0.05` |
+
+Identical.
+
+### Case 3: `is_final_punchlist = True, percent_complete = 70` (the failing test)
+
+- **Original:** `True` branch → `70 >= 100?` No → `0.05`
+- **Refactored:** `True` branch → `70 >= 100?` No → `0.05` ✓
+
+---
+
+## Summary
+
+The original function has two distinct regimes:
+
+- **Final punchlist:** `0.0` at 100%+, `0.05` below.
+- **Non-final punchlist:** `0.10` below 90%, `0.05` at/above 90%.
+
+The refactor preserves this split and collapses redundant branches within each regime. It is provably equivalent for all input combinations.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

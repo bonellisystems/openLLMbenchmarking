@@ -1,0 +1,2174 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Knowledge Management -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The runbook or document is testable: a newcomer could follow it step by step and reach the stated outcome without needing undocumented tribal knowledge. Prerequisites are listed up front, failure or rollback branches are included for steps that can go wrong, and a currency or ownership signal (last verified, owned by) is present when the prompt supports it.
+Example character: numbered steps with prerequisites stated first, a rollback note on the one risky step, and a last-verified date.
+
+## 7 -- Strong
+The document is mostly step-by-step and usable as a runbook, but is missing one prerequisite check or a failure-branch note for a step that could plausibly fail. Nothing here requires guesswork to follow.
+Example character: a clear numbered procedure that omits what to do if the third step fails.
+
+## 5 -- Adequate
+The content is a correct-gist prose description of the process rather than an executable, testable runbook -- a new reader would need to reverse-engineer the actual steps.
+Example character: a paragraph explaining how the process generally works, without numbered, followable steps.
+
+## 3 -- Weak
+The document skips steps a newcomer would need, silently assumes undocumented tribal knowledge, and gives no ownership or currency signal at all.
+Example character: a procedure that jumps from step one to step four with an unstated step in between.
+
+## 0 -- Unusable
+References fabricated tools, systems, or menu paths that do not exist, or gives a dangerously wrong sequence for a risky operation. Empty or off-task.
+
+## Unit-specific red flags (deduct hard)
+- Steps that silently assume undocumented tribal knowledge.
+- Fabricated tool, system, or menu-path names presented as real.
+- No failure or rollback branch for a step that can fail destructively.
+- Prose narrative presented as a runbook instead of testable numbered steps.
+
+## Unit-specific excellence markers
+- Numbered steps a newcomer could execute unaided.
+- Prerequisites listed explicitly up front.
+- Failure or rollback branch given for risky steps.
+- Currency or ownership signal (last-verified, owner) included when supported by the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+Your MSP manages the file server for a USDA-inspected poultry processing plant with three
+production lines running in parallel. Right now, each line's barcode scanner writes
+lot-tracking scan logs into a single shared folder using a generic filename like
+"lot_log.csv", which gets overwritten every time a new lot starts on any line. A recent
+internal audit also found that the plant's own lot-numbering scheme -- a running 4-digit
+counter that resets to 0001 every quarter -- had produced the same lot number on two
+different lines within the same quarter, meaning two physically different lots of poultry
+now share an identical lot number in the retained records. That is exactly the kind of
+ambiguity a USDA lot-tracking audit is designed to catch.
+
+Propose a file/folder naming and lot-ID taxonomy that makes every retained scan-log filename
+unique and self-describing without opening the file, and that eliminates the lot-number
+collision across lines going forward. State what you do about the already-recorded,
+currently-ambiguous lot numbers from this quarter -- they cannot simply be renamed after the
+fact, because product has already shipped under those numbers.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+Here is a complete, audit-defensible taxonomy designed for your MSP environment. It separates the **operational lot identifier** (which stays printed on product/packaging) from the **system-level unique key** (which lives in the filename and filesystem).
+
+---
+### 1. New File/Folder & Naming Taxonomy
+
+**Directory Structure:**
+```
+/{FacilityCode}/
+  /{LineID}/
+    /{LotNum}/
+      {LineID}_{LotNum}_{YYYYMMDD}_{HHMMSS}_{Seq03}.csv
+```
+
+**Concrete Example:**
+`/PLANT_A/L2/0087/L2_0087_20240715_143022_001.csv`
+
+**Filename Component Rules:**
+| Segment | Format | Meaning | Why It's Required |
+|---------|--------|---------|-------------------|
+| `LineID` | 2-char prefix (e.g., `L1`, `L2`, `L3`) | Production line that generated the scan batch | Resolves cross-line ambiguity without opening file |
+| `LotNum` | 4-digit plant counter (e.g., `0087`) | Original USDA lot number as printed on product | Preserves chain-of-custody alignment with shipped product |
+| `YYYYMMDD` | ISO date | Date scan batch began | Prevents cross-day collisions |
+| `HHMMSS` | 24h timestamp | First scan timestamp in this file | Prevents same-second collisions |
+| `Seq03` | 3-digit zero-padded | Sequential batch number | Prevents collisions when multiple scan runs occur in the same second |
+
+**Why this is self-describing:** An auditor can read any filename and immediately reconstruct: *Which line? Which lot? When did recording start? Is this the first or subsequent scan batch?* No file introspection required.
+
+---
+### 2. How This Eliminates Collisions Going Forward
+
+The plant's 4-digit quarterly counter remains the **operational ID** (tied to packaging, labeling, and shipping systems). It is *not* changed. However, the **system-level uniqueness** is enforced by the compound filename key:
+
+```
+UNIQUE_KEY = LineID + LotNum + YYYYMMDD + HHMMSS + Seq03
+```
+
+- Two different lines running lot `0087` in the same quarter now write to `/L1/0087/` and `/L2/0087/` with timestamped, sequenced filenames. The system will never overwrite, and two records can never share the same filesystem path.
+- If the same lot repeats on the same line later in the quarter, the new filename's timestamp + sequence increments automatically.
+- Scanner software must be reconfigured to:
+  1. Write only to its assigned `/{LineID}/` directory tree
+  2. Auto-generate the filename using the format above
+  3. Refuse writes that would overwrite an existing file (hardened write guard)
+  4. Log the write event to a separate audit trail (not the lot log itself)
+
+---
+### 3. Handling the Already-Recorded Ambiguous Lots (Current Quarter)
+
+**Core Principle:** Historical records are **untouched, unrenamed, and immutable**. Product has shipped under those numbers; altering filenames or contents would break chain-of-custody and violate USDA retention expectations (9 CFR § 381.100 / FSIS Policy Guide 2019-1).
+
+**Implementation Steps:**
+
+1. **Lockbox Archive:** Move all current-quarter files to an immutable archive path:
+   ```
+   /{FacilityCode}/ARCHIVE/Q{Quarter}_{Year}/ORIGINAL/
+   ```
+   Files retain their original `lot_log.csv` names exactly as written. Permissions are set to `read-only` + append-only. No renaming. No content modification.
+
+2. **Collision Manifest (`collision_manifest.json`):** Place this in the archive root. It documents the known ambiguity transparently:
+   ```json
+   {
+     "archive": "Q3_2024",
+     "collision_flag": true,
+     "records": [
+       {
+         "original_path": "lot_log.csv",
+         "system_key": "ARC-2024Q3-L1-0087-001",
+         "reconstructed_line": "L1",
+         "scan_date": "2024-07-12",
+         "note": "Lot 0087 assigned on L1 and L2 within same quarter. Physical lots distinct. Records preserved without alteration per USDA retention policy."
+       },
+       {
+         "original_path": "lot_log.csv",
+         "system_key": "ARC-2024Q3-L2-0087-001",
+         "reconstructed_line": "L2",
+         "scan_date": "2024-07-13",
+         "note": "Same lot number used on L2. Physical lots distinct. Records preserved without alteration."
+       }
+     ]
+   }
+   ```
+   The `reconstructed_line` is filled in from scanner logs, shift records, or line-specific timestamps. If the original file lacks line context, the manifest explicitly notes: `"Line attribution unverifiable from file metadata alone."`
+
+3. **Master Registry (`file_index.csv`):** A single lookup table that maps every retained file (historical and current) to:
+   - System Key (UUID or sequential)
+   - Original filename
+   - Line ID
+   - Lot Num
+   - Archive path
+   - Status (`HISTORICAL_LOCKED` | `CURRENT_ACTIVE`)
+
+   Auditors use this registry to retrieve any record without guessing, and the status field makes the boundary between altered (none) and new (taxonomy-compliant) explicit.
+
+---
+### 4. MSP Implementation Controls
+
+| Control | Enforcement Method |
+|---------|-------------------|
+| No shared-folder writes | Disable the legacy `lot_log.csv` write path at the scanner driver level |
+| Filename auto-generation | Embed format string in scanner firmware/MSP agent; reject manual overrides |
+| Overwrite prevention | Filesystem ACLs + application-level `O_EXCL` write guard; alert MSP if bypass attempted |
+| Archive immutability | Write Once, Read Many (WORM) storage tier or equivalent immutable backup retention policy |
+| Timestamp sync | Force NTP-strapped system clocks on all 3 line endpoints; log drift warnings |
+| Quarterly counter reset | Allowed to continue as operational practice, but system key generation is independent of the counter |
+
+---
+### 5. USDA Audit Defense Summary
+
+- **Traceability:** Every retained filename encodes line, lot, date, start time, and batch sequence. No file needs to be opened to establish provenance.
+- **Immutability:** Historical records are moved, not modified. No filenames are changed, no CSV contents are touched. Chain-of-custody to shipped product remains intact.
+- **Collision Transparency:** The manifest doesn't hide the Q3 collision; it documents it, assigns system-level unique keys for retrieval, and proves the new taxonomy eliminates future ambiguity.
+- **Regulatory Alignment:** Matches FSIS expectations for poultry record-keeping: readable, retrievable, unaltered after creation, and retained for the required period (minimum 2 years, often longer for USDA-inspected establishments).
+
+This taxonomy gives auditors a clear, defensible audit trail, keeps your packaging/labeling lot numbers stable, and structurally prevents the collision pattern from ever recurring.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Solution Overview**
+
+The goal is to create a **deterministic, self‑describing** file‑naming and lot‑ID structure that:
+
+1. **Guarantees uniqueness** of every scan‑log file (no overwrites, no collisions).
+2. **Encodes the production context** (line, date, quarter) so the file can be understood without opening it.
+3. **Eliminates the current lot‑number collision** by extending the lot‑ID scheme.
+4. **Preserves the integrity of already‑shipped lots** that share a lot number, while providing a clear audit trail.
+
+Below is a concrete taxonomy, implementation steps, and a remediation plan for the ambiguous lots that have already shipped.
+
+---
+
+## 1. New Lot‑ID Taxonomy
+
+### 1.1. Structure of a Lot Identifier
+
+```
+<LineID>-<QuarterSuffix>-<QuarterCounter>
+```
+
+| Component | Description | Example |
+|-----------|-------------|---------|
+| **LineID** | Two‑character code for each production line (e.g., `A`, `B`, `C` or `L1`, `L2`, `L3`). | `A` |
+| **QuarterSuffix** | Letter that denotes the fiscal quarter (A = Q1, B = Q2, C = Q3, D = Q4). | `B` (for Q2) |
+| **QuarterCounter** | A **four‑digit, zero‑padded** running counter that resets to `0001` at the start of each quarter **per line**. | `0123` |
+
+**Resulting Lot ID:** `A-B-0123`, `B-B-0045`, `C-C-0007`, etc.
+
+*Why this works:*  
+- The **LineID** differentiates lots that otherwise share the same quarter counter.  
+- The **QuarterSuffix** ensures that a counter value from one quarter can never be mistaken for the same value in another quarter (useful for cross‑quarter queries).  
+- The **four‑digit counter** retains the plant’s familiar 4‑digit format while providing 10,000 unique IDs per line per quarter—far more than any realistic production volume.
+
+### 1.2. Why Reset Per Line, Not Globally?
+
+The audit revealed that a **global** 4‑digit counter (`0001`‑`9999`) reset each quarter caused collisions when two lines independently generated the same number. By **partitioning the counter per line**, each line can independently cycle through `0001`‑`9999` without interference, eliminating the collision entirely.
+
+---
+
+## 2. File‑Naming / Folder Taxonomy for Scan Logs
+
+### 2.1. Directory Hierarchy
+
+```
+/ScanLogs/
+   /<Year>/
+      /<QuarterLetter>/
+         /<LineID>/
+```
+
+*Example path for Q2 2025, Line A:*
+
+```
+/ScanLogs/2025/B/A/
+```
+
+**Benefits**
+
+- **Chronological grouping** (`Year → Quarter → Line`) makes navigation and bulk operations (archival, backup, purge) trivial.
+- **Separate write targets** prevent any two scanners from ever writing to the same file (each line writes to its own sub‑folder).
+
+### 2.2. Individual File Naming Convention
+
+```
+<LotID>_<ISODate>_<SeqNo>.csv
+```
+
+| Token | Meaning | Example |
+|-------|---------|---------|
+| **LotID** | The new composite lot identifier (see 1.1). | `A-B-0123` |
+| **ISODate** | Date of lot start in `YYYY-MM-DD` (UTC or plant local time, documented). | `2025-07-15` |
+| **SeqNo** | Optional sequential suffix (zero‑padded 3‑digit) to handle **multiple scans within the same lot** (e.g., if a lot is re‑scanned or if the scanner buffers data). | `001` |
+| **Extension** | Fixed CSV format for lot‑track scan logs. | `.csv` |
+
+**Full filename example**
+
+```
+A-B-0123_2025-07-15_001.csv
+```
+
+*If a lot never requires a sequence suffix, the file can simply be `A-B-0123_2025-07-15.csv` (the system can omit `_001` automatically).*
+
+### 2.3. Self‑Describing Features
+
+- **Line** (`A`, `B`, `C`) is visible at a glance.
+- **Quarter** (`B` for Q2) is visible.
+- **Counter** (`0123`) shows the lot’s position within the quarter for that line.
+- **Date** (`2025-07-15`) confirms when the lot began.
+- **Sequence** (if present) indicates multiple log captures.
+
+No file needs to be opened to know *which* production line, *when*, and *which* lot it belongs to.
+
+---
+
+## 3. Implementation Roadmap
+
+| Step | Action | Owner | Timeline |
+|------|--------|-------|----------|
+| **3.1** | **Update Barcode Scanner Firmware/Software** to generate the new LotID (`<LineID>-<QuarterSuffix>-<QuarterCounter>`). Include logic to fetch the current counter from a **centralized counter service** (e.g., a lightweight REST/DB endpoint) and atomically increment it per line. | Plant IT / Scanner Vendor | 2‑4 weeks (pilot on one line) |
+| **3.2** | **Deploy Central Counter Service** (could be a simple SQLite or PostgreSQL table) that stores: `LineID`, `Quarter`, `CurrentCounter`. Ensure **transactional increments** to avoid race conditions when two scanners start a lot simultaneously. | MSP / DB Admin | 1 week |
+| **3.3** | **Re‑configure File System** – create the folder hierarchy `/ScanLogs/<Year>/<Quarter>/<LineID>/` on the file server. Apply appropriate **ACLs** (read‑only for auditors, write‑only for scanners). | MSP | 1 week |
+| **3.4** | **Redirect Scanner Output** – change the scanner’s output path to the new per‑line folder and enforce the new filename pattern via a small wrapper script or scanner configuration. | Plant Operations | 1 week (after step 3.1) |
+| **3.5** | **Retrospective Audit of Existing Logs** – identify all `lot_log.csv` files from the current quarter that contain ambiguous lot numbers (those that appear on >1 line). | Quality Assurance | Immediate (parallel with steps 3.1‑3.4) |
+| **3.6** | **Create “Collision Resolution” Metadata Files** – for each ambiguous lot number, generate a side‑car JSON (or CSV) that records: <br>• Original ambiguous lot number <br>• Line(s) that used it <br>• Date range <br>• Final disposition (e.g., “retained as is, flagged”) <br>Store these side‑cars in a **dedicated `/ScanLogs/<Year>/<Quarter>/CollisionResolution/`** folder. | QA + IT | As soon as ambiguous lots are identified |
+| **3.7** | **Update USDA Lot‑Tracking Reporting** – modify any downstream reporting scripts or ETL jobs to read the new filenames and, when needed, consult the collision‑resolution side‑cars for legacy data. | Compliance Team | 1‑2 weeks after file‑system change |
+| **3.8** | **Training & Documentation** – brief production staff, IT, and auditors on the new taxonomy, file locations, and how to interpret the filenames. Publish a quick‑reference cheat‑sheet. | Training Dept | Ongoing (first week of rollout) |
+| **3.9** | **Go‑Live & Monitoring** – enable the new system on all three lines, monitor for any filename collisions or counter roll‑over issues for the first full week. | MSP / Plant Ops | End of week 5 |
+
+**Total estimated rollout:** ~6‑8 weeks, with minimal disruption because scanners continue to write; only the *target* path and *filename* change.
+
+---
+
+## 4. Handling Already‑Recorded Ambiguous Lots (Current Quarter)
+
+Because the lots have already shipped, we **cannot simply rename the files** (that would break traceability). Instead, adopt a **metadata‑augmentation** strategy:
+
+1. **Identify Ambiguous Lot Numbers**  
+   - Run a scan of all `lot_log.csv` files from the current quarter.  
+   - Group by the *raw* 4‑digit lot number (e.g., `0123`).  
+   - Flag any group that appears under **more than one LineID** (derived from the date‑folder or from embedded scanner metadata if available).
+
+2. **Create a “Collision Resolution” Record** for each ambiguous lot:  
+
+   **File:** `/ScanLogs/2025/B/CollisionResolution/<AmbiguousLot>_<LineID>.json`
+
+   **Example JSON (`0123_A.json`):**
+   ```json
+   {
+     "ambiguousLotNumber": "0123",
+     "linesAffected": ["A", "B"],
+     "startDate": "2025-04-01",
+     "endDate": "2025-06-30",
+     "notes": "Both lines generated lot 0123 in Q2 2025. Product shipped under these numbers; USDA audit will reference this resolution file."
+   }
+   ```
+
+3. **Tag the Original Log Files** (without renaming) by adding a **header line** at the top of each CSV (if the format permits) or by appending a **side‑car** CSV with the same name but a `_meta.csv` suffix:
+
+   - **Header approach (if CSV parser ignores a comment line):**  
+     `# LotID=A-B-0123; Line=A; Quarter=B; OriginalLot=0123`
+
+   - **Side‑car approach:**  
+     Create `A-B-0123_2025-04-15.csv_meta.csv` containing:
+     ```
+     OriginalLotNumber,LineID,ResolvedLotID
+     0123,A,A-B-0123
+     ```
+
+   This **preserves the original file name** (so any downstream systems that already reference it continue to work) while providing a clear mapping to the *resolved* LotID.
+
+4. **Update Internal Reporting & Audits**  
+   - When generating lot‑track reports, the system should **join** the original log file with its corresponding side‑car/metadata to present the **resolved LotID** (`A-B-0123`, `B-B-0123`, …).  
+   - Include a **footnote** in USDA‑required documentation stating: “Lot numbers 0123 (Q2 2025) were generated on both Line A and Line B. They have been disambiguated by appending the line identifier as shown above. No product was re‑labeled; the mapping is for record‑keeping only.”
+
+5. **Long‑Term Archival**  
+   - After the quarter closes, **archive** the collision‑resolution folder alongside the regular logs.  
+   - Keep the original ambiguous files **read‑only** in a dedicated “LegacyAmbiguous” sub‑folder for historical completeness, but **do not** expose them as active lot identifiers.
+
+**Result:** The USDA audit will see a clean, unambiguous lot‑tracking dataset moving forward, while the plant retains a transparent, auditable record of the legacy collision.
+
+---
+
+## 5. Quick Reference Cheat‑Sheet (to distribute to staff)
+
+| Element | Example | Meaning |
+|---------|---------|---------|
+| **Line ID** | `A`, `B`, `C` | Production line identifier |
+| **Quarter Suffix** | `A` (Q1), `B` (Q2), `C` (Q3), `D` (Q4) | Fiscal quarter |
+| **Quarter Counter** | `0123` | 4‑digit, zero‑padded, resets **per line** each quarter |
+| **Lot ID** | `A-B-0123` | Full, unique lot identifier |
+| **Folder Path** | `/ScanLogs/2025/B/A/` | Year → Quarter → Line |
+| **File Name** | `A-B-0123_2025-07-15.csv` (or `_001.csv` if needed) | Self‑describing log file |
+| **Collision‑Resolution File** | `/ScanLogs/2025/B/CollisionResolution/0123_A.json` | Metadata for ambiguous legacy lots |
+
+---
+
+### TL;DR
+
+- **New Lot ID:** `Line‑QuarterLetter‑QuarterCounter` (e.g., `A‑B‑0123`). Counters reset **per line** each quarter → no more cross‑line collisions.  
+- **File storage:** ` /ScanLogs/<Year>/<Quarter>/<Line>/<LotID>_<ISODate>[_<Seq>].csv ` – fully self‑describing.  
+- **Legacy ambiguous lots:** Keep original files, attach side‑car metadata or header rows that map the old 4‑digit number to the resolved LotID, and store a dedicated collision‑resolution record.  
+- **Implementation:** Update scanner config, deploy a tiny counter service, restructure folders, add metadata, train staff – all achievable within a 6‑8‑week window with zero disruption to shipped product.
+
+This taxonomy satisfies USDA lot‑tracking requirements, provides an audit‑ready, human‑readable file system, and cleanly resolves the current numbering ambiguity without re‑labeling shipped product.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### MSP Proposal: Lot Tracking Remediation & Taxonomy Overhaul
+
+**To:** Plant Management / QA Director  
+**From:** MSP Infrastructure & Compliance Team  
+**Subject:** Remediation of Lot ID Collisions, File Overwrite Risks, and USDA Audit Compliance  
+
+---
+
+#### 1. Executive Summary & Risk Assessment
+The current configuration presents **Critical** risks:
+1.  **Data Loss:** Generic filenames (`lot_log.csv`) with overwrite behavior mean scan data is actively being destroyed when lines switch lots or run in parallel.
+2.  **Regulatory Non-Compliance:** Duplicate lot numbers within the same quarter violate USDA FSIS traceability requirements. An audit finding identical lot numbers for physically distinct products can result in suspension of inspection, product recalls, or civil penalties.
+3.  **Operational Ambiguity:** Duplicate IDs break the chain of custody between the processing floor and shipping documents.
+
+The following taxonomy and structure eliminate collisions, prevent overwrites, ensure self-describing files, and provide a compliant remediation path for already-shipped product.
+
+---
+
+#### 2. Proposed Lot-ID Taxonomy
+**Objective:** Guarantee global uniqueness while retaining human readability and alignment with quarterly operations.
+
+**Current Flaw:** The counter resets quarterly but lacks a **Line** dimension, causing collisions when parallel lines generate numbers in the same window.
+
+**New Taxonomy:**  
+> `YYQ{Q}{L}{Seq}`
+
+*   **`YY`**: Year (e.g., `24`)
+*   **`Q{Q}`**: Quarter (e.g., `Q1`, `Q2`)
+*   **`{L}`**: Production Line Identifier (e.g., `1`, `2`, `3`)
+*   **`{Seq}`**: Sequence Number (4 digits, resets per Line per Quarter)
+
+**Example:**  
+*   Line 1, 456th lot of Q1 2024: `24Q1L10456`  
+*   Line 2, 456th lot of Q1 2024: `24Q1L20456`  
+
+**Benefits:**
+*   **Collision-Proof:** The Line ID is embedded in the lot number. Line 1 and Line 2 can never generate the same ID, even if sequence counters are synchronized.
+*   **Self-Describing:** Any employee or auditor can instantly identify the Year, Quarter, Line, and Sequence from the ID alone.
+*   **Sortable:** Alphanumeric sorting places lots in chronological and logical order.
+*   **Scalable:** Supports 9,999 lots per line per quarter. If volume approaches this limit, the taxonomy can expand to 5 digits without breaking the structure.
+
+---
+
+#### 3. File/Folder Naming & Structure
+**Objective:** Eliminate file overwrites, improve retrieval speed, and ensure filenames are self-describing.
+
+**A. Folder Structure (Date-Partitioned)**  
+Flat shared folders create performance bottlenecks and management nightmares. Implement a hierarchical date structure:
+
+```text
+\\FileServer\USDA_LotLogs\
+  └── 2024\
+      └── 04\
+          └── 15\   <-- Day folder created automatically at start of shift
+```
+
+**B. Filename Convention**  
+Scanners must be reconfigured to generate filenames based on the **New Lot ID**. This ensures that Line 1 and Line 2 write to distinct files simultaneously without conflict.
+
+> `Log_{LotID}_{Line}_{StartDate}.csv`
+
+**Example:**  
+`Log_24Q1L10456_L1_20240415.csv`
+
+**Key Changes:**
+*   **Uniqueness:** Filename is unique per lot instance.
+*   **No Overwrite:** Starting a new lot generates a new filename. The old file is closed and preserved.
+*   **Self-Describing:** The filename contains the Lot ID, Line, and Date. No file needs to be opened to verify contents.
+*   **Scanner Config:** *Critical Action:* The scanner middleware/script must be updated to query the new Lot ID from the ERP/Scanner UI and inject it into the filename, rather than hardcoding `lot_log.csv`.
+
+---
+
+#### 4. Remediation of Ambiguous Legacy Lots
+**Constraint:** Product has shipped under the duplicate lot numbers. Renaming would break the chain of custody and cause mismatches with bills of lading and customer records.
+
+**Strategy: Contextual Disambiguation & Metadata Bridging**  
+We cannot change the past, but we can resolve the ambiguity by creating a **permanent audit trail** that maps the ambiguous IDs to the physical reality.
+
+**Actions:**
+1.  **Quarantine & Preserve:** Immediately copy all existing scan logs for the current quarter to a `\\FileServer\USDA_LotLogs\Legacy\2024Q1_Ambiguous\` folder. Set these to Read-Only. Do not delete them.
+2.  **Create Disambiguation Manifest:** Generate a reconciliation file (`LegacyLot_Manifest_2024Q1.csv`) containing:
+    *   `AmbiguousLotID` (e.g., `0456`)
+    *   `LineID` (e.g., `Line 1` vs `Line 2`)
+    *   `ScanTimestamp` (Start/End times distinguish the physical lots)
+    *   `ShippedOrderID` (Links to ERP shipping docs)
+    *   `NewInternalRef` (The corrected ID format, e.g., `24Q1L10456`)
+3.  **ERP Flagging:** Flag the ambiguous lots in the ERP system with a note: *"Duplicate ID resolved via Legacy Manifest. Trace by Line and Timestamp."*
+4.  **Audit Response:** If USDA audits the duplicate numbers, the plant presents the **Manifest** and the **Quarantined Logs**. This demonstrates:
+    *   The ambiguity is identified.
+    *   The specific lots are distinguishable by Line/Time.
+    *   Traceability is intact via the manifest.
+    *   The root cause is corrected for all future lots.
+
+*USDA Auditors prioritize traceability over formatting. As long as you can prove which product went where and link it to the shipping record, the ambiguity is resolvable. Hiding the issue or overwriting logs would be a much greater violation.*
+
+---
+
+#### 5. Implementation Checklist
+1.  **Scanner Software Update:** Modify log-write scripts to use `Log_{LotID}_...` naming convention. Test on a non-production line first.
+2.  **Folder Automation:** Deploy a simple script or use file server features to auto-create `YYYY/MM/DD` folders.
+3.  **Legacy Remediation:** Execute the Disambiguation Manifest process before the next quarter reset.
+4.  **Permissions:** Restrict the `USDA_LotLogs` share. Users/Scanners get `Create/Write`; QA/Admins get `Full Control`. Prevent accidental deletion.
+5.  **Backup Verification:** Ensure the MSP backup job captures the new hierarchical structure and verifies file integrity.
+6.  **Training:** Brief QA and Production leads on the new Lot ID format and the "Do Not Rename" policy for shipped goods.
+
+---
+
+#### 6. Optional Enhancements for USDA Best Practices
+*   **Establishment Number:** Consider prepending the FSIS Establishment Number to the taxonomy (e.g., `EST12345-24Q1L10456`) if internal systems allow, as this aligns with federal labeling requirements.
+*   **Checksum/Hash:** Append an MD5/SHA hash of the file content to the filename upon closure to detect corruption during audits.
+
+**Immediate Recommendation:** Halt the quarterly reset until the Disambiguation Manifest is completed and the scanner configuration is deployed. We can schedule a 2-hour window to deploy the naming script and validate uniqueness across all three lines.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+To resolve the **data integrity**, **audit readiness**, and **traceability** issues in this USDA-inspected poultry processing plant, we need a robust, forward-looking file and lot-ID naming strategy that:
+
+1. **Eliminates filename collisions** by ensuring each scan log is uniquely named.
+2. **Prevents lot-ID ambiguity** across parallel production lines.
+3. **Maintains regulatory compliance** by preserving historical accuracy while improving future traceability.
+4. **Is self-describing** — filenames should clearly indicate content without needing to open the file.
+
+---
+
+### ✅ **Recommended Solution: Hierarchical Folder Structure + Composite Lot ID**
+
+#### **1. New Folder & File Naming Convention**
+
+Adopt a structured, hierarchical folder system with **production-line-specific folders** and **composite, deterministic filenames**.
+
+```
+/LotLogs
+  /LINE01
+    YYYY-Q1_LINE01_LOT0001_202501151030.csv
+    YYYY-Q1_LINE01_LOT0002_202501160815.csv
+  /LINE02
+    YYYY-Q2_LINE02_LOT0001_202504011045.csv
+  /LINE03
+    YYYY-Q2_LINE03_LOT0001_202504011120.csv
+```
+
+##### **Filename Format:**
+```
+<Year>-Q<Quarter>_LINE<NN>_LOT<XXXX>_<Timestamp>.csv
+```
+
+- **`<Year>`**: 4-digit year (e.g., 2025)
+- **`Q<Quarter>`**: Q1, Q2, Q3, Q4
+- **`LINE<NN>`**: Two-digit line identifier (01, 02, 03)
+- **`LOT<XXXX>`**: The plant’s existing 4-digit running counter (e.g., 0001–9999)
+- **`<Timestamp>`**: Start time of the lot in `YYYYMMDDHHMM` format (24-hour clock)
+
+> ✅ Example: `2025-Q2_LINE02_LOT0045_202504151320.csv`  
+> → Line 02, Lot 0045 (this quarter), started April 15, 2025 at 1:20 PM
+
+---
+
+#### **2. Why This Works**
+
+| Requirement | Solved By |
+|-----------|---------|
+| **Unique filenames** | Combination of line + lot + timestamp ensures global uniqueness |
+| **Self-describing** | Line, lot, time, and quarter visible at a glance |
+| **No cross-line collisions** | Line ID is embedded in filename and folder path |
+| **Audit-ready** | Chronology, source line, and lot are traceable without parsing content |
+| **Preserves plant’s lot numbering** | Keeps existing 4-digit counter per quarter (familiar to staff) |
+| **Scalable** | Works for any number of lines, quarters, or future expansion |
+
+> 📁 **Folder structure** reinforces separation: each line has its own folder to prevent accidental overwrites.
+
+---
+
+### ✅ **3. Eliminating Future Lot-Number Collisions**
+
+The **core cause** of the audit issue was that **multiple lines used the same lot number simultaneously** (e.g., Line 01 and Line 02 both had "LOT0012" in Q2 2025).
+
+**Solution: Use Composite Lot IDs in All Systems Going Forward**
+
+While keeping the **internal 4-digit counter per line per quarter**, all **digital records, labels, and reports** must use the **composite lot ID**:
+
+```
+<Year>-Q<Quarter>-LINE<NN>-LOT<XXXX>
+```
+
+> Example: `2025-Q2-LINE02-LOT0045`
+
+This becomes the **official traceable lot ID** in:
+- Barcode scanner logs
+- Batch labels
+- Internal tracking systems
+- USDA documentation (if referenced digitally)
+
+> 🔄 The internal counter (e.g., "LOT0045") remains for operator familiarity, but **is no longer treated as globally unique**.
+
+---
+
+### 🛑 **4. Handling Already-Recorded Ambiguous Lot Numbers**
+
+> ❗ **You cannot retroactively rename files or change lot IDs** — product has already shipped under those IDs. Tampering would fail a USDA audit.
+
+#### **Recommended Action: Add Metadata, Not Rename**
+
+For the **current quarter’s conflicting lot numbers**, take these **non-invasive, compliant remediation steps**:
+
+1. **Audit Trail Documentation**  
+   Generate a **one-time audit memo** (signed by plant QA manager) that:
+   - Lists all conflicting lot numbers (e.g., "LOT0012" used on Line 01 and Line 02 on [dates])
+   - Includes timestamps from scan logs (if recoverable from overwritten files or backups)
+   - Maps each instance to the correct production line and start time
+   - Is stored in the plant’s **food safety record system** as an official clarification
+
+2. **Recover or Reconstruct Logs (if possible)**  
+   - Check backup systems or scanner local storage for overwritten `lot_log.csv` files.
+   - If recoverable, archive them with **corrected, unique filenames** in a `/Historical_Recovered/` folder — **do not alter original records**, but preserve data for traceability.
+
+3. **Add a "Legacy Ambiguity" Flag in Tracking System**  
+   In any digital tracking database, add a flag or note:  
+   > `⚠️ LOT0012 (Q2 2025) used on multiple lines — see audit memo #QA-2025-04 for traceability details`
+
+4. **Do NOT rename or modify any shipped product’s labeling or original digital logs**  
+   - Historical integrity > neatness
+   - USDA prioritizes **honesty about limitations** over falsified clarity
+
+---
+
+### ✅ Summary: Implementation Plan
+
+| Action | Responsibility |
+|------|----------------|
+| 1. Create line-specific folders (`/LINE01`, `/LINE02`, etc.) | MSP / IT |
+| 2. Update scanner software to write logs with new naming format | MSP + Plant IT |
+| 3. Enforce use of composite lot ID (`YYYY-Qx-LINExx-LOTxxxx`) in all new records | QA / Operations |
+| 4. Preserve existing lot counter per line/quarter (do not change shop floor practice) | Operations |
+| 5. Document and archive known lot conflicts in current quarter | QA Manager |
+| 6. Train staff on meaning of composite ID vs. internal counter | QA / Supervisors |
+
+---
+
+### Final Note: USDA Compliance Mindset
+
+USDA auditors expect:
+- **Traceability**, not perfection.
+- **Transparency** about past issues.
+- **Corrective actions** that prevent recurrence.
+
+By implementing a **unique, self-documenting log naming scheme** and **acknowledging past ambiguities with an audit trail**, the plant improves compliance **without falsifying history** — the gold standard in food safety auditing.
+
+✅ **Result**: No more overwrites. No more ambiguous lot IDs. Full traceability. Audit-ready.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Proposed Naming/Taxonomy Convention -- Lot-Tracking Scan Logs (3-Line Plant)
+
+New filename format: `<LineCode>-<Year>Q<Quarter>-<4-digit-lot-seq>_<ProductionDate
+YYYYMMDD>.csv`, e.g. `L1-2026Q3-0047_20260715.csv`. LineCode is a fixed 2-character
+identifier per production line (L1, L2, L3), assigned once and never reused. This makes every
+filename unique and self-describing without opening the file: which line, which quarter,
+which sequence number within that quarter/line, and the production date are all visible from
+the name alone.
+
+Lot-ID taxonomy: change the lot ID itself (not just the filename) to embed the line code as a
+prefix -- `L1-0047`, `L2-0047`, etc. -- instead of a bare 4-digit counter shared across all
+three lines. Because each line's counter now has its own namespace (L1's 0047 and L2's 0047
+are different, distinguishable IDs), two lines can never again produce an identical lot ID in
+the same quarter, even though each line's counter still independently resets to 0001 every
+quarter.
+
+Handling the existing collision (this quarter's already-shipped, ambiguous dual-use lot
+number): do NOT rename the historical records -- the product has already shipped under that
+bare number, and renaming after the fact would break traceability to shipping/customer
+records rather than fix it. Instead: (1) identify both original scan-event sets that share
+the collided number, (2) create a compensating cross-reference record explicitly documenting
+"lot #XXXX refers to two distinct physical lots: Line A's run on [date] and Line B's run on
+[date], disambiguated here because retroactive renaming is not possible," and (3) file that
+cross-reference alongside the original records so a future USDA audit finds the disambiguation
+immediately rather than discovering the collision cold.
+
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+We should come up with a better naming system so files don't get overwritten -- maybe include
+the date and a unique number in the filename going forward. For the lot numbers that collided,
+we can just renumber them so they're unique. That should prevent the audit issue from
+happening again.
+
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+## Executive Summary  
+
+* **Goal:**  Give every retained scan‑log a filename that can be understood *without* opening the file **and** guarantee that no two lots can ever share the same identifier again.  
+* **Scope:**  All future production on the three parallel lines, and a remedial “bridge” for the handful of lots that already collided this quarter.  
+* **Result:**  A **two‑level taxonomy** – a *Lot‑ID* that is the canonical, USDA‑compliant identifier, and a *File‑Path/Name* that embeds that same Lot‑ID together with human‑readable context (line, date, shift, etc.).  The solution is 100 % deterministic, requires only a small change to the scanner software (or a wrapper script), and can be rolled out in a single change‑window.
+
+---
+
+## 1.  Taxonomy – The “Lot‑ID” (the *single source of truth*)
+
+| Component | Format | Example | Rationale |
+|-----------|--------|---------|-----------|
+| **Plant Code** | Fixed 2‑char alphanumeric (e.g., `PA` for “Poultry A”) | `PA` | Guarantees uniqueness if the MSP ever services more than one USDA‑inspected plant. |
+| **Line Code** | Fixed 2‑char (L1, L2, L3) | `L1` | Distinguishes the three parallel lines. |
+| **Year** | 4‑digit calendar year | `2026` | USDA lot‑records are year‑based. |
+| **Quarter** | `Q1`‑`Q4` | `Q3` | Mirrors the existing 4‑digit counter reset schedule. |
+| **Line‑Quarter Sequence** | 4‑digit zero‑padded counter that **restarts each quarter *per line*** | `0007` | Keeps the familiar “four‑digit” feel for the plant while eliminating cross‑line collisions. |
+| **Timestamp** (optional for absolute uniqueness) | `YYYYMMDDhhmmss` | `20260718_091530` | Added automatically by the scanner; never collides, and can be used for forensic audit trails. |
+
+**Canonical Lot‑ID format (recommended for all USDA paperwork):**  
+
+```
+PA‑L1‑2026Q3‑0007
+```
+
+*If the plant wishes to keep the original 4‑digit “lot number” on paperwork, that number becomes a **derived field** (`0007`) inside the Lot‑ID – it no longer stands alone.*
+
+### 1.1  How the Lot‑ID is generated
+
+1. **At lot start** the scanner (or a thin “lot‑starter” script) reads the *line* and *current UTC date*.
+2. It looks up the **last used sequence** for that line & quarter (stored in a tiny “lot‑counter” DB on the file server, e.g. a SQLite file `lot_counter.db`).  
+   *If the quarter has changed, the counter is reset to `0001` automatically.*
+3. It increments the counter, builds the Lot‑ID string, and **writes the ID into the first row of the CSV** (USDA already requires the lot number to be in the file).  
+4. The same ID is used to name the file (see §2).
+
+Because the counter is **line‑specific**, two lines can never generate the same 4‑digit suffix in the same quarter, eliminating the root cause of the audit finding.
+
+---
+
+## 2.  File‑System Layout & Filename Convention  
+
+The folder hierarchy mirrors the Lot‑ID components, making it possible to locate a lot **by browsing** without ever opening a CSV.
+
+```
+<Root Share>\PA\
+│
+├─ L1\
+│   ├─ 2026\
+│   │   ├─ Q3\
+│   │   │   ├─ 2026-07-01_to_2026-09-30\
+│   │   │   │   ├─ PA-L1-2026Q3-0001_20260702_083000.csv
+│   │   │   │   ├─ PA-L1-2026Q3-0002_20260702_101500.csv
+│   │   │   │   └─ …
+│   │   └─ …
+│   └─ …
+├─ L2\ …
+└─ L3\ …
+```
+
+### 2.1  Filename pattern  
+
+```
+<Plant>-<Line>-<Year>Q<Quarter>-<Seq>_<YYYYMMDD>_<hhmmss>.csv
+```
+
+*Example:* `PA-L2-2026Q3-0042_20260718_091530.csv`
+
+**Why it works**
+
+| Element | What you learn at a glance |
+|---------|----------------------------|
+| `PA` | Plant (useful if the MSP hosts >1 USDA plant) |
+| `L2` | Production line |
+| `2026Q3` | Calendar quarter – matches the reset schedule |
+| `0042` | The “lot number” the plant is already used to reporting |
+| `20260718_091530` | Exact start‑time of the lot (UTC or plant local time) – guarantees uniqueness even if a scanner were to malfunction and reuse a sequence. |
+
+### 2.2  Advantages over the current “single folder / generic name”  
+
+| Problem | Old Method | New Method |
+|---------|------------|------------|
+| **Overwrite** | `lot_log.csv` is rewritten each lot → loss of history | Each lot gets a **different file**; no overwrites |
+| **No context** | You have to open the file to know which line / date it belongs to | Folder path + filename tell you **line, quarter, date, and sequence** instantly |
+| **Collision** | Same 4‑digit lot number can appear on any line | Counter is **line‑scoped**, so `L1‑0005` can never equal `L2‑0005` in the same quarter |
+| **Auditor sanity** | Auditors must cross‑reference timestamps in the file to guess the line | Auditors can verify the line simply by the folder/filename |
+
+---
+
+## 3.  Handling the **already‑recorded ambiguous lot numbers** (Q2‑2026)
+
+### 3.1  Constraints  
+
+* The product has already shipped with the original lot numbers (e.g., `0007` on Line 1 and Line 2).  
+* We **cannot rename** those CSV files because downstream systems (ERP, traceability, customer records) reference them by the original name/path.  
+
+### 3.2  Bridge Solution – a **Lot‑Resolution Metadata File**  
+
+1. **Create a master “Lot‑Resolution Table”** (`lot_resolution.xlsx` or a small relational DB) stored in a read‑only share (`\\fileserver\LotResolution\`).  
+2. For every **ambiguous lot** that exists in Q2‑2026, add a row:
+
+| OriginalFilePath | OriginalLotNumber | Line | StartDateTime (from file) | NewLotID (canonical) | Remarks |
+|------------------|-------------------|------|---------------------------|----------------------|---------|
+| `\\files\lot_log.csv` (L1) | `0007` | L1 | 2026‑04‑15 08:12:00 | `PA‑L1‑2026Q2‑0007` | First occurrence |
+| `\\files\lot_log.csv` (L2) | `0007` | L2 | 2026‑04‑15 09:45:00 | `PA‑L2‑2026Q2‑0007` | Second occurrence (collision) |
+
+3. **Distribute the table** to all audit‑relevant parties (USDA liaison, QA, ERP team). The table becomes the **official “lookup”** for any investigation that references the old lot numbers.  
+
+4. **Add a “side‑car” JSON file** next to each ambiguous CSV (read‑only) that contains the new canonical ID. Example: `lot_log_20260415_081200.json`
+
+```json
+{
+  "canonicalLotID": "PA-L1-2026Q2-0007",
+  "originalFile": "lot_log.csv",
+  "line": "L1",
+  "startTimestamp": "2026-04-15T08:12:00",
+  "note": "Original lot number collided with L2‑0007 – see LotResolution table."
+}
+```
+
+   *The side‑car does **not** rename the original CSV; it simply adds a machine‑readable pointer.*
+
+5. **Update SOPs**:  
+   * Any future audit request that cites the historic lot number must first be cross‑checked against the Lot‑Resolution Table.  
+   * The QA system will be configured to automatically read the side‑car JSON when a CSV is opened, displaying the canonical Lot‑ID in the UI.
+
+### 3.3  Why this satisfies the audit
+
+* **Traceability** – The original lot numbers remain unchanged in the shipped product records (so no retroactive “re‑labeling”).  
+* **Uniqueness for the audit** – The auditor can instantly see that `0007` on Line 1 and Line 2 are *different* canonical IDs (`PA‑L1‑…‑0007` vs `PA‑L2‑…‑0007`).  
+* **No data loss** – All original CSV content stays exactly as it was when the product left the plant.  
+* **Future‑proof** – The resolution table is a **single source of truth** for the past; the new naming scheme guarantees that no further collisions will ever happen.
+
+---
+
+## 4.  Implementation Roadmap (6‑week sprint)
+
+| Week | Activity | Owner | Deliverable |
+|------|----------|-------|-------------|
+| 1 | **Requirements freeze** – confirm plant code, line codes, time‑zone handling, and whether UTC or local time should be used. | QA Lead & MSP Project Manager | Signed requirement doc |
+| 2 | **Develop “Lot‑Starter” script** (PowerShell/Python) that reads line ID from scanner, increments per‑line/quarter counter, writes Lot‑ID into CSV header, and returns the full filename. | MSP Dev Team | `StartLot.ps1` (or `.py`) |
+| 3 | **Create folder hierarchy** on the file server; set proper NTFS permissions (read/write per line, read‑only for auditors). | IT Ops | `\\fileserver\PA\L1\2026\Q3\…` |
+| 4 | **Migrate existing logs** – move every current CSV into the appropriate quarterly folder (preserve original name). Add side‑car JSON and entry in the Lot‑Resolution Table for any lot number that appears on >1 line this quarter. | QA & Records Team | Completed migration + `lot_resolution.xlsx` |
+| 5 | **Pilot** – run two production days on each line using the new script. Verify: (a) correct file name, (b) correct Lot‑ID in CSV header, (c) no overwrites. | Line Supervisors | Pilot report |
+| 6 | **Full roll‑out** – switch all scanners to the new script, retire the old “lot_log.csv” shared folder. Conduct a **USDA mock audit** using the new naming scheme and the resolution table. | MSP Project Manager | Go‑live sign‑off & audit‑ready documentation |
+
+*Total effort: ~120 person‑hours (development + QA + training).*
+
+---
+
+## 5.  Quick Reference Cheat‑Sheet (to paste on the scanner console)
+
+```
+Lot‑ID = <Plant>-<Line>-<YYYY>Q<Quarter>-<Seq4>
+File  = <Plant>-<Line>-<YYYY>Q<Quarter>-<Seq4>_<YYYYMMDD>_<hhmmss>.csv
+
+Example:
+   Plant   = PA
+   Line    = L3
+   Date    = 2026‑07‑18
+   Time    = 09:15:30
+   Quarter = Q3
+   Seq     = 0045
+
+=> Lot‑ID : PA-L3-2026Q3-0045
+=> File   : PA-L3-2026Q3-0045_20260718_091530.csv
+```
+
+---
+
+## 6.  Bottom Line
+
+* **Uniqueness guaranteed** – The 4‑digit sequence is now scoped to *line + quarter*, eliminating any possibility of the same lot number appearing on two lines in the same quarter.  
+* **Self‑describing filenames** – Anyone (operator, auditor, IT) can determine plant, line, quarter, lot number, and exact start time just by looking at the path and filename.  
+* **Legacy collision resolved** – A lightweight, auditable mapping (resolution table + side‑car JSON) gives a permanent, official link between the old ambiguous numbers and the new canonical IDs without touching shipped product records.  
+* **Low‑cost, low‑risk** – Only a small script change and a re‑organization of folders; no hardware replacement, no database overhaul, and no impact on downstream ERP data that already stores the original lot number.
+
+Adopting this taxonomy will keep the plant fully compliant with USDA lot‑tracking regulations, protect it from future “same‑lot‑number on different lines” audit findings, and give the MSP a clean, maintainable structure for all future scan‑log data.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+## TL;DR  
+* **Future logs** – every scan‑log file gets a **globally unique, self‑describing name** that embeds:  
+
+  1. **Plant‑wide timestamp** (UTC YYYY‑MM‑DD‑HHMMSS) – guarantees uniqueness down to the second.  
+  2. **Line identifier** (L1, L2, L3).  
+  3. **Line‑local lot‑sequence number** (4‑digit, resets to 0001 each quarter *per line*).  
+  4. **Optional “origin‑code”** (e.g., “P” for poultry, “R” for re‑work) if you ever need to differentiate product types.  
+
+  **Resulting filename pattern**  
+
+  ```
+  YYYYMMDDTHHMMSS_L<LineID>_LOT<LLNN>.csv
+  ```
+
+  Example:  
+
+  ```
+  20251103T143210_L02_LOT0047.csv
+  ```
+
+* **Folder hierarchy** – a thin hierarchy that mirrors the same data elements, making it easy to browse without opening files:  
+
+  ```
+  /LotLogs/
+      └─ 2025/
+          └─ 2025-11/
+              └─ L02/
+                  └─ 20251103T143210_L02_LOT0047.csv
+  ```
+
+* **Legacy (already‑recorded) ambiguous lot numbers** – **do not rename** the files on disk. Instead, move them into a *read‑only* “legacy‑ambiguous” sub‑tree and annotate the filename with a *suffix that preserves the original lot‑number* while also providing a unique qualifier.  The suffix is added **only at the file‑system level**; the logical lot number that the business continues to use on the product label stays unchanged.
+
+  Example legacy file moved to:  
+
+  ```
+  /LotLogs/legacy‑ambiguous/2025/Q2/ambiguous_LOT0047_line1_20250415T091234.csv
+  ```
+
+  The suffix `_20250415T091234` is the UTC timestamp of the *first* scan that created the ambiguous file, guaranteeing uniqueness while still making the file discoverable via a simple directory scan.
+
+---
+
+## 1.  Why the Current Scheme Fails
+
+| Problem | Current Implementation | Why it Breaks USDA Lot‑Tracking |
+|---------|------------------------|---------------------------------|
+| **Single shared folder** | All three lines drop `lot_log.csv` into `\\fileserver\LotLogs` | Overwrites happen the moment any line starts a new lot. |
+| **Generic filename** | `lot_log.csv` | No intrinsic identifier → cannot be distinguished without opening the file. |
+| **Quarter‑reset 4‑digit lot counter** | Global counter 0001‑9999 that resets each quarter | Same numeric value can be generated on different lines → two physically different lots share a lot‑number. |
+| **Audit requirement** | Needs “self‑describing, unique filename” and “no collisions across lines” | USDA wants to verify lot provenance by *filename alone*. |
+
+The solution must **replace the single generic name with a name that is globally unique, contains all the information needed to trace the lot, and can be read by a script or a human without opening the file**.
+
+---
+
+## 2.  Taxonomy – From “lot number” to “lot identifier”
+
+### 2.1  Core Elements of the New Identifier
+
+| Element | Symbol | Description | How it is generated |
+|---------|--------|-------------|---------------------|
+| **Plant‑wide timestamp** | `TS` | UTC date‑time down to seconds (`YYYYMMDDTHHMMSS`). | Auto‑generated by the scanner at the moment the first barcode for a new lot is read. |
+| **Line code** | `L#` | One‑character or two‑character identifier for the production line (e.g., `L01`, `L02`, `L03`). | Configured per scanner; never changes. |
+| **Line‑local lot sequence** | `LOT<NNNN>` | 4‑digit sequential counter **per line per quarter** (0001‑9999). | Incremented each time a new lot starts on that line; resets to 0001 at the first lot of the quarter. |
+| **Product‑type code (optional)** | `P#` | Short code for product family (e.g., `P01` = whole‑bird, `P02` = parts). | Fixed per product family, optional. |
+| **Checksum / hash (optional)** | `H` | 2‑digit CRC or short hash for extra safety (e.g., `H01`). | Calculated over the filename components; not required for uniqueness but helpful for audit trails. |
+
+### 2.2  Full Filename Pattern
+
+```
+<TS>_L<LineID>_LOT<LLNN>[_P<PP>][_H<HH>].csv
+```
+
+*All components are concatenated with underscores; no spaces or special characters other than the underscore and the leading “T” in the timestamp.*
+
+#### Example (real‑world)
+
+```
+20251103T143210_L02_LOT0047_P01.csv
+```
+
+*Interpretation*  
+
+* `20251103T143210` – the exact UTC time the lot was opened on line 2.  
+* `L02` – the line that generated the file.  
+* `LOT0047` – the 47th lot opened on line 2 in the current quarter.  
+* `P01` – product family “whole bird” (optional).  
+
+If you need a checksum:  
+
+```
+20251103T143210_L02_LOT0047_P01_H01.csv
+```
+
+### 2.3  Folder Layout (optional but highly recommended)
+
+```
+<RootFolder>/
+   └─ <Year>/                     ← Year folder (e.g., 2025)
+        └─ <Year>-<Quarter>/      ← Quarter folder (e.g., 2025-Q2)
+             └─ L<LineID>/          ← Line sub‑folder (e.g., L02)
+                  └─ <TS>_L<LineID>_LOT<LLNN>[_P<PP>][_H<HH>].csv
+```
+
+*Why this layout?*  
+
+* **Human‑readable navigation** – a quick “ls” shows the year → quarter → line → file path.  
+* **No name collisions** – even if two files are created in the same second on different lines, the full timestamp (including milliseconds if you want to add them) stays unique.  
+* **Audit‑ready** – the folder depth mirrors the data elements required for USDA traceability (Year, Quarter, Line, Lot‑Sequence, Timestamp).
+
+---
+
+## 3.  Enforcing Uniqueness at the Application Level
+
+1. **Scanner firmware / driver** – add a small script that, when a new lot is detected, does the following:  
+
+   a. Capture the **UTC timestamp** (e.g., using `datetime.utcnow().strftime("%Y%m%dT%H%M%S")`).  
+   b. Increment the **line‑local lot counter** (persisted in a tiny SQLite DB per line).  
+   c. Build the filename using the pattern above.  
+   d. Write the file directly to the appropriate folder (`<Root>/<Year>/<Year>-<Quarter>/L<LineID>/`).  
+
+2. **Collision guard** – before creating the file, the script checks for an existing file with the same constructed name. If one exists (extremely unlikely but possible if two scanners race), the script appends a **millisecond suffix** (`_<ms>`) and retries. Because the timestamp includes seconds, the probability of a clash is < 1 in 10⁶ per line per day.
+
+3. **Immutable file name** – Once the file is closed, the name is never changed. This satisfies the “self‑describing” requirement: a user can look at `20251103T143210_L02_LOT0047_P01.csv` and instantly know *when*, *where*, *which lot* (by sequence), and *what product family* it belongs to.
+
+---
+
+## 4.  Handling the Already‑Recorded Ambiguous Lot Numbers
+
+The audit discovered that **some lots already share the same numeric lot‑counter** (e.g., “LOT0047”) on different lines within the same quarter. Because those files already exist on the shared drive and product has shipped under those numbers, **renaming them in‑place would break downstream references (ERP, shipping manifests, etc.)**.  
+
+### 4.1  What We Do **NOT** Do  
+
+* **Never rename** the original files on the live share.  
+* **Never delete** them without a documented migration plan.  
+
+### 4.2  What We **DO** Do  
+
+1. **Create a “legacy‑ambiguous” archive tree** that mirrors the new taxonomy but **adds a disambiguating suffix** that is *derived from the original file’s creation timestamp* (or another unique attribute).  
+
+   ```
+   /LotLogs/legacy-ambiguous/<Year>/<Year>-<Quarter>/ambiguous_LOT<NNNN>_<LineID>_<OriginalTS>.csv
+   ```
+
+   *Example*  
+
+   ```
+   /LotLogs/legacy-ambiguous/2025/Q2/ambiguous_LOT0047_L01_20250415T091234.csv
+   ```
+
+   *Why this works*  
+
+   * The suffix (`_20250415T091234`) is the **exact UTC timestamp** when the original ambiguous file was first created. Because timestamps are unique to the second, the full path becomes unique even though the logical lot number (`LOT0047`) is duplicated.  
+   * The prefix `ambiguous_` flags the file as a *historical artifact* that must be reviewed for audit compliance.  
+
+2. **Update the inventory/ERP mapping** – add a column that points from the **physical file path** in the legacy‑ambiguous folder to the **new, unambiguous filename** that will be used for any *future* references to that lot. This can be a simple CSV mapping file:
+
+   ```
+   old_path,new_path,original_lot_number,line_id,quarter
+   \\fileserver\LotLogs\2025\Q2\L01\lot_log.csv,\\LotLogs\legacy-ambiguous\2025\Q2\ambiguous_LOT0047_L01_20250415T091234.csv,0047,L01,Q2
+   ```
+
+   This mapping can be used by downstream reporting tools to translate legacy references without needing to rename anything on disk.
+
+3. **Mark the legacy files as read‑only** (Windows ACL “Read” only, or Linux `chmod 444`). This prevents accidental overwrites while still allowing auditors to browse them.
+
+4. **Communicate** – Issue an internal SOP that says:  
+
+   *“All new lot‑tracking scans must use the new filename pattern under the active folder hierarchy. Legacy ambiguous files remain in *LotLogs\legacy‑ambiguous* and must never be moved, renamed, or deleted. When a legacy file is needed for a traceability query, the mapping table should be consulted to retrieve the associated new‑style identifier.”*
+
+---
+
+## 5.  Full Example – From Creation to Audit Retrieval
+
+### 5.1  Creation (new lot on Line 2)
+
+1. Scanner reads first barcode of a new lot at `2025‑11‑03 14:32:10 UTC`.  
+2. Line‑local counter for line 2 is at **47** for Q4 2025.  
+3. Script builds filename:  
+
+   ```
+   20251103T143210_L02_LOT0047_P01.csv
+   ```
+
+4. Writes to:  
+
+   ```
+   \\fileserver\LotLogs\2025\2025-Q4\L02\20251103T143210_L02_LOT0047_P01.csv
+   ```
+
+### 5.2  Audit lookup (no file opening required)
+
+* An auditor wants to verify all records for lot **0047** on line 2 during Q4 2025.  
+
+* Using a simple directory listing:  
+
+  ```
+  dir \\fileserver\LotLogs\2025\2025-Q4\L02\*LOT0047*.csv
+  ```
+
+  The command returns exactly one file:  
+
+  ```
+  20251103T143210_L02_LOT0047_P01.csv
+  ```
+
+* The auditor can instantly see:  
+
+  * **When** – 2025‑11‑03 14:32 UTC (`20251103T143210`)  
+  * **Where** – Line 2 (`L02`)  
+  * **Which lot sequence** – 0047 on that line  
+  * **What product** – `P01` (whole birds)  
+
+  No need to open the CSV or query a database.
+
+### 5.3  Retrieving a legacy ambiguous record
+
+* Suppose the original ambiguous file was `\\fileserver\LotLogs\lot_log.csv` (written by line 1 during Q2 2025).  
+
+* It is moved to:  
+
+  ```
+  \\fileserver\LotLogs\legacy-ambiguous\2025\Q2\ambiguous_LOT0047_L01_20250415T091234.csv
+  ```
+
+* The mapping table entry reads:  
+
+  ```
+  old_path,new_path,original_lot_number,line_id,quarter
+  \\fileserver\LotLogs\lot_log.csv,\\fileserver\LotLogs\legacy-ambiguous\2025\Q2\ambiguous_LOT0047_L01_20250415T091234.csv,0047,L01,Q2
+  ```
+
+* When an auditor queries “show me all lot 0047 records”, the query can join on the mapping table and retrieve both the *new* uniquely‑named file (if any later lots used the same number on a different line) **and** the legacy ambiguous file, preserving the original context.
+
+---
+
+## 6.  Checklist for Implementation
+
+| Step | Action | Owner | Deadline |
+|------|--------|-------|----------|
+| **1. Define constants** | `ROOT = \\fileserver\LotLogs`; `YEAR = 2025`; `LINE_IDS = {L01, L02, L03}` | IT / SCADA team | +1 wk |
+| **2. Update scanner firmware** | Add timestamp + line‑ID + lot‑counter logic; write to new folder hierarchy | Automation engineer | +2 wks |
+| **3. Create folder skeleton** | `mkdir $ROOT\2025\2025-Q2\L01` etc. (automated on first write) | Sysadmin | +1 wk |
+| **4. Deploy naming script** | Bash/Python/Powershell that builds `TS_L<ID>_LOT<NNNN>[_P<PP>][_H<HH>].csv` and writes file | DevOps | +2 wks |
+| **5. Build legacy‑ambiguous archive** | Move existing ambiguous files, add suffix, set read‑only ACL | QA lead | +1 wk |
+| **6. Generate mapping CSV** | One‑time script to scan legacy files, create `<old_path>,<new_path>` entries | Data analyst | +1 wk |
+| **7. Update SOPs & train staff** | Document “how to read a filename”, “how to locate legacy files via mapping” | Compliance | +1 wk |
+| **8. Test & audit** | Run a “list‑all‑files” script, verify no duplicate names, verify audit trail can be reproduced without opening files | Internal audit | +2 wks |
+| **9. Go‑live** | Switch production scanners to new naming convention | Plant manager | +1 wk after testing |
+
+---
+
+## 7.  Benefits – What This Solves for USDA
+
+| Requirement | How the Proposed Scheme Satisfies It |
+|-------------|--------------------------------------|
+| **Unique filename per log** | Timestamp + line ID + lot sequence guarantee global uniqueness. |
+| **Self‑describing (no file open)** | All relevant metadata (date‑time, line, lot sequence, product family) is encoded in the filename itself. |
+| **No collisions across lines** | Lot sequence counter is *per line*; the line code is part of the filename; even if two lines use the same numeric sequence, the full filename differs because of the line prefix and timestamp. |
+| **Audit‑ready traceability** | Folder hierarchy mirrors the data elements; a simple directory listing produces the same information that an auditor would extract by opening a CSV. |
+| **Preserve existing shipments** | Legacy ambiguous files are retained in a read‑only archive with a unique suffix; product labels keep the original lot number; no downstream data is altered. |
+| **Scalable for future quarters** | The taxonomy works indefinitely – just change the year/quarter folders; counters reset per line per quarter automatically. |
+| **Minimal impact on existing processes** | Only the *write* side changes; downstream consumers can continue to read CSVs as before; the only new step is to reference the *new* filename when pulling data from the shared folder. |
+
+---
+
+## 8.  Quick “One‑Liner” Summary (for an email)
+
+> **All future lot‑scan logs will be saved as**  
+> `YYYYMMDDTHHMMSS_L<Line>_LOT<NNNN>[_P<PP>][_H<HH>].csv`  
+> **under** `\LotLogs\<Year>\<Year>-<Quarter>\L<Line>\`.  
+> **Existing ambiguous files are moved to a read‑only “legacy‑ambiguous” tree with a timestamp suffix**, preserving the original lot number on the product label while guaranteeing a unique filename for audit purposes.
+
+---
+
+### Final Thought  
+By embedding **when**, **where**, and **which‑line** into every filename, you eliminate the ambiguity that caused the USDA audit finding, while keeping the **logical lot number** (the 4‑digit counter) available for product‑labeling and ERP systems. The legacy‑ambiguous archive protects shipped inventory from being “rewritten,” yet still provides a traceable, uniquely‑named reference for any future audit. This design is **simple enough for a file‑system browser** and **robust enough for a federal inspection**.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### Executive Summary
+The current system violates USDA FSIS traceability requirements on two fronts: **data integrity** (overwriting logs) and **identity uniqueness** (duplicate lot numbers across lines). To achieve compliance, we must implement a hierarchical file system that prevents collisions and a composite lot-ID schema that ensures global uniqueness.
+
+For the historical data where physical labels cannot be changed, we will implement a **Digital Disambiguation Protocol** to maintain traceability in the records without altering the shipped product labels.
+
+---
+
+### 1. File & Folder Naming Taxonomy
+**Objective:** Ensure every log file is unique, never overwritten, and readable at a glance without opening it.
+
+**Folder Structure:**
+We will move away from a flat shared folder to a time-based hierarchy. This isolates data by day and line.
+*   **Root:** `\\Server\USDA_Traceability\`
+*   **Level 1 (Year):** `\\Server\USDA_Traceability\2023\`
+*   **Level 2 (Month):** `\\Server\USDA_Traceability\2023\10\`
+*   **Level 3 (Day):** `\\Server\USDA_Traceability\2023\10\25\`
+*   **Level 4 (Line):** `\\Server\USDA_Traceability\2023\10\25\Line-01\` (Repeat for Line-02, Line-03)
+
+**Filename Schema:**
+The filename must contain the **Lot ID**, **Line ID**, and **Scan Timestamp** (ISO 8601 style).
+*   **Format:** `[LOT_ID]_[LINE_ID]_[YYYYMMDD_HHMMSS].csv`
+*   **Example:** `USDA-231025-L1-00001_L1_20231025_143000.csv`
+*   **Self-Describing Logic:**
+    *   `USDA-231025-L1-00001`: The unique Lot ID (see Section 2).
+    *   `L1`: The production line the data belongs to.
+    *   `20231025_143000`: The exact start time of the scan log.
+
+**Implementation:**
+The MSP will script the scanner software to create the directory path dynamically before writing the file. If the path does not exist, it creates it. This prevents the "overwrite" issue entirely, as every new lot generates a new unique filename in a dedicated subfolder.
+
+---
+
+### 2. Lot-ID Taxonomy
+**Objective:** Eliminate lot-number collisions across lines and time.
+
+**Current Problem:** A 4-digit counter (0001–9999) resets quarterly. Line A and Line B can both use "0055" in Q3, creating ambiguity.
+
+**Proposed Schema:**
+Adopt a **Composite Key** structure: `FacilityCode - Date - LineID - Sequence`.
+*   **Facility:** `USDA` (2 chars)
+*   **Date:** `YYMMDD` (6 chars) — Ensures uniqueness across quarters/dates.
+*   **Line:** `L1`, `L2`, `L3` (2 chars) — Ensures uniqueness across parallel lines.
+*   **Sequence:** `XXXXX` (5 chars) — Replaces the 4-digit counter. Starting from 00001 per day/line.
+
+**Example:** `USDA-231025-L1-00001`
+**Why this works:**
+1.  **Global Uniqueness:** No two lines can generate the same ID because the `L1`/`L2`/`L3` tag is part of the ID.
+2.  **Time-Bound:** The `231025` (Oct 25, 2023) tag ensures that even if `00001` is reused on a different day, the ID is distinct.
+3.  **Audit-Ready:** The ID itself tells the auditor the production date, line, and sequence.
+
+---
+
+### 3. Remediation of Historical Ambiguity
+**Constraint:** Physical product has already shipped with ambiguous lot numbers (e.g., Line A "0055" and Line B "0055"). We cannot relabel the product.
+
+**Solution: Digital Disambiguation Index**
+Since the physical labels are immutable, we must ensure the **digital record** is unique to maintain traceability. We cannot simply rename the Lot ID in the database, as it would break the link to the physical label. Instead, we will implement a **Shadow ID** strategy.
+
+1.  **Create a Legacy Mapping Table:**
+    In the database, create a lookup table that maps the ambiguous physical label to a unique `InternalTraceID`.
+    *   *Physical Label:* `USDA-23Q3-0055` (Line A, 10:00 AM) -> *Internal ID:* `HIST-001-LA-23Q3-0055`
+    *   *Physical Label:* `USDA-23Q3-0055` (Line B, 14:00 PM) -> *Internal ID:* `HIST-001-LB-23Q3-0055`
+
+2.  **Augment Existing Records:**
+    For every existing scan log associated with the ambiguous lots, the MSP will inject the **Line ID** and **Production Timestamp** into the metadata (e.g., CSV headers or database fields).
+    *   *Old Record:* Lot `0055`
+    *   *New Record:* Lot `0055` | Line: `Line-A` | Time: `2023-10-25 10:00`
+
+3.  **Recall Protocol Adjustment:**
+    In the event of a recall, the system will query the **InternalTraceID**, not just the physical label. If a customer calls for "Lot 0055", the system will return *all* records for that lot number, but the **Line ID** field in the data will allow the plant to distinguish exactly which batches were affected (e.g., "Only Line A's 0055 was contaminated").
+
+4.  **USDA Corrective Action Notice (CAN):**
+    Document this process in the Quality Management System. State clearly: *"Due to the legacy 4-digit counter, physical lot numbers 0055-0055 were ambiguous. Traceability is maintained via a Digital Disambiguation Index that assigns unique Internal Trace IDs based on Line and Timestamp. Physical labels remain unchanged per regulatory constraints."*
+
+### Summary of Changes
+
+| Component | Current State | Proposed State | Benefit |
+| :--- | :--- | :--- | :--- |
+| **Storage** | Single Shared Folder | Hierarchical `Year/Month/Day/Line/` | Prevents overwriting; isolates data. |
+| **Filename** | `lot_log.csv` (Overwritten) | `LotID_Line_Timestamp.csv` | Self-describing; unique per scan. |
+| **Lot ID** | 4-digit Counter (Reset Qtrly) | `USDA-DATE-LINE-SEQ` (Composite) | Global uniqueness; no line collisions. |
+| **History** | Ambiguous Labels (0055) | **Legacy Mapping Table** + Line Tag | Maintains traceability without relabeling. |
+
+This approach satisfies the MSP's technical requirements for file management and meets the USDA's strict requirements for lot uniqueness and traceability, while pragmatically handling the historical data that cannot be altered.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here is a compliant, auditable, and forward-looking taxonomy that resolves the naming collision, guarantees filename uniqueness, and preserves chain-of-custody for already-shipped product.
+
+---
+### 1. Proposed Lot-ID Taxonomy
+**Format:** `YYYYQ[L][NNNN]`  
+**Example:** `2024Q1L20007`
+
+| Component | Description | Range/Rule |
+|-----------|-------------|------------|
+| `YYYY`    | Production year | 4-digit |
+| `Q`       | Quarter of production | `Q1`–`Q4` |
+| `L`       | Production line identifier | `01`, `02`, `03` |
+| `NNNN`    | Sequential lot counter | `0001`–`9999`, **resets each quarter per line** |
+
+**Why this eliminates collisions:**  
+The counter is now scoped to `Line + Quarter`, not plant-wide. Even if Line 1 and Line 2 both produce their 12th lot in Q1, they yield `2024Q1L10012` and `2024Q1L20012`. Total capacity: 10,000 unique lots per line per quarter. No ambiguity is possible.
+
+---
+### 2. Folder & Filename Naming Convention
+
+#### Folder Structure
+```
+//USDA_Lot_Tracking/
+  └── [Year]/
+      └── [Quarter]/
+          └── Line[XX]/
+              └── [filename.csv]
+```
+**Example:** `//USDA_Lot_Tracking/2024/Q1/Line02/`
+
+#### Filename Pattern
+`LOT_[LotID]_Line[XX]_[YYYYMMDD]_ScanLog.csv`  
+**Example:** `LOT_2024Q1L20007_Line02_20240118_ScanLog.csv`
+
+**Self-descriptiveness breakdown:**
+- `LOT_` prefix flags the file type
+- `[LotID]` provides the official traceability code
+- `Line[XX]` confirms production source
+- `[YYYYMMDD]` provides production start date
+- `ScanLog.csv` indicates content type
+
+No file needs to be opened to verify lot origin, line, date, or file purpose. OS-compliant length (<255 chars), no reserved characters, sortable alphabetically by lot ID → line → date.
+
+---
+### 3. Handling Already-Recorded Ambiguous Lots (Current Quarter)
+Product already shipped under colliding 4-digit numbers cannot be renamed without breaking FSIS chain-of-custody. Instead, implement a **non-destructive mapping & metadata preservation strategy**:
+
+| Step | Action | Compliance Rationale |
+|------|--------|----------------------|
+| 1 | **Freeze existing files** in their original names. Add read-only/`DO_NOT_DELETE` attributes. | Preserves shipped product documentation & audit trail. |
+| 2 | **Create a `Lot_ID_Alignment_Index.csv`** containing:<br>`OriginalAmbiguousID | ResolvedCanonicalID | AssignedLine | Quarter | Year | Status`<br>Example: `0012 | 2024Q1L10012 | 01 | Q1 | 2024 | Shipped` | Provides auditors with unambiguous traceability without altering shipped labels. |
+| 3 | **Archive originals** to `//USDA_Lot_Tracking/Legacy_Q1_2024/` with a `SCANLOG_ARCHIVE` tag. | Separates legacy data from new taxonomy while retaining accessibility. |
+| 4 | **Update internal SOPs** to reference the canonical ID (`YYYYQ[L][NNNN]`) for all future QA, recall, or audit responses. | Ensures forward consistency while legally honoring shipped lot labels. |
+
+USDA FSIS (9 CFR §309.201) requires lot codes to be unambiguous and consistent across production, packing, and shipping. The alignment index bridges the gap: shipped labels stay untouched, but internal tracking and audit responses use the resolved canonical IDs.
+
+---
+### 4. Implementation & Compliance Notes
+- **Scanner/Printer Configuration:** Reprogram barcode scanners or thin-client scripts to auto-generate the new format using:
+  - Line sensor or port identifier → injects `L[XX]`
+  - System clock → populates `YYYYQ[Q]`
+  - Counter registry → assigns `NNNN` (reset logic per line/quarter)
+- **File Server Safeguards:** Enable Windows NTFS permissions to block overwrite of existing `LOT_*` files. Use a write-once archive policy for scan logs.
+- **USDA Alignment:** The new taxonomy satisfies FSIS lot identification requirements: each code is unique, legible, traceable to line/date, and consistent across all documentation. The alignment index ensures backward-compliant recall/audit responses without compromising shipped product labels.
+- **Rollout Timeline:** 
+  - Day 1: Deploy folder structure + alignment index
+  - Day 2: Freeze legacy files + update scanner configs
+  - Day 3+: Enforce new naming for all new lots
+  - Audit ready within 72 hours of cutover
+
+This approach guarantees forward uniqueness, eliminates cross-line collisions, preserves shipped-product chain of custody, and provides auditors with transparent, self-describing traceability.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+To resolve this, we must move from a "sequential counter" model to a "composite identifier" model. This ensures that uniqueness is baked into the ID itself, rather than relying on a single global counter.
+
+Here is the proposed technical architecture and the compliance-based remediation plan.
+
+### 1. The New Taxonomy
+
+To eliminate collisions, the **Lot ID** must be unique across all lines, regardless of whether the counter resets. We will move from a 4-digit counter to a **Composite Lot ID**.
+
+#### A. The New Lot-ID Format
+The new ID will follow this structure: `[LineID]-[YearQuarter]-[Sequence]`
+
+*   **Line ID:** `L1`, `L2`, or `L3` (The identifier for the production line).
+*   **Year/Quarter:** `24Q1` (The year and the specific quarter).
+*   **Sequence:** A 4-digit padded counter `0001` (resets every quarter per line).
+
+**Example:** A lot produced on Line 2 in the first quarter of 2024 would be: **`L2-24Q1-0001`**.
+*Even if Line 1 is also on its first lot of the quarter (`L1-24Q1-0001`), the LineID prefix makes them globally unique.*
+
+#### B. The New File/Folder Hierarchy
+To prevent the "overwriting" issue, we will implement a hierarchical directory structure. This prevents different lines from attempting to write to the same filename and allows for easy archival.
+
+**Structure:**
+`[Root]/[Year]/[Quarter]/[Line_ID]/[ISO_Date]_[Lot_ID].csv`
+
+**Example Filename:**
+`2024/Q1/Line_02/20240215_L2-24Q1-0001.csv`
+
+**Why this satisfies the requirements:**
+*   **Unique:** The combination of Line ID, Date, and Composite Lot ID makes it impossible to have a collision.
+*   **Self-Describing:** Without opening the file, an auditor knows the exact date, the production line, and the specific lot number.
+*   **No Overwrites:** Since each line has its own folder and each file includes a timestamp and a unique Lot ID, collisions are mathematically eliminated.
+
+---
+
+### 2. Remediation of Legacy Data (Compliance Plan)
+
+The prompt correctly identifies a critical regulatory constraint: **You cannot rename the existing files.** In a USDA-inspected facility, the digital record must match the physical label. If a box in a warehouse says "Lot 0500" and your server says `Lot_0500_Line1_Corrected.csv`, you have committed a data integrity violation.
+
+Instead of renaming, we will perform a **Data Reconciliation and Supplemental Documentation** process.
+
+#### Step 1: The "As-Is" Preservation
+*   **Do not touch the original files.** The files `lot_log.csv` (or the specific versions currently in the folder) must remain exactly as they were written. This preserves the "originality" of the record for the audit trail.
+
+#### Step 2: The Reconciliation Log (The "Map")
+We will create a **"Lot Identification Reconciliation Report"** (LIRR). This is a separate, read-only document/file that acts as a bridge between the ambiguous physical labels and the digital logs.
+
+The LIRR will contain a table mapping the ambiguity:
+| Physical Lot Number | Timestamp (from log) | Line ID (from scanner/metadata) | Status |
+| :--- | :--- | :--- | :--- |
+| 0500 | 2023-10-12 08:15:00 | Line 1 | Verified via timestamp |
+| 0500 | 2023-10-12 08:15:05 | Line 2 | Verified via timestamp |
+
+#### Step 3: Corrective and Preventive Action (CAPA) Documentation
+In the eyes of the USDA, the most important thing is not that an error happened, but how you responded to it. We will file a formal **CAPA Report** that includes:
+1.  **Root Cause Analysis:** Identified a non-unique numbering scheme (4-digit counter) that failed to account for parallel production lines.
+2.  **Correction (Immediate):** Created a Reconciliation Log to distinguish between the duplicate lot numbers shipped in [Current Quarter].
+3.  **Preventive Action (Long-term):** Implementation of the Composite Lot-ID and hierarchical folder structure (as defined in Section 1) to ensure future uniqueness and data integrity.
+
+**Summary for the Auditor:** "We identified a collision in the legacy numbering scheme. To maintain the integrity of the original shipping records, we have left the files unchanged and have provided a Reconciliation Log to distinguish the specific lots based on timestamp and line metadata."
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+**Short answer**
+
+- Store every scan‑log in a *line‑specific* folder that is already partitioned by year/quarter.  
+- Name the file with a *compound key* that contains:  
+  1. Plant code (or “P” prefix)  
+  2. Line number (L1, L2, L3)  
+  3. Year‑Quarter (YYYYQn)  
+  4. **A globally‑incrementing lot sequence** that is unique for the whole plant (not per line)  
+  5. (Optional) ISO‑8601 timestamp of the first scan in that lot  
+- Thus a file might look like:  
+
+```
+P123/L1/2024/2024Q1/lot_log_P123-L1-2024Q1-000012_20240615T0830.csv
+```
+
+- The “000012” is the **lot‑sequence number** that never resets per line; it only resets every year (or every quarter, if you prefer).  
+- Because the plant ID, line, quarter, and sequence are all encoded in the name, the file is *self‑describing* and *guaranteed unique*—no two lines can write the same name.  
+
+For the **already‑ambiguous lots** (the duplicate 4‑digit counters that were shipped under the same number), we do **not rename the lot number** (the product already shipped under that number). Instead we:
+
+1. **Move the legacy logs** into a dedicated `legacy/` subtree (or keep them in the same folder but tag them with a suffix like `*_dup1.csv` / `*_dup2.csv`).  
+2. **Create a “Lot‑Audit‑Map”** file (JSON or CSV) that lists each ambiguous lot number, the line it came from, the actual scan‑log filename, and a *new* unique “Lot‑UID” that will be used for all downstream records (e.g., `P123-L1-2024Q1-000012`).  
+3. **Update downstream systems** (ERP, trace‑ability database) to reference this new Lot‑UID, not the legacy 4‑digit counter, for any future reconciliation.  
+
+Below is the full taxonomy, folder layout, and a transition plan.
+
+---
+
+## 1. Folder hierarchy
+
+```
+/P123/                           ← Plant code (P123, P456, etc.)
+├── 2024/                        ← Year
+│   ├── 2024Q1/                  ← Quarter
+│   │   ├── L1/                  ← Line 1
+│   │   │   ├── lot_log_P123-L1-2024Q1-000001_20240201T0900.csv
+│   │   │   ├── lot_log_P123-L1-2024Q1-000002_20240202T1100.csv
+│   │   │   └── …
+│   │   ├── L2/                  ← Line 2
+│   │   │   ├── lot_log_P123-L2-2024Q1-000001_20240201T0915.csv
+│   │   │   ├── lot_log_P123-L2-2024Q1-000002_20240202T1125.csv
+│   │   │   └── …
+│   │   └── L3/                  ← Line 3
+│   │       ├── lot_log_P123-L3-2024Q1-000001_20240201T0930.csv
+│   │       ├── lot_log_P123-L3-2024Q1-000002_20240202T1140.csv
+│   │       └── …
+│   └── 2024Q2/                  ← Next quarter
+│       └── …
+└── legacy/                       ← For the ambiguous logs that already shipped
+    ├── 2024Q1/                  ← Same folder structure, but with a suffix
+    │   ├── L1/dup1.csv
+    │   ├── L2/dup2.csv
+    │   └── …
+```
+
+*Why this layout?*  
+- **Line‑specific** – prevents accidental overwrite.  
+- **Year/Quarter** – keeps a clean audit trail.  
+- **Dedicated legacy subtree** – keeps old logs accessible without cluttering the live data.
+
+---
+
+## 2. Filename format – the “Lot‑ID taxonomy”
+
+| Element | What it is | Example | Why it matters |
+|---------|------------|---------|----------------|
+| **Plant code** | Fixed alphanumeric code for the plant (e.g., P123) | `P123` | Distinguishes between plants in a multi‑site operation. |
+| **Line ID** | `L1`, `L2`, `L3` | `L1` | Identifies the production line that generated the lot. |
+| **Year‑Quarter** | `YYYYQn` (e.g., 2024Q1) | `2024Q1` | Provides temporal context, required by USDA for period‑based audits. |
+| **Lot‑sequence** | **Globally‑incrementing** 6‑digit number, unique across the plant for the period | `000012` | Guarantees no collisions even if two lines produce the same 4‑digit counter. |
+| **Timestamp** | ISO‑8601 truncated to the minute (YYYYMMDDTHHMM) | `20240615T0830` | Makes the filename *self‑describing* – you can see when the first scan occurred. |
+| **Extension** | `.csv` | `.csv` | Standard CSV format. |
+
+**Full example:**
+
+```
+lot_log_P123-L1-2024Q1-000012_20240615T0830.csv
+```
+
+### How the Lot‑Sequence is generated
+
+- **Global counter per quarter**: The first lot that line 1 starts in 2024Q1 is `000001`, line 2’s first lot is `000002`, etc.  
+- **Reset policy**: Reset to `000001` at the *beginning of each quarter*.  
+- **Why not per line?** Because that would re‑introduce collisions.  
+- **Implementation**: The scanning software queries a small “Lot‑Counter” database (or a lock file) each time a new lot starts; the counter is atomically incremented and returned.  
+
+This guarantees that *no two lot‑sequence numbers are identical in a given quarter*, even across lines.
+
+---
+
+## 3. Handling the already‑ambiguous lots
+
+### 3.1 Identify the duplicates
+
+Create a quick scan of all existing `lot_log.csv` files and extract the 4‑digit counter. Build a table:
+
+| Plant | Line | Quarter | 4‑digit Counter | Scan‑Log Filename | Status |
+|-------|------|---------|-----------------|-------------------|--------|
+| P123  | L1   | 2024Q1  | 0012            | `lot_log.csv`     | Duplicated |
+| P123  | L2   | 2024Q1  | 0012            | `lot_log.csv`     | Duplicated |
+| … | … | … | … | … | … |
+
+### 3.2 Create the “Lot‑Audit‑Map”
+
+```
+{
+  "P123-L1-2024Q1-0012": {
+      "plant": "P123",
+      "line": "L1",
+      "quarter": "2024Q1",
+      "original_counter": "0012",
+      "scan_log_file": "legacy/2024Q1/L1/lot_log.csv",
+      "lot_uid": "P123-L1-2024Q1-000012",
+      "notes": "Duplicated with L2; retained for traceability."
+  },
+  "P123-L2-2024Q1-0012": {
+      "plant": "P123",
+      "line": "L2",
+      "quarter": "2024Q1",
+      "original_counter": "0012",
+      "scan_log_file": "legacy/2024Q1/L2/lot_log.csv",
+      "lot_uid": "P123-L2-2024Q1-000013",
+      "notes": "Duplicated with L1; retained for traceability."
+  }
+}
+```
+
+- **lot_uid**: New unique identifier that will be used in downstream systems.  
+- **scan_log_file**: Path to the legacy file.  
+- **Notes**: Any audit observations.
+
+### 3.3 Update downstream traceability
+
+- **ERP / MES**: Import the mapping and update the lot number field for the affected lots to the new `lot_uid`.  
+- **USDA audit records**: Reference the `lot_uid` in any future audits; the original 4‑digit counter can remain in a separate “legacy” column for compliance reference.
+
+### 3.4 Keep the legacy files intact
+
+- Move the original `lot_log.csv` from each line into the `legacy/` subtree, rename them with a suffix (`_dup1`, `_dup2`, etc.) so they do not collide.  
+- Add a comment in the header row of each legacy file indicating that it is part of a duplicate lot and pointing to the mapping entry.
+
+---
+
+## 4. Transition & rollout
+
+| Phase | Action | Tool / Script | Owner | Timeline |
+|-------|--------|--------------|-------|----------|
+| **0** | Baseline audit of existing logs | Custom Python script (pandas) | IT | Day 1 |
+| **1** | Define plant & line codes, decide reset policy | Plant Ops & IT | Plant Manager | Day 2 |
+| **2** | Update scanning firmware/software to write to new folder & name | Vendor (scanner) | Vendor PM | Week 1 |
+| **3** | Deploy Lot‑Counter service (SQL table or flat file) | IT | DBA | Week 1 |
+| **4** | Move legacy logs to `legacy/` subtree, generate Lot‑Audit‑Map | IT | | Week 2 |
+| **5** | Update ERP/MES to import Lot‑Audit‑Map | ERP PM | | Week 2 |
+| **6** | Run pilot on one line (L1) for 2 weeks | QA | | Week 3-4 |
+| **7** | Full rollout to all lines | Plant Ops | | Week 5 |
+| **8** | Audit compliance check (USDA pre‑audit) | Internal Audit | | Week 6 |
+
+### Key checkpoints
+
+- **Atomic lot‑sequence generation**: Ensure no race conditions (use a DB auto‑increment or a distributed lock).  
+- **Backup**: Immediately backup all logs before moving.  
+- **Documentation**: Update the SOP for lot‑tracking to include the new naming convention and the “Lot‑Audit‑Map” procedure.  
+- **Training**: Run a 1‑hour refresher for line operators on the new scanner behavior.  
+
+---
+
+## 5. Compliance & audit considerations
+
+| USDA requirement | How the new system satisfies it |
+|-------------------|--------------------------------|
+| **Unique lot number across the plant** | The 6‑digit “lot‑sequence” is globally unique per quarter. |
+| **Traceable file naming** | Filename embeds plant, line, quarter, lot‑sequence, and timestamp. No need to open the file. |
+| **Retention of legacy data** | Legacy logs are preserved in the `legacy/` subtree and mapped to a new unique ID. |
+| **Audit trail** | Each file’s path is deterministic; the mapping file (`Lot‑Audit‑Map`) provides a permanent record of any legacy duplicate. |
+| **Reset policy** | Reset quarterly (or yearly) is documented and enforced by the Lot‑Counter service. |
+
+---
+
+## 6. Sample code snippets
+
+### 6.1 Python function to build the new filename
+
+```python
+from datetime import datetime
+
+def build_lot_log_name(plant, line, quarter, lot_seq, first_scan_ts):
+    """
+    plant: str, e.g., "P123"
+    line: str, e.g., "L1"
+    quarter: str, e.g., "2024Q1"
+    lot_seq: int, e.g., 12
+    first_scan_ts: datetime object
+    """
+    seq_str = f"{lot_seq:06d}"
+    ts_str = first_scan_ts.strftime("%Y%m%dT%H%M")
+    return f"lot_log_{plant}-{line}-{quarter}-{seq_str}_{ts_str}.csv"
+```
+
+### 6.2 SQL schema for the Lot‑Counter
+
+```sql
+CREATE TABLE lot_counter (
+    plant_code   VARCHAR(10) NOT NULL,
+    quarter      VARCHAR(6)  NOT NULL,   -- e.g., 2024Q1
+    next_seq     INT          NOT NULL,   -- next sequence to allocate
+    PRIMARY KEY (plant_code, quarter)
+);
+
+-- Initialize for the current quarter
+INSERT INTO lot_counter (plant_code, quarter, next_seq)
+VALUES ('P123', '2024Q1', 1)
+ON CONFLICT DO NOTHING;
+```
+
+When a new lot starts:
+
+```sql
+UPDATE lot_counter
+SET next_seq = next_seq + 1
+WHERE plant_code = 'P123' AND quarter = '2024Q1'
+RETURNING next_seq - 1 AS allocated_seq;
+```
+
+This ensures atomic allocation.
+
+---
+
+## 7. Quick reference cheat‑sheet
+
+| Element | Example | Meaning |
+|---------|---------|---------|
+| Plant | `P123` | Plant identifier |
+| Line | `L1` | Production line |
+| Quarter | `2024Q1` | Year and quarter |
+| Seq | `000012` | Global lot sequence for the quarter |
+| Timestamp | `20240615T0830` | ISO‑8601 of first scan |
+| Full file | `lot_log_P123-L1-2024Q1-000012_20240615T0830.csv` | Self‑describing, unique |
+
+**Legacy file**: `legacy/2024Q1/L1/lot_log_dup1.csv`
+
+**Lot‑Audit‑Map entry**:
+
+```json
+{
+  "lot_uid": "P123-L1-2024Q1-000012",
+  "plant": "P123",
+  "line": "L1",
+  "quarter": "2024Q1",
+  "legacy_file": "legacy/2024Q1/L1/lot_log_dup1.csv",
+  "original_counter": "0012",
+  "notes": "Duplicate with L2; kept for traceability"
+}
+```
+
+---
+
+### Bottom line
+
+By moving from a shared “lot_log.csv” to a **structured, line‑specific folder tree** and **embedding a globally‑unique lot‑sequence in the filename**, you eliminate the chance of overlapping lot IDs and make every scan‑log instantly auditable without opening the file. The legacy duplicate records are preserved with a clear mapping to new, unique identifiers, so you satisfy USDA’s requirement for traceable, non‑conflicting lot numbers while keeping the shipped product’s original lot numbers intact for external documentation.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+### Proposed Solution for Unique File/Folder Naming and Lot-ID Taxonomy
+
+#### **1. File and Folder Naming Convention**
+To ensure every scan-log filename is unique and self-describing without opening the file, implement the following structure:
+
+- **Folder Hierarchy**:  
+  `ProductionLine<LineID>/Quarter_YYYY-QQ/`  
+  - `LineID`: Production line number (1, 2, or 3).  
+  - `YYYY-QQ`: Year and quarter (e.g., `2024-Q1`).  
+
+- **Filename Format**:  
+  `<LineID>_Lot_<LotNumber>_<StartDate>_<Timestamp>.csv`  
+  - `LineID`: Production line (1, 2, or 3).  
+  - `LotNumber`: Unique lot identifier (see **Lot-ID Taxonomy** below).  
+  - `StartDate`: Date the lot started (`YYYYMMDD`).  
+  - `Timestamp`: Time the log file was created (`HHMMSS`).  
+
+**Example**:  
+`ProductionLine1/Quarter_2024-Q1/1_Lot_1240001_20240301_143022.csv`  
+- **Self-describing**: Immediately identifies line, lot number, start date, and creation time.  
+
+#### **2. Lot-ID Taxonomy (Eliminating Collisions)**  
+Modify the lot-numbering scheme to be **globally unique** per lot by incorporating the line ID:  
+- **New Lot Number Format**: `<LineID><QuarterSequence>`  
+  - `LineID`: Digit representing the production line (1, 2, or 3).  
+  - `QuarterSequence`: 4-digit counter starting at `0001` per line per quarter.  
+
+**Example**:  
+- Line 1, Q1 2024: `10001`  
+- Line 2, Q1 2024: `20001`  
+- Line 3, Q1 2024: `30001`  
+
+**Why this works**:  
+- Combines the line ID with the existing 4-digit counter.  
+- No two lines can share the same lot number within a quarter.  
+- Resets to `0001` per line/quarter (e.g., Line 1 Q2: `10001` again).  
+
+#### **3. Handling Existing Ambiguous Lot Numbers (Current Quarter)**  
+Since product has shipped under the original lot numbers, **do not alter existing data**. Instead:  
+1. **Reorganize Existing Logs**:  
+   - Move each `lot_log.csv` file to the correct `ProductionLine<LineID>/Quarter_YYYY-QQ/` folder based on production records.  
+   - Rename files using the new format:  
+     `<LineID>_Lot_<OriginalLotNumber>_<StartDate>_<Timestamp>.csv`  
+     (e.g., `1_Lot_0001_20240301_143022.csv` for Line 1).  
+
+2. **Add Line Metadata to Logs**:  
+   - Append a `LineID` column to each CSV file (without altering existing data).  
+   - Populate `LineID` based on the line that generated the log (e.g., `1`, `2`, or `3`).  
+
+3. **Document the Change**:  
+   - Maintain a lookup table linking old lot numbers to lines (e.g., `Lot_0001_Line1`).  
+   - Use this table for audits, proving records are distinct despite identical lot numbers.  
+
+**Example of Fixed Record**:  
+| LineID | LotNumber | Timestamp | ... |  
+|--------|-----------|-----------|-----|  
+| 1      | 0001      | 2024-03-01T14:30:22 | ... |  
+| 2      | 0001      | 2024-03-01T15:45:10 | ... |  
+
+#### **4. Implementation Steps**  
+1. **File Server Structure**:  
+   - Create folders:  
+     ```
+     ProductionLine1/Quarter_2024-Q1/  
+     ProductionLine2/Quarter_2024-Q1/  
+     ProductionLine3/Quarter_2024-Q1/  
+     ```  
+   - Move existing logs to the correct line/quarter folder.  
+
+2. **Barcode Scanner Update**:  
+   - Modify scanners to:  
+     - Use the new lot-numbering scheme (`<LineID><QuarterSequence>`).  
+     - Save logs to the new filename format (`<LineID>_Lot_<LotNumber>_<StartDate>_<Timestamp>.csv`).  
+     - Include `LineID` in CSV headers.  
+
+3. **Audit Trail**:  
+   - For current quarters, use the lookup table to explain ambiguous lot numbers.  
+   - For future quarters, lot numbers are inherently unique.  
+
+#### **Benefits**  
+- **Unique Filenames**: No overwrites; every log is instantly identifiable.  
+- **Eliminated Collisions**: Lot numbers include line IDs, preventing ambiguity.  
+- **Compliance**: USDA audits can trace every lot to a specific line/quarter/log.  
+- **Backward Compatibility**: Existing ambiguous records are preserved with added metadata.  
+
+This solution ensures full traceability while respecting shipped product integrity.
+
+### Answer N
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+### File/Folder Naming and Lot-ID Taxonomy Proposal
+
+This proposal addresses the audit findings by ensuring **filename uniqueness**, **self-describing metadata**, **collision-free lot identification**, and **integrity of historical data**. The solution requires minimal changes to scanner firmware (only filename formatting) and relies on folder structure and lot-ID scoping to eliminate ambiguity.
+
+---
+
+### 1. Filename Taxonomy
+**Rule:** No file shall ever be overwritten. Every filename must be unique and contain sufficient context to identify the origin and contents without opening the file.
+
+**Format:**
+```text
+[LIN]_[YYYYMMDD]_[LOTSEQ]_scanlog.csv
+```
+
+**Field Definitions:**
+*   **`[LIN]`**: Two-character Line Identifier (e.g., `L1`, `L2`, `L3`).
+*   **`[YYYYMMDD]`**: Date the lot was initiated (ISO 8601 format).
+*   **`[LOTSEQ]`**: The lot sequence number for that specific line on that day (see Lot-ID Taxonomy below).
+*   **`_scanlog.csv`**: Static suffix indicating file type.
+
+**Example:**
+*   `L1_20231025_0042_scanlog.csv`
+    *   *Interpretation:* Line 1, Lot started Oct 25, 2023, 42nd lot on Line 1 that day.
+    *   *Uniqueness:* No other file can have this exact string.
+    *   *Self-Describing:* Line, Date, and Lot Sequence are immediately visible.
+
+---
+
+### 2. Lot-ID Taxonomy
+**Rule:** To eliminate collisions, lot counters must be **scoped per line** rather than shared globally across the plant. This ensures that `LOTSEQ` is only unique within the context of its `[LIN]` and date.
+
+**Configuration:**
+*   **Counter Scope:** Each scanner maintains its own independent counter.
+*   **Counter Reset:** The counter resets daily (recommended) or quarterly. A daily reset is preferred to keep sequence numbers short and reduce collision risk, but if quarterly is required for plant policy, the daily date in the filename still guarantees uniqueness.
+*   **Format:** 4-digit zero-padded integer (`0001`–`9999`).
+
+**Why this eliminates collision:**
+*   *Current Failure:* `L1` and `L2` both generate lot `0500` in Q3. Ambiguity exists.
+*   *New Success:* `L1` generates `0500`; `L2` generates `0500`.
+    *   File on L1: `L1_20230915_0500_scanlog.csv`
+    *   File on L2: `L2_20230915_0500_scanlog.csv`
+    *   **Result:** Files are unique. Lot `0500` is distinct per line. No physical lots share an identical identifier in the retained records.
+
+---
+
+### 3. Folder Structure
+**Rule:** Organize by Line and Date to enforce separation of concerns and prevent cross-line file overwrites.
+
+**Hierarchy:**
+```text
+/PoultryScanLogs/
+└── Active/
+    ├── L1/
+    │   ├── 2023/
+    │   │   └── 10/
+    │   │       ├── L1_20231001_0001_scanlog.csv
+    │   │       └── L1_20231001_0002_scanlog.csv
+    │   └── 2024/
+    │       └── 01/
+    │           └── L1_20240102_0001_scanlog.csv
+    ├── L2/
+    └── L3/
+```
+
+**Benefits:**
+*   **Isolation:** Scanners write only to their own `[LIN]/` subfolder.
+*   **Scalability:** Date-based subfolders keep file counts manageable.
+*   **Auditability:** USDA auditors can navigate `Line -> Year -> Month -> File` instantly.
+
+---
+
+### 4. Handling Ambiguous Historical Data
+**Constraint:** Existing files (`lot_log.csv`) from the current quarter contain ambiguous lot numbers. Product has already shipped under these numbers. **Files cannot be renamed or altered.**
+
+**Action: Secure Archiving with Contextual Metadata**
+
+1.  **Move, Do Not Rename:**
+    *   Create a folder: `/PoultryScanLogs/Historical_Ambiguous/Q3_2023/`
+    *   Move all current `lot_log.csv` files into this folder.
+    *   **Do not rename the files.** The filename remains `lot_log.csv` to preserve the chain of custody and match any records shipped to customers or regulators.
+
+2.  **Create an Index/Manifest:**
+    *   Generate an `Index_Q3_2023.csv` in the archive folder.
+    *   Since the files are ambiguous, the index must capture available metadata to assist investigation:
+        *   `FileName`, `FileCreationDate`, `FileModificationDate`, `KnownLineContext` (if available from server logs), `Status`.
+        *   *Example:*
+            ```csv
+            FileName,FileCreated,Status,Notes
+            lot_log.csv,2023-09-12T14:00:00,Archived_Ambiguous,Original filename retained. Lot number 0500 found in this log; confirmed collision with L2 lot 0500.
+            ```
+
+3.  **Audit Response:**
+    *   This approach acknowledges the flaw, preserves the data exactly as it existed during production, and isolates the ambiguity. It demonstrates that the system error is historical and has been contained, while the new taxonomy prevents recurrence.
+
+---
+
+### 5. Implementation Summary
+
+| Action | Details |
+| :--- | :--- |
+| **Scanner Update** | Configure each scanner to append `[LIN]`, `[YYYYMMDD]`, and `[LOTSEQ]` to filenames. Ensure scanners write to their own `L#/` folder path. |
+| **Lot Counter** | Set counters to be line-specific. Reset daily (or quarterly if policy dictates, but filename date prevents collision). |
+| **File Server** | Create folder hierarchy `/PoultryScanLogs/Active/L{1,2,3}/`. Set permissions so scanners have Write access only to their specific line folder. |
+| **Legacy Data** | Move existing `lot_log.csv` files to `/PoultryScanLogs/Historical_Ambiguous/`. Create manifest index. |
+| **Validation** | Run a test: Simulate lots on L1 and L2 with same sequence number. Verify filenames are distinct and contain correct metadata. |
+
+### 6. USDA Compliance Impact
+*   **Traceability:** Enhanced. Every file maps 1:1 to a specific line, date, and lot sequence.
+*   **Integrity:** Protected. No overwrites; historical data is preserved immutably.
+*   **Audit Readiness:** Files are self-describing. Auditors can verify lot lineage without opening files. Collisions are mathematically eliminated.
+
+This taxonomy resolves the collision risk, satisfies the "self-describing" and "unique" requirements, and handles the legacy data with the necessary caution to maintain compliance regarding shipped product.
+
+### Answer O
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here is a proposal for the new file system structure, lot-ID taxonomy, and legacy remediation plan designed to satisfy USDA FSIS traceability requirements while resolving the current operational failures.
+
+---
+
+## 1. New Lot-ID Taxonomy
+
+**Current State:** `NNNN` (4-digit counter, quarterly reset, Line-agnostic).
+**Problem:** `2023-Q1` on Line A produces `0042`; `2023-Q1` on Line B produces `0042`.
+
+**New Taxonomy:** `YYYY-MM-DD-[LineID]-NNNN`
+
+| Element | Format | Example | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Year-Month-Day** | `YYYY-MM-DD` | `2023-10-04` | Eliminates the quarterly reset dependency entirely. Guarantees date-level uniqueness. |
+| **Line ID** | `[L1]`, `[L2]`, `[L3]` | `L2` | Identifies the physical production line. Differentiates parallel runs. |
+| **Counter** | `NNNN` | `0042` | Maintained for internal sequencing within that day/line. |
+
+**Result:** `2023-10-04-L2-0042` is globally unique and permanently self-describing. Even if two lines produce the same counter value, the date or line ID differentiates them.
+
+---
+
+## 2. File & Folder Naming Convention
+
+To ensure every retained scan-log file is unique without opening it, we will enforce a **date-partitioned folder structure** with **compound filenames**.
+
+**Server Path:** `\\fileserver\production\scan_logs\YYYY\MM\DD\`
+
+**Filename Format:** `[LineID]_Lot[YYYYMMDD-NNNN].csv`
+
+**Example Path & Filename:**
+`\\fileserver\production\scan_logs\2023\10\04\L2_Lot20231004-0042.csv`
+
+### Why this structure works:
+1.  **Folder Partitioning (`YYYY/MM/DD`):** Limits file growth per directory, makes it trivial to archive or purge old logs (e.g., only 12 folders per year), and prevents a flat folder from becoming unreadable.
+2.  **Compound Filename:** The filename contains the Line ID and the Lot ID. An auditor can open a folder and immediately see which line produced which lot without reading the CSV header.
+3.  **Prevention of Overwrite:** Because the timestamp is baked into the name, two files can never have the same name, even if a scanner error occurs.
+
+---
+
+## 3. Implementation Strategy (Scanner Configuration)
+
+The current scanners are writing generic filenames. The MSP must update the scanner driver/software configuration to enforce the new naming convention at the point of ingestion:
+
+1.  **Dynamic Variable Injection:** Configure the scanner software to auto-populate `[LineID]` based on the physical port or IP address of the scanner, and `[LotNumber]` based on the barcode value scanned.
+2.  **Auto-Prepend Date:** Configure the server-side write script (or scanner local driver) to auto-prepend the current date into the folder path (`YYYY/MM/DD`) and the filename.
+3.  **Write Validation:** Implement a file-server-side validation script (e.g., a PowerShell or Python watcher) that triggers if a new file in the `scan_logs` root folder does not match the `[LineID]_Lot[YYYYMMDD-NNNN].csv` pattern, alerting the plant manager immediately.
+4.  **Retention Policy:** Configure the file server to retain logs for 7 years (per FSIS recommendation) and auto-archive older folders to cold storage or a historical share.
+
+---
+
+## 4. Legacy Remediation (The Already-Shipped Lots)
+
+**The Constraint:** Product has already shipped under the ambiguous numbers (e.g., `2023-Q1-0042`). We **cannot** alter the data inside the existing CSV files, as doing so would constitute record tampering and violate FSIS traceability integrity. We also **cannot** delete the files.
+
+### Solution: The "Shadow Reconciliation Index"
+
+Since the file *content* is immutable, we must make the *file identity* immutable through documentation and server-side reorganization.
+
+**Step A: Server-Side Reorganization (Doable)**
+Move the existing ambiguous files into the new folder structure based on the *actual* date and line they were produced on.
+*   *Current File:* `lot_log.csv` (in root)
+*   *New Location:* `\\fileserver\production\scan_logs\2023\10\04\L2_Lot20231004-0042.csv`
+*   *Why:* The filename on disk now becomes self-describing, even if the *content* still says `0042`. This satisfies the "unique and self-describing filename" requirement for the retained record.
+
+**Step B: The Reconciliation Master Table (Required)**
+Create a master mapping document (`LegacyLotResolution_Q1.xlsx`) stored on the file server in a restricted-access folder (`\\fileserver\production\scan_logs\audit_artifacts\`). This document explicitly maps the ambiguous old number to the resolved new ID.
+
+| Original Lot # (Content) | Production Line | Date Produced | New Unique ID | Product Status |
+| :--- | :--- | :--- | :--- | :--- |
+| 0042 | L1 | 2023-10-04 | 2023-10-04-L1-0042 | Shipped (Batch #123) |
+| 0042 | L2 | 2023-10-04 | 2023-10-04-L2-0042 | Shipped (Batch #456) |
+| 0042 | L1 | 2023-10-05 | 2023-10-05-L1-0042 | Shipped (Batch #124) |
+
+**Step C: Audit Communication**
+During the USDA FSIS audit, present the **Reconciliation Master Table** as evidence of remediation.
+*   Explain that the *physical product* carries the legacy label (which cannot be changed post-shipment).
+*   Explain that the *record system* has been reconciled to a unique identifier.
+*   Provide the MSP as the custodian of the mapping document.
+
+---
+
+## 5. Summary of Compliance Gaps Resolved
+
+| Requirement | Old System | New System |
+| :--- | :--- | :--- |
+| **Unique Lot ID** | ❌ Collision possible across lines in same quarter | ✅ `YYYY-MM-DD-LineID` guarantees uniqueness globally. |
+| **Self-Describing File** | ❌ `lot_log.csv` (generic) | ✅ `L2_Lot20231004-0042.csv` (identifiable without opening). |
+| **Data Integrity** | ❌ Files overwritten constantly. | ✅ Date-partitioned folders prevent overwrite; audit trail preserved. |
+| **Legacy Ambiguity** | ❌ No record of which line produced which lot. | ✅ Shadow Reconciliation Index links old numbers to new IDs permanently. |
+
+This proposal ensures that future records are tamper-evident and unique, while providing a defensible, auditable path to trace the already-shipped product back to the specific production line, satisfying USDA FSIS traceability requirements (9 CFR 417/418).
+
+### Answer P
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | PASS |
+| regex-1 | PASS |
+| regex-2 | FAIL |
+
+## Proposed Solution: Multi-Tiered Lot Tracking System
+
+### File Naming Convention
+**Format:** `LINE_{line_id}_LOT_{lot_number}_TIMESTAMP_{date_time}.csv`
+
+**Example:** `LINE_001_LOT_0247_20240115_143022.csv`
+
+### Folder Structure
+```
+/lot_logs/
+├── 2024/
+│   ├── Q1/
+│   │   ├── LINE_001/
+│   │   ├── LINE_002/
+│   │   └── LINE_003/
+│   └── Q2/
+│       ├── LINE_001/
+│       ├── LINE_002/
+│       └── LINE_003/
+└── archive/
+```
+
+### Lot-ID Taxonomy
+1. **Line-Specific Counter:** Each production line maintains its own 4-digit running counter
+2. **Quarter-Based Reset:** Counters reset to 0001 at quarter start, but independently per line
+3. **Uniqueness Guarantee:** Each lot number is unique within its line's quarterly cycle
+4. **Timestamp Integration:** File timestamps provide additional unique identifiers
+
+### Implementation for Existing Ambiguous Records
+**Cannot rename existing files** - they must be preserved exactly as-is for audit purposes.
+
+**Solution:**
+- **Create a "Legacy Mapping" database** that cross-references old ambiguous lot numbers with their actual line assignments and timestamps
+- **Maintain both naming conventions** during transition period:
+  - New files: Use the new unique naming scheme
+  - Existing files: Keep original names with additional metadata tagging
+- **Audit trail documentation:** Clearly document the ambiguity and the mapping in compliance records
+
+### Benefits
+1. **Perfect Uniqueness:** No more lot number collisions
+2. **Self-Describing:** All relevant information in filename
+3. **Easy Search:** Filter by line, lot, or date range
+4. **Compliance Ready:** Clear audit trail meets USDA requirements
+5. **Scalable:** Supports any number of production lines or quarters
+
+This approach ensures compliance with USDA requirements while maintaining historical data integrity.
+
+### Answer Q
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| regex-0 | FAIL |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+To address the issues of non-unique filenames and lot number collisions, I propose the following file/folder naming and lot-ID taxonomy:
+
+**Folder Structure:**
+
+* Create a new top-level folder for each quarter, named in the format `YYYY-QX` (e.g., `2023-Q1`, `2023-Q2`, etc.)
+* Within each quarter folder, create subfolders for each production line, named `Line 1`, `Line 2`, and `Line 3` (or similar)
+
+**Filename Structure:**
+
+* For each lot, create a unique filename in the format `YYYY-QX-LineX-LotXXXX-StartTime.csv` (e.g., `2023-Q1-Line1-Lot0123-20230215T0800.csv`)
+* `YYYY-QX` represents the quarter
+* `LineX` represents the production line number
+* `LotXXXX` represents a unique, incrementing lot number for each line (reset to 0001 at the start of each quarter)
+* `StartTime` represents the timestamp when the lot started production (in ISO 8601 format, e.g., `20230215T0800`)
+
+**Lot-ID Taxonomy:**
+
+* To eliminate lot number collisions across lines, assign a unique lot ID to each lot, comprising:
+	+ `Quarter` (YYYY-QX)
+	+ `Line` (X)
+	+ `Sequence` (XXXX): a unique, incrementing number for each line (reset to 0001 at the start of each quarter)
+
+Example: `2023-Q1-Line1-0123`
+
+**Handling Existing, Ambiguous Lot Numbers:**
+
+For the existing lot numbers that have already been recorded and shipped, I recommend:
+
+1. **Retain the existing filenames**: Do not rename the existing files, as product has already shipped under those numbers.
+2. **Create a mapping**: Create a separate mapping file (e.g., `lot_mapping.csv`) that associates the existing, ambiguous lot numbers with their corresponding production line and timestamp.
+3. **Use the mapping file**: When retrieving or processing data for the existing lots, use the mapping file to disambiguate the lot numbers and ensure accurate tracking.
+
+**Benefits:**
+
+* Unique and self-describing filenames
+* Elimination of lot number collisions across lines
+* Clear and consistent taxonomy for lot tracking
+* Ability to accurately track and retrieve data for existing lots, even with ambiguous lot numbers
+
+This proposal provides a clear and structured approach to resolving the issues with the current file naming and lot tracking system, ensuring compliance with USDA regulations and facilitating accurate tracking and auditing.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

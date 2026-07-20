@@ -25,13 +25,14 @@ from pathlib import Path
 from llmtest import schema
 from llmtest.batteries.b1_fixtures import load_unit_tasks
 from llmtest.judging.adapters import FakeJudgeAdapter, make_adapter
+from llmtest.judging.b2_packets import build_b2_axis_packets
 from llmtest.judging.packets import PacketRecord, build_cohort_packets
 from llmtest.store import Store
 
-# Only Battery 1 rows carry needs_judging today; kept as a set (not a bare
-# `== 1`) so a future battery can opt into judging without touching the
-# filter's shape.
-JUDGED_BATTERIES = {1}
+# Battery 1 (per-unit cohorts) and Battery 2 (per-axis cohorts) both carry
+# needs_judging rows; kept as a set (not a bare `in (1, 2)`) so a future
+# battery can opt into judging without touching the filter's shape.
+JUDGED_BATTERIES = {1, 2}
 
 
 def _now() -> str:
@@ -111,6 +112,7 @@ def run_pending(
     judge_prompt_path: Path | str,
     judges_cfg: dict,
     cohort_models: list[str],
+    b2_quorum: int | None = None,
     judge_filter: str | None = None,
     packets_only: bool = False,
     fake: bool = False,
@@ -147,6 +149,15 @@ def run_pending(
     as pending again and re-invoked; the old "-" row is left in place as
     append-only history (a fresh success writes new ok-letter rows, which
     never collide with it since their letters differ).
+
+    `b2_quorum` (config/suite.yaml's `b2.quorum` knob, threaded by
+    `llmtest/judge_cmd.py`): minimum present-model count for a B2 axis
+    packet to build (spec 1.6). `None` (the default, and whatever a caller
+    passes when the config key is absent) falls back to
+    `len(cohort_models)` -- the full-roster "complete cohort" requirement,
+    matching B1's own behavior and this function's behavior before the
+    knob existed. `run_pending` stays pure: it never reads config/suite.yaml
+    itself.
     """
     root = Path(root)
     judge_ids = sorted(judges_cfg)
@@ -159,17 +170,41 @@ def run_pending(
 
     battery_rows = [r for r in rows
                     if r.get("needs_judging") and r.get("battery") in JUDGED_BATTERIES]
-    units = sorted({_unit_from_task_id(r["task_id"]) for r in battery_rows})
+    b1_rows = [r for r in battery_rows if r.get("battery") == 1]
+    b2_rows = [r for r in battery_rows if r.get("battery") == 2]
+
+    # units/signals_by_task feed the B1-only evidence-table lookup
+    # (_unit_from_task_id parses "b1.<unit>-NN"); a B2 task_id ("b2.<scenario>")
+    # doesn't fit that shape, so this must be computed from B1 rows only --
+    # build_b2_axis_packets doesn't consume signals_by_task at all.
+    units = sorted({_unit_from_task_id(r["task_id"]) for r in b1_rows})
     signals_by_task = build_signals_by_task(root, units)
 
-    packets, skipped = build_cohort_packets(
-        battery_rows,
+    b1_packets, b1_skipped = build_cohort_packets(
+        b1_rows,
         rubric_dir=Path(rubric_dir), calibration_dir=Path(calibration_dir),
         out_artifacts=Path(out_artifacts), out_maps=Path(out_maps), root=root,
         judge_ids=judge_ids, cohort_models=cohort_models,
         judge_prompt_path=Path(judge_prompt_path),
         signals_by_task=signals_by_task,
     )
+
+    # suite.yaml's b2.quorum knob (threaded via the b2_quorum param above);
+    # None defaults to the full roster (every cohort model must be
+    # present), matching build_cohort_packets' own "complete cohort"
+    # requirement -- today's B1 behavior for B2 too, unless the caller
+    # (judge_cmd.py, reading config/suite.yaml) passes a lower floor.
+    resolved_b2_quorum = b2_quorum if b2_quorum is not None else len(cohort_models)
+    b2_packets, b2_skipped = build_b2_axis_packets(
+        b2_rows,
+        root=root, judge_ids=judge_ids, cohort_models=cohort_models,
+        quorum=resolved_b2_quorum,
+        out_maps=Path(out_maps), out_artifacts=Path(out_artifacts),
+        judge_prompt_path=Path(judge_prompt_path),
+    )
+
+    packets = b1_packets + b2_packets
+    skipped = b1_skipped + b2_skipped
 
     result = RunResult(packets=packets, skipped=skipped)
     if packets_only:

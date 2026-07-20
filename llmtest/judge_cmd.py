@@ -25,6 +25,7 @@ def run_judge(args, root: str | Path = ".") -> int:
 
     rows = list(store.iter_rows())
     cohort_models = resolve_cohort_models(cfg)
+    b2_quorum = cfg.suite.get("b2", {}).get("quorum")
 
     result = run_pending(
         rows=rows, root=root, store=store,
@@ -34,6 +35,7 @@ def run_judge(args, root: str | Path = ".") -> int:
         out_maps=root / "results" / "packets",
         judge_prompt_path=root / "grading" / "judge_prompt.md",
         judges_cfg=judges_cfg, cohort_models=cohort_models,
+        b2_quorum=b2_quorum,
         judge_filter=judge_filter,
         packets_only=getattr(args, "packets_only", False),
         fake=getattr(args, "fake", False),

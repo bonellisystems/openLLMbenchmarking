@@ -1,0 +1,924 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+A law firm's billing system needs a function that converts raw minutes worked into billable
+hours under the firm's outside-counsel-guideline (OCG) rounding rule: time is billed in
+tenth-of-an-hour (6-minute) increments, and any partial increment is always rounded UP, never
+down -- except that zero minutes worked must bill as exactly 0.0, not rounded up to a phantom
+0.1.
+
+Write a Python function `round_billable(minutes)` that:
+- Returns `0.0` if `minutes == 0`.
+- Otherwise returns the number of hours, rounded UP to the nearest 0.1 (i.e., the nearest
+  6-minute increment), for any `minutes > 0`.
+- Raises `ValueError` if `minutes` is negative, since a billing entry can't have negative
+  time.
+
+Trace your function against these cases and show the results: `minutes=0`, `minutes=1`,
+`minutes=6`, `minutes=65`, and `minutes=-5`.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here's the complete Python function along with a trace script and its output:
+
+```python
+import math
+
+def round_billable(minutes: float) -> float:
+    """
+    Converts raw minutes into billable hours per OCG rounding rules.
+    - 0 minutes -> 0.0
+    - Positive minutes -> rounded UP to the nearest 0.1 hour (6-min increment)
+    - Negative minutes -> raises ValueError
+    """
+    if minutes < 0:
+        raise ValueError("Billing entries cannot have negative time.")
+    if minutes == 0:
+        return 0.0
+    
+    # 0.1 hour = 6 minutes. Ceiling division ensures any partial increment rounds UP.
+    return math.ceil(minutes / 6) * 0.1
+
+# --- Trace / Test Block ---
+test_cases = [0, 1, 6, 65, -5]
+
+print("Tracing round_billable():")
+for m in test_cases:
+    try:
+        result = round_billable(m)
+        print(f"minutes={m:<3} -> {result}")
+    except ValueError as e:
+        print(f"minutes={m:<3} -> ValueError: {e}")
+```
+
+### Output:
+```
+Tracing round_billable():
+minutes=0   -> 0.0
+minutes=1   -> 0.1
+minutes=6   -> 0.1
+minutes=65  -> 1.1
+minutes=-5  -> ValueError: Billing entries cannot have negative time.
+```
+
+### How it works:
+1. **Negative Check**: Catches invalid inputs first and raises a `ValueError` as required.
+2. **Zero Check**: Explicitly returns `0.0` to prevent any accidental rounding artifacts.
+3. **Ceiling Math**: `math.ceil(minutes / 6)` calculates how many 6-minute blocks are needed, rounding up any fraction. Multiplying by `0.1` converts those blocks into billable hours.
+   - `1 min` → `ceil(0.166...)` = 1 → `0.1` hr
+   - `6 min` → `ceil(1.0)` = 1 → `0.1` hr (exact increment, no phantom rounding)
+   - `65 min` → `ceil(10.833...)` = 11 → `1.1` hrs
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here's the Python function `round_billable(minutes)` that implements the OCG rounding rule:
+
+```python
+import math
+
+def round_billable(minutes):
+    if minutes < 0:
+        raise ValueError("Minutes cannot be negative")
+    if minutes == 0:
+        return 0.0
+    
+    # Convert minutes to hours and round up to nearest 0.1 hours (6 minutes)
+    hours = minutes / 60.0
+    # Round up to the nearest 0.1 hour (6 minutes)
+    billable_hours = math.ceil(hours * 10) / 10.0
+    return billable_hours
+```
+
+Let's trace this function against the specified test cases:
+
+1. **`minutes = 0`**:
+   - Returns `0.0` directly.
+   - **Result: `0.0`**
+
+2. **`minutes = 1`**:
+   - `hours = 1 / 60.0 ≈ 0.0167`
+   - `hours * 10 = 0.167`
+   - `math.ceil(0.167) = 1`
+   - `billable_hours = 1 / 10.0 = 0.1`
+   - **Result: `0.1`**
+
+3. **`minutes = 6`**:
+   - `hours = 6 / 60.0 = 0.1`
+   - `hours * 10 = 1.0`
+   - `math.ceil(1.0) = 1`
+   - `billable_hours = 1 / 10.0 = 0.1`
+   - **Result: `0.1`**
+
+4. **`minutes = 65`**:
+   - `hours = 65 / 60.0 ≈ 1.0833`
+   - `hours * 10 = 10.833`
+   - `math.ceil(10.833) = 11`
+   - `billable_hours = 11 / 10.0 = 1.1`
+   - **Result: `1.1`**
+
+5. **`minutes = -5`**:
+   - Raises `ValueError`.
+   - **Result: `ValueError`**
+
+Here's a simple test script to validate these cases:
+
+```python
+# Test cases
+test_cases = [0, 1, 6, 65, -5]
+
+for minutes in test_cases:
+    try:
+        result = round_billable(minutes)
+        print(f"round_billable({minutes}) = {result}")
+    except ValueError as e:
+        print(f"round_billable({minutes}) raised ValueError: {e}")
+```
+
+Expected output:
+```
+round_billable(0) = 0.0
+round_billable(1) = 0.1
+round_billable(6) = 0.1
+round_billable(65) = 1.1
+round_billable(-5) raised ValueError: Minutes cannot be negative
+```
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here is the Python function implementing the outside-counsel-guideline (OCG) rounding rule:
+
+```python
+import math
+
+def round_billable(minutes):
+    """
+    Converts raw minutes into billable hours based on the firm's OCG rule.
+    Rounds UP to the nearest 0.1-hour (6-minute) increment.
+    """
+    if minutes < 0:
+        raise ValueError("Billing entries cannot have negative time.")
+    
+    if minutes == 0:
+        return 0.0
+    
+    # Divide by 6 minutes (one 0.1-hour increment) and round up (ceiling)
+    return math.ceil(minutes / 6.0) * 0.1
+```
+
+### Trace of Results
+
+Here are the results for the requested cases:
+
+| Input (`minutes`) | Logic Applied | Result |
+| :--- | :--- | :--- |
+| **0** | Returns `0.0` explicitly. | **`0.0`** |
+| **1** | `ceil(1/6) = 1` unit $\rightarrow$ `0.1` hour. | **`0.1`** |
+| **6** | `ceil(6/6) = 1` unit $\rightarrow$ `0.1` hour. | **`0.1`** |
+| **65** | `ceil(65/6) = ceil(10.83) = 11` units $\rightarrow$ `1.1` hours. | **`1.1`** |
+| **-5** | Negative check fails. | **`ValueError`** |
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+To solve this problem, we can use the `math.ceil` function. Since the firm bills in 6-minute increments, we first determine how many 6-minute "blocks" are contained within the total minutes, rounding up to the next whole block if any remainder exists. We then convert those blocks into hours by dividing by 10 (since 10 blocks = 1 hour).
+
+Here is the Python implementation:
+
+```python
+import math
+
+def round_billable(minutes):
+    """
+    Converts raw minutes into billable hours rounded up to the 
+    nearest 0.1 hour (6-minute increment).
+    """
+    # Requirement: Raise ValueError if minutes are negative
+    if minutes < 0:
+        raise ValueError("Minutes worked cannot be negative.")
+    
+    # Requirement: Return exactly 0.0 if minutes are 0
+    if minutes == 0:
+        return 0.0
+    
+    # 1. Calculate how many 6-minute increments are in the total minutes.
+    # We use math.ceil to ensure any partial increment rounds UP.
+    increments = math.ceil(minutes / 6)
+    
+    # 2. Convert increments to hours. 
+    # Since 10 increments = 1 hour, we divide by 10.
+    billable_hours = increments / 10.0
+    
+    return billable_hours
+
+# --- Tracing the function against the requested test cases ---
+
+test_cases = [0, 1, 6, 65, -5]
+
+print(f"{'Input (min)':<12} | {'Result / Error'}")
+print("-" * 30)
+
+for m in test_cases:
+    try:
+        result = round_billable(m)
+        print(f"{m:<12} | {result}")
+    except ValueError as e:
+        print(f"{m:<12} | ValueError: {e}")
+```
+
+### Trace Results Analysis
+
+When you run the code above, the output is:
+
+| Input (min) | Result / Error | Logic Explanation |
+| :--- | :--- | :--- |
+| **0** | `0.0` | Explicitly handled as a special case to avoid phantom billing. |
+| **1** | `0.1` | 1 minute is a partial increment; rounds up to one 6-min block ($6/60 = 0.1$). |
+| **6** | `0.1` | 6 minutes is exactly one 6-min block ($6/60 = 0.1$). |
+| **65** | `1.1` | 65 minutes is 10 full blocks + 5 extra mins. Rounds up to 11 blocks ($66/60 = 1.1$). |
+| **-5** | `ValueError` | Negative time is caught by the input validation. |
+
+### Complexity Analysis
+*   **Time Complexity:** $O(1)$. The function performs a constant number of arithmetic operations regardless of the input size.
+*   **Space Complexity:** $O(1)$. No additional data structures are created that scale with input.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+```python
+import math
+
+def round_billable(minutes):
+    if minutes < 0:
+        raise ValueError("minutes cannot be negative")
+    if minutes == 0:
+        return 0.0
+    increments = math.ceil(minutes / 6)
+    return round(increments * 0.1, 1)
+```
+
+Trace:
+- minutes=0 -> hits the explicit `minutes == 0` branch -> returns 0.0 (not rounded up to a
+  phantom increment).
+- minutes=1 -> math.ceil(1/6) = math.ceil(0.1667) = 1 -> 1 * 0.1 = 0.1.
+- minutes=6 -> math.ceil(6/6) = math.ceil(1.0) = 1 (exact multiple of 6 does NOT round up to
+  a second increment) -> 1 * 0.1 = 0.1.
+- minutes=65 -> math.ceil(65/6) = math.ceil(10.833) = 11 -> 11 * 0.1 = 1.1.
+- minutes=-5 -> raises ValueError before any calculation.
+
+The `round(..., 1)` wrapper guards against float binary representation artifacts (e.g.
+11 * 0.1 evaluating to 1.1000000000000001 in raw floating point), so the returned value is
+a clean 1.1.
+
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Python implementation**
+
+```python
+import math
+
+def round_billable(minutes):
+    """
+    Convert raw minutes worked into billable hours using the OCG rounding rule:
+    
+    * 0 minutes → 0.0 hours (exact)
+    * Any positive number of minutes is rounded **up** to the nearest 0.1 hour
+      (i.e., to the nearest 6‑minute increment).
+    * Negative minutes are illegal → raise ValueError.
+    
+    Parameters
+    ----------
+    minutes : int
+        Raw minutes worked.
+    
+    Returns
+    -------
+    float
+        Billable hours, expressed with one decimal place (e.g., 0.1, 1.0, 2.1 …).
+    
+    Raises
+    ------
+    ValueError
+        If `minutes` is negative.
+    """
+    if minutes < 0:
+        raise ValueError("minutes cannot be negative")
+    if minutes == 0:
+        return 0.0
+
+    # Convert minutes → hours (float)
+    raw_hours = minutes / 60.0
+
+    # Round **up** to the nearest 0.1 hour.
+    # math.ceil returns the smallest integer >= x.
+    # Multiplying by 10 turns 0.1‑hour steps into integer steps,
+    # then we divide by 10 again to get back to hours.
+    billed_hours = math.ceil(raw_hours * 10) / 10.0
+    return billed_hours
+```
+
+**Trace of the function for the requested test cases**
+
+| `minutes` | Call                              | Result | Explanation |
+|-----------|-----------------------------------|--------|-------------|
+| 0         | `round_billable(0)`               | `0.0`  | Special‑case: zero minutes bill as exactly 0.0. |
+| 1         | `round_billable(1)`               | `0.1`  | 1 min = 1/60 h ≈ 0.0167 h → ceiling to nearest 0.1 h = 0.1 h. |
+| 6         | `round_billable(6)`               | `0.1`  | 6 min = 0.1 h exactly → no upward rounding needed. |
+| 65        | `round_billable(65)`              | `1.1`  | 65 min = 1.0833… h → ceiling to nearest 0.1 h = 1.1 h (66 min). |
+| -5        | `round_billable(-5)`              | **raises** `ValueError` | Negative input is illegal. |
+
+**Demo code (you can run it to see the output)**
+
+```python
+test_cases = [0, 1, 6, 65, -5]
+
+for m in test_cases:
+    try:
+        print(f"round_billable({m}) → {round_billable(m)}")
+    except ValueError as e:
+        print(f"round_billable({m}) → raises {e}")
+```
+
+**Expected printed output**
+
+```
+round_billable(0) → 0.0
+round_billable(1) → 0.1
+round_billable(6) → 0.1
+round_billable(65) → 1.1
+round_billable(-5) → raises minutes cannot be negative
+```
+
+The function follows the OCG guideline: it never rounds down, always rounds up to the next 0.1‑hour (6‑minute) increment, treats zero minutes as a special case, and rejects negative inputs.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here's the complete function along with a step-by-step trace of the requested cases.
+
+### Python Function
+```python
+import math
+
+def round_billable(minutes):
+    # Enforce non-negative constraint
+    if minutes < 0:
+        raise ValueError("Minutes cannot be negative.")
+    
+    # Explicit zero check to satisfy the OCG exception
+    if minutes == 0:
+        return 0.0
+    
+    # Round UP to the nearest 0.1 hour (6-minute increment)
+    return math.ceil(minutes / 6) * 0.1
+```
+
+### Trace & Results
+
+| Input (`minutes`) | Calculation Steps | Result |
+|-------------------|-------------------|--------|
+| `0` | Directly hits `if minutes == 0` block. No division or ceiling applied. | `0.0` |
+| `1` | `1 / 6 ≈ 0.1667` → `math.ceil(0.1667) = 1` → `1 * 0.1` | `0.1` |
+| `6` | `6 / 6 = 1.0` → `math.ceil(1.0) = 1` → `1 * 0.1` | `0.1` |
+| `65` | `65 / 6 ≈ 10.8333` → `math.ceil(10.8333) = 11` → `11 * 0.1` | `1.1` |
+| `-5` | Fails `if minutes < 0` check immediately. | `ValueError: Minutes cannot be negative.` |
+
+### Key Implementation Notes:
+- **`math.ceil(minutes / 6)`** calculates how many 6-minute blocks are needed. By using ceiling, any fractional block automatically bumps the count up by 1, enforcing the "always round UP" rule.
+- The `minutes == 0` guard ensures the explicit OCG exception is met (preventing `0.0` from accidentally becoming `0.1` if rounding rules were applied differently).
+- Multiplying by `0.1` converts the block count into tenths of an hour as required by billing standards.
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here's the implementation along with a step-by-step trace of each requested case.
+
+```python
+import math
+
+def round_billable(minutes):
+    if minutes < 0:
+        raise ValueError("Minutes cannot be negative.")
+    if minutes == 0:
+        return 0.0
+    # 1 billable increment = 6 minutes = 0.1 hours
+    # math.ceil() always rounds up, dividing by 10 avoids float multiplication quirks
+    return math.ceil(minutes / 6) / 10
+```
+
+### 🔍 Trace & Results
+
+| Input (`minutes`) | Condition Check | Math Operation | Result |
+|-------------------|-----------------|----------------|--------|
+| `0` | `minutes == 0` | Returns explicitly | `0.0` |
+| `1` | `minutes > 0` | `ceil(1 / 6) / 10` → `ceil(0.166...) / 10` → `1 / 10` | `0.1` |
+| `6` | `minutes > 0` | `ceil(6 / 6) / 10` → `ceil(1.0) / 10` → `1 / 10` | `0.1` |
+| `65` | `minutes > 0` | `ceil(65 / 6) / 10` → `ceil(10.833...) / 10` → `11 / 10` | `1.1` |
+| `-5` | `minutes < 0` | Raises exception | `ValueError: Minutes cannot be negative.` |
+
+### 💡 Key Implementation Notes
+1. **Division by 10 instead of `* 0.1`**: Using `/ 10` avoids common floating-point representation artifacts (e.g., `1.10000000000000002`), which is crucial for billing/financial systems.
+2. **`math.ceil()`**: Guarantees the "always round up" rule for any positive input, even if it's exactly on a boundary (like `6` minutes → still `0.1` hours).
+3. **Zero Handling**: Explicitly checked first to satisfy the requirement that `0` minutes never round up to `0.1`.
+
+You can verify the trace directly in Python:
+```python
+cases = [0, 1, 6, 65, -5]
+for m in cases:
+    try:
+        print(f"minutes={m:>3} → {round_billable(m)}")
+    except ValueError as e:
+        print(f"minutes={m:>3} → ValueError: {e}")
+```
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+```python
+import math
+
+def round_billable(minutes):
+    """
+    Converts raw minutes worked into billable hours according to the OCG rounding rule.
+    - Zero minutes returns 0.0.
+    - Positive minutes are rounded UP to the nearest 0.1 hour (6-minute increment).
+    - Negative minutes raise ValueError.
+    """
+    if minutes < 0:
+        raise ValueError("Minutes cannot be negative")
+    if minutes == 0:
+        return 0.0
+    # Round up to the nearest 0.1 hour (6-minute increment)
+    return math.ceil(minutes / 6) * 0.1
+```
+
+### Trace Results
+
+| Input (`minutes`) | Calculation Steps | Output (`hours`) |
+|-------------------|-------------------|------------------|
+| `0` | `minutes == 0` → special case | `0.0` |
+| `1` | `math.ceil(1 / 6) = 1` → `1 * 0.1` | `0.1` |
+| `6` | `math.ceil(6 / 6) = 1` → `1 * 0.1` | `0.1` |
+| `65` | `math.ceil(65 / 6) = 11` → `11 * 0.1` | `1.1` |
+| `-5` | `minutes < 0` → exception raised | `ValueError` |
+
+### Example Execution
+
+```python
+# Test cases
+print(round_billable(0))     # 0.0
+print(round_billable(1))     # 0.1
+print(round_billable(6))     # 0.1
+print(round_billable(65))    # 1.1
+
+try:
+    print(round_billable(-5))
+except ValueError as e:
+    print(f"Error: {e}")      # Error: Minutes cannot be negative
+```
+
+**Outputs:**
+```
+0.0
+0.1
+0.1
+1.1
+Error: Minutes cannot be negative
+```
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+**Solution Overview**
+
+The firm bills time in *tenths of an hour* (i.e. every **6 minutes**).  
+For any positive amount of minutes we must:
+
+1. Find the smallest whole number of 6‑minute blocks that can contain the minutes.  
+   This is just a ceiling division:  
+
+   \[
+   \text{blocks} = \Big\lceil \frac{\text{minutes}}{6} \Big\rceil
+   \]
+
+2. Convert those blocks to hours by multiplying by `0.1` (because 1 block = 0.1 h).
+
+The only special rule is **zero minutes → exactly 0.0**, never 0.1.  
+Negative minutes are illegal and raise a `ValueError`.
+
+---
+
+### Python implementation
+
+```python
+import math
+
+def round_billable(minutes: int) -> float:
+    """
+    Convert raw minutes worked into billable hours under the OCG rounding rule.
+
+    Rules
+    -----
+    * minutes < 0  → raise ValueError
+    * minutes == 0 → return 0.0 (exactly)
+    * minutes > 0  → round up to the next 6‑minute increment,
+                     i.e. to the nearest 0.1 hour.
+
+    Parameters
+    ----------
+    minutes: int
+        Raw minutes worked.
+
+    Returns
+    -------
+    float
+        Billable hours, expressed in tenths of an hour (0.0, 0.1, 0.2, …).
+
+    Examples
+    --------
+    >>> round_billable(0)
+    0.0
+    >>> round_billable(1)
+    0.1
+    >>> round_billable(6)
+    0.1
+    >>> round_billable(65)
+    1.1
+    """
+    if minutes < 0:
+        raise ValueError("minutes cannot be negative")
+    if minutes == 0:
+        return 0.0
+
+    # One block = 6 minutes → 0.1 hour.
+    # Ceiling division gives the smallest integer number of blocks that fit.
+    blocks = math.ceil(minutes / 6)
+
+    # Convert blocks to hours (each block = 0.1 hour)
+    return blocks * 0.1
+```
+
+---
+
+### Tracing the required test cases
+
+```python
+test_cases = [0, 1, 6, 65, -5]
+
+for m in test_cases:
+    try:
+        result = round_billable(m)
+        print(f"minutes={m!r} → {result}")
+    except ValueError as e:
+        print(f"minutes={m!r} → ValueError: {e}")
+```
+
+**Output**
+
+```
+minutes=0 → 0.0
+minutes=1 → 0.1
+minutes=6 → 0.1
+minutes=65 → 1.1
+minutes=-5 → ValueError: minutes cannot be negative
+```
+
+---
+
+### Why it works
+
+| `minutes` | `minutes / 6` | `ceil(...)` | `blocks * 0.1` | Explanation |
+|-----------|---------------|-------------|----------------|-------------|
+| 0         | 0.0           | 0           | 0.0            | Special case → exact 0.0 |
+| 1         | 0.166…        | 1           | 0.1            | One 6‑minute block needed |
+| 6         | 1.0           | 1           | 0.1            | Exactly one block → 0.1 h |
+| 65        | 10.833…       | 11          | 1.1            | 11 blocks → 1.1 h (rounded up) |
+| -5        | –             | –           | –              | Negative input raises `ValueError` |
+
+The function therefore satisfies **all** the requirements of the OCG rounding rule.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | FAIL |
+| regex-1 | FAIL |
+| regex-2 | FAIL |
+
+```python
+def round_billable(minutes):
+    hours = minutes // 6 * 0.1
+    return hours + 0.1
+```
+This converts minutes to hours in 0.1 increments. Should work for most cases you'd throw at
+it.
+
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Here is the Python implementation of the billing function followed by the step-by-step trace for the requested cases.
+
+### Python Function
+
+```python
+import math
+
+def round_billable(minutes):
+    """
+    Converts raw minutes to billable hours based on OCG rounding rules.
+    Time is billed in 6-minute (0.1 hour) increments, rounded UP.
+    """
+    
+    # 1. Validate input: Negative time is not allowed
+    if minutes < 0:
+        raise ValueError("Billing time cannot be negative.")
+    
+    # 2. Exception case: Exact zero must bill as 0.0 (not rounded up)
+    if minutes == 0:
+        return 0.0
+    
+    # 3. General Logic:
+    # There are 6 minutes in a 0.1 hour (tenth of an hour).
+    # We divide minutes by 6 to determine how many 0.1-hour units we have.
+    # math.ceil() rounds UP any partial unit to the next whole number.
+    # Finally, multiply by 0.1 to convert the unit count back to hours.
+    return math.ceil(minutes / 6) * 0.1
+```
+
+### Function Trace
+
+Here is the execution trace for the five specific cases provided.
+
+| Input (`minutes`) | Logic Path | Calculation Steps | Result |
+| :--- | :--- | :--- | :--- |
+| **0** | `minutes == 0` check passes. | Returns early. | **0.0** |
+| **1** | Positive, non-zero. | $1 / 6 = 0.1666...$<br>$\lceil 0.1666... \rceil = 1$<br>$1 \times 0.1 = 0.1$ | **0.1** |
+| **6** | Positive, non-zero. | $6 / 6 = 1.0$<br>$\lceil 1.0 \rceil = 1$<br>$1 \times 0.1 = 0.1$ | **0.1** |
+| **65** | Positive, non-zero. | $65 / 6 = 10.8333...$<br>$\lceil 10.8333... \rceil = 11$<br>$11 \times 0.1 = 1.1$ | **1.1** |
+| **-5** | `minutes < 0` check passes. | Raises exception immediately. | **ValueError** |
+
+### Summary of Results
+
+
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| numeric-3 | PASS |
+| regex-1 | PASS |
+| regex-2 | PASS |
+
+Below is a minimal, self‑contained implementation that follows the OCG rule exactly:
+
+```python
+import math
+from typing import Union
+
+def round_billable(minutes: Union[int, float]) -> float:
+    """
+    Convert raw minutes worked into billable hours.
+
+    - 0 minutes  → 0.0
+    - any positive minutes → round *up* to the nearest 6‑minute increment
+    - negative minutes raise ValueError
+    """
+    if minutes < 0:
+        raise ValueError("minutes cannot be negative")
+
+    if minutes == 0:
+        return 0.0
+
+    # 6‑minute increments are 1/10 of an hour.
+    # We need the smallest integer `n` such that n*6 ≥ minutes
+    n_increments = math.ceil(minutes / 6)          # integer ≥ 1
+    hours = n_increments * 0.1                    # each increment = 0.1 hour
+    return hours
+```
+
+### Trace of the function on the requested inputs
+
+| `minutes` | Calculation steps | `round_billable(minutes)` |
+|-----------|-------------------|---------------------------|
+| `0` | - Check `minutes < 0` → `False`<br>- `minutes == 0` → `True` → return `0.0` | `0.0` |
+| `1` | - `minutes < 0` → `False`<br>- `minutes == 0` → `False`<br>- `ceil(1/6) = 1`<br>- `1 * 0.1 = 0.1` | `0.1` |
+| `6` | - `ceil(6/6) = 1`<br>- `1 * 0.1 = 0.1` | `0.1` |
+| `65` | - `ceil(65/6) = ceil(10.833…) = 11`<br>- `11 * 0.1 = 1.1` | `1.1` |
+| `-5` | - `minutes < 0` → `True` → raise `ValueError` | `ValueError: minutes cannot be negative` |
+
+#### Quick sanity check in a live Python session
+
+```python
+>>> round_billable(0)
+0.0
+>>> round_billable(1)
+0.1
+>>> round_billable(6)
+0.1
+>>> round_billable(65)
+1.1
+>>> round_billable(-5)
+Traceback (most recent call last):
+  File "<stdin>", line 1, in <module>
+ValueError: minutes cannot be negative
+```
+
+All the required behaviours are satisfied:
+
+* Zero minutes → `0.0` (no phantom 0.1).
+* Positive minutes → always rounded **up** to the next 6‑minute block.
+* Negative minutes → raise `ValueError`.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

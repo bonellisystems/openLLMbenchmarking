@@ -1,0 +1,74 @@
+id: scratch-01
+shape: from-scratch
+task_version: "1.1.0"
+prompt: |
+  Write a NEW bash script `is_prime.sh` (the repo has no such file yet)
+  that defines a shell function `is_prime`. Given one non-negative integer
+  argument, it must `echo` the literal text `true` if the number is prime
+  and `false` otherwise (0 and 1 are NOT prime). E.g. after
+  `source is_prime.sh`:
+
+      $ is_prime 2
+      true
+      $ is_prime 4
+      false
+
+  Create exactly one new file, `is_prime.sh`. Do not create or edit any
+  other file (including `README.md`).
+allowed_tools: [write_file, bash_exec]
+budgets: {wall_clock_s: 180, tokens: 3000, steps: 8}
+setup_repo:
+  README.md: |
+    # is_prime
+
+    See the task prompt for the exact contract `is_prime.sh` must satisfy.
+oracle_files:
+  oracle_test.sh: |
+    #!/bin/bash
+    set -e
+    source is_prime.sh
+    check() {
+        local n="$1" expected="$2" got
+        got="$(is_prime "$n")"
+        if [ "$got" != "$expected" ]; then
+            echo "FAIL: is_prime($n) = '$got' (want '$expected')"
+            exit 1
+        fi
+    }
+    check 0 false
+    check 1 false
+    check 2 true
+    check 3 true
+    check 4 false
+    check 17 true
+    check 18 false
+    check 97 true
+    echo PASS
+protected_paths: [README.md]
+allowed_diff_paths: [is_prime.sh]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && bash oracle_test.sh"]
+notes: |
+  Shape: from-scratch -- reuses suite/b6_agenticcoding/task-01.yaml's exact
+  SHAPE (write is_prime from nothing, judged by a behavioral check), ported
+  to bash for the same pinned-sandbox-image reason as bugfix-01 (see its
+  notes).
+
+  Hidden oracle (post-review hardening, task_version 1.0.0 -> 1.1.0):
+  `oracle_test.sh` moved to `oracle_files` -- never written into the
+  agent's workspace (it did not even used to describe itself in the
+  visible README, but living in setup_repo still meant it was readable;
+  now it structurally cannot be), so the exact probe set (0, 1, 2, 3, 4,
+  17, 18, 97) can't be read and special-cased. `run_oracle` re-injects it
+  into a private copy only at validation time. Unlike B6's static
+  regex/contains signal checks against extracted source text, this oracle
+  actually SOURCES the produced file and calls `is_prime` across primes,
+  composites, and both boundary non-primes (0, 1) -- a genuinely behavioral
+  pass/fail, not a surface pattern match. `is_prime.sh` does not exist in
+  `setup_repo` at all; it is only listed in `allowed_diff_paths`, which the
+  diff-constraint (run_oracle Design Decision #1b) treats as "this exact
+  new path may be created."
+
+  `README.md` is the agent-VISIBLE protected file exercising the hash-cap
+  (Design Decision #1a).

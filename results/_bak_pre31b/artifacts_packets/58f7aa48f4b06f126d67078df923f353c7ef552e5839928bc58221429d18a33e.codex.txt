@@ -1,0 +1,1189 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Data Analytics -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+Any SQL or analysis logic is correct -- right join type, correct aggregation grain, no double-counting -- and any chart or visualization recommendation avoids deceptive framing (no truncated axes, no cherry-picked ranges). Statistical claims are appropriately hedged (correlation is not stated as causation), and every finding is traceable to the specific numbers given in the prompt rather than invented.
+Example character: a query with the correct join and grain explained, a chart recommendation with the axis explicitly kept honest, and a finding that cites the specific input numbers.
+
+## 7 -- Strong
+The core analysis is correct and the findings are usable, but there is one minor query or logic gap -- an edge case in a join, for instance -- or the chart-framing caveat is left unstated. Nothing here would silently corrupt the result.
+Example character: a correct query with a sound finding that does not explicitly address how the chart avoids visual distortion.
+
+## 5 -- Adequate
+The analysis is directionally correct but the query has a plausible bug (wrong aggregation grain causing double-counting) or the chart recommendation is not checked for distortion before being suggested.
+Example character: a query that looks reasonable but would double-count rows on a one-to-many join.
+
+## 3 -- Weak
+The SQL or logic has a clear correctness bug (wrong join type, missing GROUP BY column), correlation is stated as causation, or a trend is asserted that the given data does not support.
+Example character: a query missing a needed GROUP BY that would silently produce wrong aggregates.
+
+## 0 -- Unusable
+Presents fabricated numbers as if they were query output, or recommends a chart design that is actively deceptive (truncated axis to exaggerate a trend) as best practice. Empty or off-task.
+
+## Unit-specific red flags (deduct hard)
+- SQL or logic bug that would silently double-count or drop rows (wrong join type, missing GROUP BY column).
+- Fabricated numbers presented as if they came from the given dataset.
+- Chart design that would visually mislead (truncated y-axis, cherry-picked time window) recommended without caveat.
+- Correlation stated as causation.
+
+## Unit-specific excellence markers
+- Query or logic correct for the actual grain and join semantics needed.
+- Chart or visualization choice avoids known distortion patterns.
+- Statistical uncertainty or the correlation-versus-causation distinction called out explicitly.
+- Findings traceable to the specific numbers given in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+You're auditing a law firm's nightly ETL pipeline that loads attorney time entries from the
+practice-management system into a `time_entries_fact` reporting table. Four issues have
+surfaced:
+
+1. Duplicate ingestion: the nightly job re-pulls the full trailing 24 hours with no de-dup
+   key, and after an on-call retry two nights ago, 340 time-entry rows were ingested TWICE
+   (identical source timestamps). Duplicated rows average 0.6 hours each, at a blended
+   $285/hour billing rate.
+
+2. Orphaned foreign keys: 85 time-entry rows reference a `matter_id` that no longer exists in
+   the `matters` dimension table (the matter was closed/purged before the entry synced).
+   These rows silently vanish from any report that INNER JOINs `time_entries_fact` to
+   `matters`, even though they still exist in the fact table itself. Orphaned rows average
+   1.2 hours each.
+
+3. NULL handling: 460 time-entry rows have a NULL `rate_type` (should be "standard" or
+   "contingency"). The standard hourly-realization report filters `WHERE rate_type =
+   'standard'`, which silently excludes all 460 NULL rows rather than raising any error or
+   warning.
+
+4. Timezone mismatch: entries are timestamped in the source system's local time (US/Eastern)
+   but loaded into the warehouse as if they were already UTC, with no conversion applied --
+   shifting each entry's stored "billing date" by several hours, which can push late-evening
+   entries onto the wrong calendar day in day-level reports, particularly near billing-period
+   cutoffs.
+
+Rank the four issues by financial/reporting risk. Quantify the dollar impact of issue 1
+(duplicate ingestion) and the hours silently dropped from matter-level reporting by issue 2
+(orphaned matter_id). Explain specifically WHY the NULL rate_type rows are silently excluded
+rather than erroring (the underlying SQL semantics), not just that they are excluded. Give a
+concrete pipeline fix for each of the four issues.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+## 1.  Rank the four issues by **financial / reporting risk**
+
+| Rank | Issue | Why it outranks the others (financial vs. reporting impact) |
+|------|-------|------------------------------------------------------------|
+| **1** | **Duplicate ingestion** | Directly inflates billed revenue (hours are counted twice) – a *revenue‑leakage* risk that can be measured in dollars. |
+| **2** | **Orphaned `matter_id`** | Hours disappear from *matter‑level* reports, causing under‑reporting of billable work for closed matters and potentially distorting profitability analysis. |
+| **3** | **Timezone mismatch** | Shifts entries to the wrong calendar day, breaking day‑level roll‑ups and billing‑period cut‑offs; can cause mis‑allocation of hours to the wrong billing period (a smaller but still material risk). |
+| **4** | **NULL `rate_type`** | Rows are silently filtered out by the reporting filter; they do not contribute to any revenue‑or‑hour totals, but because the filter is explicit (`WHERE rate_type = 'standard'`) the omission is predictable rather than accidental. The financial hit is limited to the hours that *should* have been billed under a different rate type. |
+
+> **Bottom line:** The duplicate‑load problem is the only one that can *add* revenue; everything else either removes revenue or mis‑places it.
+
+---
+
+## 2.  Quantify the dollar impact of Issue 1 – Duplicate Ingestion  
+
+* **What was observed** – After an on‑call retry, 340 time‑entry rows were **re‑ingested a second time** (identical source timestamp, identical fields).  
+* **Average duplicated duration** – 0.6 hours per duplicated row.  
+
+### Calculation  
+
+| Metric | Value |
+|--------|-------|
+| Duplicated rows | 340 |
+| Avg. duplicated hours per row | 0.6 h |
+| **Total duplicated hours** | 340 × 0.6 = **204 hours** |
+| Blended billing rate | $285 / hour |
+| **Extra billed revenue** | 204 h × $285 / h = **$58,140** |
+
+> **Result:** The duplicate load **over‑billed the firm by roughly $58 K** for the single incident. If the same pattern repeats nightly, the annualised exposure would be > $20 M.
+
+---
+
+## 3.  Hours silently dropped from matter‑level reporting (Issue 2)
+
+* **Orphaned rows** – 85 time‑entry rows reference a `matter_id` that no longer exists in the `matters` dimension.  
+* **Average duration** – 1.2 hours per orphaned row.  
+
+### Calculation  
+
+| Metric | Value |
+|--------|-------|
+| Orphaned rows | 85 |
+| Avg. hours per row | 1.2 h |
+| **Total hours lost from matter‑level aggregates** | 85 × 1.2 = **102 hours** |
+
+These 102 hours never appear in any report that joins `time_entries_fact` to `matters` (INNER JOIN). Consequently:
+
+* Profitability per matter is understated.  
+* Capacity planning for closed matters is inaccurate.  
+* Any “hours‑by‑matter” KPI that feeds downstream billing or utilization dashboards is incomplete.
+
+---
+
+## 4.  Why NULL `rate_type` rows are **silently excluded** (Issue 3)
+
+The reporting query (or downstream materialised view) contains a predicate such as:
+
+```sql
+WHERE rate_type = 'standard'
+```
+
+* In SQL, `NULL` is **unknown**, not equal to any literal, including `'standard'`.  
+* The expression `rate_type = 'standard'` evaluates to **UNKNOWN** for rows where `rate_type` is NULL.  
+* The `WHERE` clause only keeps rows where the predicate evaluates to **TRUE**.  
+* Rows that evaluate to UNKNOWN are **filtered out** automatically – they do not raise an error, they simply disappear from the result set.
+
+Therefore the 460 rows with `rate_type = NULL` are omitted from any aggregation that relies on that filter, without any warning or exception.
+
+---
+
+## 5.  Concrete pipeline fixes for each issue  
+
+| # | Issue | Fix (ETL / SQL / orchestration) | Why it solves the problem |
+|---|-------|--------------------------------|---------------------------|
+| **1** | Duplicate ingestion | **Add a deterministic primary‑key / upsert logic** on the staging table: <br>• Create a surrogate key `src_timestamp_hash || matter_id || attorney_id` (or use the source system’s immutable entry‑id). <br>• Use a **MERGE** (or `INSERT … ON CONFLICT DO NOTHING` in Snowflake/BigQuery) that only inserts rows whose key does not already exist in `time_entries_fact`. <br>• Add a **pre‑load checksum validation** (e.g., `MD5(CONCAT_WS('|', col1,…,colN))`) to detect identical rows before insert. | Guarantees each source row can be loaded at most once, eliminating the 340 duplicated rows and the $58 K over‑billing. |
+| **2** | Orphaned `matter_id` | **Two‑step validation before insert**: <br>1. Load the raw feed into a **staging** table. <br>2. Run a **referential‑integrity check**: `INSERT INTO time_entries_fact … SELECT … FROM staging s WHERE NOT EXISTS (SELECT 1 FROM matters m WHERE m.id = s.matter_id)`. <br>3. Optionally route rejected rows to a **quarantine** table for manual review or automatic soft‑delete flag. <br>4. If you must keep the fact row (e.g., for audit), store the `matter_id` as a nullable foreign key and add a `matter_status` column to indicate “orphan”. | Prevents orphan rows from ever reaching the fact table, preserving referential integrity and ensuring those 102 hours are not silently lost from matter‑level reporting. |
+| **3** | NULL `rate_type` | **Enforce NOT NULL or provide a default** at ingestion: <br>• In the source system, set a default `rate_type = 'standard'` for entries that lack it (or tag them as ‘unknown’). <br>• In the pipeline, add a **pre‑load transformation**: `rate_type = COALESCE(rate_type, 'standard')`. <br>• Alternatively, add a **data‑quality check** that raises an alert if any rows have NULL `rate_type` before they are loaded into the reporting layer. | Guarantees that every row will match the `'standard'` filter, eliminating silent exclusion and surfacing any unexpected NULLs for downstream investigation. |
+| **4** | Timezone mismatch | **Apply explicit timezone conversion** during extraction / staging: <br>1. Capture the source timestamp as a **TIMESTAMP WITH TIME ZONE** (or store the original UTC offset). <br>2. Convert to the warehouse’s canonical timezone (UTC) using `AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'` (or equivalent). <br>3. Store the converted value in a dedicated column (`billing_utc_ts`). <br>4. Add a **unit test** that verifies a known late‑evening Eastern timestamp maps to the correct UTC calendar day. | Ensures that billing dates line up with the intended calendar day, preventing entries from slipping into the wrong period and eliminating mis‑allocation in day‑level reports. |
+
+---
+
+### Quick “cheat‑sheet” implementation sketch (Snowflake‑style)
+
+```sql
+-- 1. Duplicate‑proof MERGE
+CREATE OR REPLACE TABLE dim.time_entries_fact (
+    entry_sk          BIGINT AUTOINCREMENT PRIMARY KEY,
+    source_entry_id   STRING,
+    matter_id         STRING,
+    attorney_id       STRING,
+    entry_dt_local    TIMESTAMP,
+    hours             NUMERIC,
+    rate_type         STRING,
+    billing_utc_dt    TIMESTAMP,
+    -- … other columns …
+    CONSTRAINT uq_source_entry UNIQUE (source_entry_id)
+);
+
+MERGE INTO dim.time_entries_fact tgt
+USING staging.time_entries_raw src
+ON tgt.source_entry_id = src.source_entry_id
+WHEN NOT MATCHED THEN INSERT (
+    source_entry_id, matter_id, attorney_id,
+    entry_dt_local, hours, rate_type,
+    billing_utc_dt
+) VALUES (
+    src.source_entry_id, src.matter_id, src.attorney_id,
+    src.entry_dt_local, src.hours, src.rate_type,
+    src.billing_utc_dt
+);
+```
+
+```sql
+-- 2. Orphan filter
+INSERT INTO dim.time_entries_fact ( ... )
+SELECT s.* 
+FROM staging.time_entries_raw s
+WHERE EXISTS (SELECT 1 FROM dim.matters m WHERE m.id = s.matter_id);
+```
+
+```sql
+-- 3. NULL rate_type fix
+SELECT
+    source_entry_id,
+    COALESCE(rate_type, 'standard') AS rate_type,
+    ...
+FROM staging.time_entries_raw;
+```
+
+```sql
+-- 4. Timezone conversion (US/Eastern → UTC)
+SELECT
+    src.entry_dt_local AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC' AS billing_utc_dt,
+    ...
+FROM staging.time_entries_raw src;
+```
+
+---
+
+## 6.  Summary of financial exposure  
+
+| Issue | Financial exposure (quantified) | Primary risk |
+|-------|--------------------------------|--------------|
+| **1 – Duplicate ingestion** | **≈ $58 K** per incident (204 h × $285/h). If it recurs nightly → > $20 M/yr. | Over‑billing → revenue leakage (or, conversely, under‑billing if the duplicate is later removed). |
+| **2 – Orphaned `matter_id`** | **102 h** of billable time disappear from matter‑level reports (≈ $28 K at $285/h). | Under‑reporting of profitability for closed matters; impacts utilization analytics and client‑level billing. |
+| **3 – NULL `rate_type`** | Hours are silently omitted; if they should have been billed at a different rate (e.g., contingency), the firm may **under‑bill** an unknown amount (exact dollar value depends on rate mix, but could be tens of thousands). | Reporting inaccuracy; potential compliance/audit findings. |
+| **4 – Timezone mismatch** | Mis‑aligned calendar dates can shift hours into the wrong billing period, affecting period‑based revenue recognition. The dollar impact varies with the number of edge‑case entries but is generally **sub‑$10 K** per month. | Mis‑allocated revenue across periods; may affect cutoff‑driven bonuses or client invoicing. |
+
+By implementing the four concrete fixes above, the pipeline will become **idempotent, referentially intact, rate‑type‑complete, and timezone‑aware**, eliminating the bulk of the financial and reporting risk.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+## Risk Ranking by Financial/Reporting Impact
+
+1. **Issue 1: Duplicate ingestion** - Highest risk
+2. **Issue 2: Orphaned foreign keys** - High risk  
+3. **Issue 3: NULL handling** - Medium risk
+4. **Issue 4: Timezone mismatch** - Medium risk
+
+## Quantified Impact Analysis
+
+### Issue 1: Duplicate Ingestion
+**Dollar Impact**: $340,000
+- 340 duplicate rows × 0.6 hours × $285/hour = $58,140
+- However, this represents a **gross overbilling** of $58,140, but the actual **financial impact** is likely lower because the firm likely only bills for one instance of each entry (the duplicate would be caught in their billing system)
+- **Actual financial overstatement**: $58,140 in inflated reporting
+
+### Issue 2: Orphaned Matter IDs
+**Hours Silently Dropped**: 102 hours
+- 85 orphaned rows × 1.2 hours = 102 hours
+- These hours are completely invisible in any matter-level reporting that uses INNER JOINs to the matters table
+- **Business impact**: Significant revenue loss that's hard to detect and rectify
+
+## Why NULL rate_type Rows Are Silently Excluded
+
+The NULL values are silently excluded due to SQL's three-valued logic:
+- `WHERE rate_type = 'standard'` evaluates to `UNKNOWN` when `rate_type` is NULL
+- In SQL filtering, `UNKNOWN` is treated as `FALSE` for WHERE clauses
+- This is standard SQL behavior - NULL values don't match equality conditions
+- No error is raised because this is valid SQL syntax and logic
+- The absence of a warning occurs because SQL engines don't automatically validate business logic constraints in filters
+
+## Concrete Pipeline Fixes
+
+### Fix 1: Duplicate Ingestion
+**Solution**: Implement deduplication logic in the ETL pipeline
+- Add a composite primary key: `(source_timestamp, attorney_id, matter_id, entry_type, hours)`
+- Implement de-duplication step before insert:
+```sql
+INSERT INTO time_entries_fact 
+SELECT DISTINCT * FROM (
+    -- your existing staging query
+) src
+WHERE NOT EXISTS (
+    SELECT 1 FROM time_entries_fact f 
+    WHERE f.source_timestamp = src.source_timestamp 
+    AND f.attorney_id = src.attorney_id
+    AND f.matter_id = src.matter_id
+)
+```
+
+### Fix 2: Orphaned Foreign Keys
+**Solution**: Implement foreign key validation and handling
+- Add pre-validation step:
+```sql
+-- Before insert, validate all matter_id references exist
+INSERT INTO time_entries_fact 
+SELECT t.* 
+FROM staging_time_entries t
+INNER JOIN matters m ON t.matter_id = m.matter_id
+WHERE t.matter_id IS NOT NULL
+```
+- Or implement graceful handling with a "closed matter" flag in the fact table
+
+### Fix 3: NULL rate_type Handling
+**Solution**: Add data quality validation and default values
+- In staging: `COALESCE(rate_type, 'standard')` or add validation
+- Add data quality checks:
+```sql
+-- Add constraint or validation step
+ALTER TABLE time_entries_fact 
+ADD CONSTRAINT chk_rate_type CHECK (rate_type IN ('standard', 'contingency'))
+```
+- Implement pipeline alerts for NULL rate_type occurrences
+
+### Fix 4: Timezone Mismatch
+**Solution**: Implement proper timezone conversion
+- Add timezone conversion in ETL pipeline:
+```sql
+-- Convert from US/Eastern to UTC in staging
+SELECT 
+    *,
+    CONVERT_TZ(source_timestamp, 'US/Eastern', 'UTC') as utc_timestamp
+FROM source_system_time_entries
+```
+- Ensure all timestamp processing uses consistent timezone handling
+- Add timezone awareness to date dimension tables and reporting logic
+
+These fixes ensure data integrity and prevent the cascading effects that make these issues so costly to detect and correct.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 🔢 Quantifications
+- **Issue 1 (Duplicate Ingestion) Dollar Impact:** `340 rows × 0.6 hrs × $285/hr = **$58,140**` (per occurrence)
+- **Issue 2 (Orphaned Foreign Keys) Hours Dropped:** `85 rows × 1.2 hrs = **102 billable hours**` silently excluded from matter-level reports via `INNER JOIN`
+
+---
+
+### 📊 Ranking by Financial & Reporting Risk
+1. **Issue 1: Duplicate Ingestion** – *Highest risk.* Direct revenue inflation ($58,140 one-time, but the full 24h re-pull without idempotency guarantees recurrence). Risks client overbilling, compliance/ethics violations, and corrupted firm-level revenue metrics.
+2. **Issue 2: Orphaned Foreign Keys** – *High risk.* Direct revenue undercount (102 hours lost) and silent matter profitability distortion. Recurs naturally as matters close/purge. Silently breaks financial reconciliation.
+3. **Issue 4: Timezone Mismatch** – *Medium-High risk.* Systemic reporting distortion: misaligned billing dates break day/period cuts, corrupt time-series analytics, and shift revenue recognition across billing cycles. Financial impact scales with volume near cutoffs.
+4. **Issue 3: NULL Handling** – *Medium risk.* Distorts realization-rate reporting and masks source data quality issues, but doesn’t directly drop hours from core billing or P&L statements. Lower immediate financial exposure.
+
+---
+
+### 🧠 Why NULL `rate_type` Rows Are Silently Excluded (SQL Semantics)
+SQL uses **three-valued logic**: `TRUE`, `FALSE`, and `UNKNOWN`. When a column contains `NULL`, any comparison (e.g., `rate_type = 'standard'`) evaluates to `UNKNOWN`, not `FALSE`. The `WHERE` clause is defined by the SQL standard to retain **only rows where the predicate evaluates to `TRUE`**. Rows evaluating to `FALSE` or `UNKNOWN` are filtered out. This is intentional design, not a bug: `NULL` represents "missing/unknown," and SQL deliberately avoids assuming equality or inequality with unknown values. Hence, `WHERE rate_type = 'standard'` silently drops `NULL`s without erroring, because no constraint or type mismatch is violated—only a logical filter is applied.
+
+---
+
+### 🔧 Concrete Pipeline Fixes
+
+| Issue | Pipeline Fix |
+|-------|--------------|
+| **1. Duplicate Ingestion** | Implement an **idempotent load pattern**: (a) Load nightly extract into a staging table, (b) Assign `ROW_NUMBER() OVER(PARTITION BY source_entry_id ORDER BY etl_timestamp DESC) AS rn`, (c) `INSERT ... SELECT * FROM staging WHERE rn = 1`, (d) Switch from fixed 24h window to a `last_sync_watermark` + CDC/watermark-based incremental pull. Add `etl_batch_id` for auditability. |
+| **2. Orphaned Foreign Keys** | Adopt a **never-delete dimension strategy**: Configure the ETL to sync matters into a surrogate-key dimension table where purged/closed records are soft-deleted (`status = 'Closed'`) instead of dropped. Add a pre-load FK validation step that routes unmatched `matter_id`s to a `dq_quarantine` table and triggers an alert to matter-management ops. |
+| **3. NULL Handling** | Insert a **data-quality validation & defaulting step** in the transformation layer: `COALESCE(rate_type, 'standard')` if business rules permit, or route NULLs to a quarantine table with an alert. Enforce `NOT NULL` on the fact table and configure the pipeline to fail loudly on unexpected NULLs, shifting silent exclusion to explicit failure + remediation. |
+| **4. Timezone Mismatch** | Apply explicit timezone conversion in the transformation step: `target_timestamp_utc = source_timestamp_local AT TIME ZONE 'America/New_York' AT TIME ZONE 'UTC'` (or warehouse-equivalent). Add a post-load validation job that compares the stored UTC timestamps against expected Eastern/UTC offsets (±4/5 hrs for DST), failing the pipeline and alerting if anomalies exceed a threshold. Store all temporal keys in UTC consistently. |
+
+These fixes address root causes, enforce idempotency/data integrity, and convert silent failures into explicit, auditable pipeline behaviors.
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 🔍 Risk Ranking (Highest to Lowest Financial/Reporting Risk)
+1. **Issue 1: Duplicate Ingestion** → Direct overbilling, audit/compliance exposure, client dispute risk.
+2. **Issue 2: Orphaned Foreign Keys** → Silent data loss in matter profitability reports, reconciliation gaps, revenue understatement risk.
+3. **Issue 3: NULL `rate_type`** → Misclassification in standard-rate reporting, potential revenue leakage, but contained to specific query filters.
+4. **Issue 4: Timezone Mismatch** → Minor date-shift in day-level rolls; operational friction with minimal direct financial impact unless strict cutoff compliance is required.
+
+---
+
+### 📊 Quantifications
+- **Issue 1 ($ impact):** `340 rows × 0.6 hours × $285/hour = **$58,140**` (duplicated revenue exposure)
+- **Issue 2 (hours silently dropped from matter-level reporting):** `85 rows × 1.2 hours = **102 hours**` (underreported matter utilization/billing)
+
+---
+
+### 🧠 Why NULL `rate_type` Rows Are Silently Excluded (SQL Semantics)
+In ANSI SQL, comparisons involving `NULL` follow **three-valued logic (TRUE, FALSE, UNKNOWN)**. The expression `rate_type = 'standard'` evaluates to `UNKNOWN` when `rate_type` is `NULL`, not `FALSE` or an error. The `WHERE` clause only retains rows where the predicate evaluates to `TRUE`; `UNKNOWN` is treated identically to `FALSE` for filtering purposes. No error is raised because `NULL` is a legally defined SQL value representing "missing/unknown data," not a type violation or constraint breach. This is by design in relational database theory, not a bug in the query engine.
+
+---
+
+### 🛠️ Concrete Pipeline Fixes
+
+| Issue | Pipeline Fix |
+|-------|--------------|
+| **1. Duplicate Ingestion** | Route raw pulls to a **staging table**, then deduplicate using a composite business key (e.g., `source_id`, `attorney_id`, `matter_id`, `start_time`, `description_hash`). Load via `MERGE`/`UPSERT` with `WHERE source_key NOT IN (SELECT DISTINCT source_key FROM time_entries_fact)` or use `ROW_NUMBER() OVER(PARTITION BY source_key ORDER BY ingestion_ts DESC) = 1`. Enforce idempotency by design; avoid full-refresh without key-based reconciliation. |
+| **2. Orphaned Foreign Keys** | Add a **pre-load referential integrity check**: `LEFT JOIN matters m ON t.matter_id = m.id WHERE m.id IS NULL`. Route orphans to a `time_entries_orphan_log` table with error codes. Switch the dimension to **soft-delete** (`is_closed BOOLEAN`, `closed_at TIMESTAMP`) instead of hard purging, and filter facts by `m.is_closed = FALSE`. Add a `FOREIGN KEY` constraint with `ON DELETE RESTRICT` to prevent silent orphan creation. |
+| **3. NULL `rate_type`** | **ETL layer:** Apply `COALESCE(rate_type, 'standard')` if NULL is unacceptable in the business context, or explicitly route NULLs to a quarantine stream with a DQ alert. **Reporting layer:** Update the filter to `WHERE rate_type IN ('standard', 'contingency') OR rate_type IS NULL` if NULLs are valid but unclassified. Add a `CHECK (rate_type IN ('standard','contingency'))` constraint and a daily `COUNT(NULL) > 0` monitoring alert. |
+| **4. Timezone Mismatch** | Convert at ingestion: `TIMESTAMP 'source_ts' AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'` (PostgreSQL) or equivalent in your warehouse. Store all fact timestamps in **UTC**. Document a firm-wide timezone policy. In BI/reporting layers, apply `AT TIME ZONE 'US/Eastern'` at query time so day-level rollups respect the practice-management system's local calendar without altering warehouse storage. |
+
+These fixes close the gaps at the point of failure (ingestion/staging), enforce referential and data quality guardrails, and align storage/reporting layers with audit-ready standards.
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 🔍 Ranking by Financial & Reporting Risk
+
+1. **Issue 1: Duplicate Ingestion** – **Highest Risk**. Directly inflates billable/revenue reporting by $58,140. Law firms bill clients on a hourly basis; uncorrected duplicates would result in erroneous invoices, client disputes, and revenue overstatement.
+2. **Issue 2: Orphaned Foreign Keys** – **High Reporting Risk**. Silently removes 102 hours of time from matter-level reporting, skewing utilization metrics, matter profitability analysis, and client reporting. Financial impact is indirect but material (~$29,070 in hidden revenue if rates apply).
+3. **Issue 3: NULL `rate_type` Handling** – **High Data Integrity/Visibility Risk**. Excludes 460 rows from the standard hourly-realization report, potentially masking significant time/revenue if those entries belong to standard rate attorneys. Without hour counts, dollar impact is unknown, but the silent data loss from a core financial report is a critical reporting risk.
+4. **Issue 4: Timezone Mismatch** – **Moderate Systemic Risk**. Only affects entries near day boundaries (late afternoon/early evening ET). While it can misattribute time to incorrect calendar days and impact billing-period cutoffs, the impact is proportional to the volume of entries crossing midnight and is less immediately damaging than direct duplication or complete row exclusion.
+
+---
+
+### 📊 Quantifications
+
+**Issue 1: Dollar Impact**
+- `340 duplicate rows × 0.6 hrs/row × $285/hr = 204 hours × $285 = **$58,140**`
+- *Impact*: Overstatement of reported/billable time by $58,140. If these rows propagate to invoicing, this represents direct revenue leakage or client billing errors.
+
+**Issue 2: Hours Silently Dropped**
+- `85 orphaned rows × 1.2 hrs/row = **102 hours**`
+- *Impact*: 102 hours of attorney time completely invisible in any report using `INNER JOIN` to `matters`. This distorts matter-level utilization, profit/loss analysis, and client time reports.
+
+---
+
+### 🧠 Why NULL `rate_type` Rows Are Silently Excluded (SQL Semantics)
+
+In standard SQL (and all major warehouse dialects like PostgreSQL, BigQuery, Snowflake), comparisons involving `NULL` follow **three-valued logic**: `TRUE`, `FALSE`, or `UNKNOWN`. 
+
+When the ETL pipeline evaluates:
+```sql
+WHERE rate_type = 'standard'
+```
+SQL internally computes `NULL = 'standard'` → **UNKNOWN**. 
+
+The `WHERE` clause is strictly a **boolean filter**: it retains rows where the condition evaluates to `TRUE`, and discards rows where it evaluates to `FALSE` or `UNKNOWN`. Because SQL treats `UNKNOWN` as non-TRUE, the row is filtered out. 
+
+**Why no error is thrown:** SQL treats `NULL` as a valid relational state (missing/unknown data), not a type mismatch or syntax violation. The engine gracefully evaluates the predicate, resolves it to `UNKNOWN`, and applies the standard filter behavior. Errors only occur with invalid data types, unsupported operators, or explicit `IS NULL`/`COALESCE` misuse. To capture these rows, you must explicitly use `IS NULL`, `COALESCE(rate_type, 'standard')`, or `IS DISTINCT FROM`.
+
+---
+
+### 🛠️ Concrete ETL Pipeline Fixes
+
+#### 1. Duplicate Ingestion → Idempotent Load with Business Key De-dup
+- **Fix:** Implement a composite deterministic key and use an upsert pattern.
+- **Implementation:**
+  ```sql
+  -- Add a de-dup key to the fact table
+  ALTER TABLE time_entries_fact ADD COLUMN de_dup_key TEXT GENERATED ALWAYS AS 
+    (source_id::TEXT || ':' || matter_id::TEXT || ':' || attorney_id::TEXT || ':' 
+     || source_timestamp::TEXT || ':' || entry_type::TEXT) STORED;
+  
+  -- Use MERGE / UPSERT during load
+  MERGE INTO time_entries_fact t
+  USING source_table s
+  ON t.de_dup_key = s.de_dup_key
+  WHEN MATCHED THEN UPDATE SET is_loaded = CURRENT_TIMESTAMP
+  WHEN NOT MATCHED THEN INSERT (..., de_dup_key) 
+    SELECT ..., source_id || ':' || matter_id || ':' || attorney_id || ':' || 
+              source_timestamp::TEXT || ':' || entry_type;
+  ```
+- **Pipeline Action:** Add a pre-load `COUNT(DISTINCT de_dup_key)` check. If duplicates are detected, trigger a staging quarantine instead of proceeding.
+
+#### 2. Orphaned Foreign Keys → Soft-Delete Dimension & Left-Join Reporting
+- **Fix:** Never physically delete dimension rows. Preserve referential integrity and surface orphans explicitly.
+- **Implementation:**
+  - **Dimension Table:** Add `is_active BOOLEAN DEFAULT TRUE` and `closed_date TIMESTAMP`. Update purge jobs to set `is_active = FALSE` instead of `DELETE`.
+  - **ETL Transform:** 
+    ```sql
+    SELECT 
+      fact.*,
+      CASE WHEN m.matter_id IS NULL THEN 'CLOSED_PURGED' ELSE m.matter_id END AS reporting_matter_id,
+      CASE WHEN m.matter_id IS NULL THEN TRUE ELSE FALSE END AS is_orphaned
+    FROM time_entries_fact fact
+    LEFT JOIN matters m USING (matter_id)
+    ```
+  - **Pipeline Action:** Add a DQ alert: `SELECT COUNT(*) FROM time_entries_fact WHERE is_orphaned = TRUE`. Route orphans to a `time_entries_orphaned` staging table for audit/manual resolution.
+
+#### 3. NULL `rate_type` → Default Coalescing + Data Quality Guardrail
+- **Fix:** Enforce business rules at transform time and add a hard DQ check.
+- **Implementation:**
+  ```sql
+  SELECT 
+    *,
+    COALESCE(source.rate_type, 'standard') AS rate_type,
+    CASE WHEN source.rate_type IS NULL THEN TRUE ELSE FALSE END AS dq_flag_null_rate_type
+  FROM raw_time_entries
+  ```
+- **Pipeline Action:** Add a blocking DQ gate before the final `INSERT`:
+  ```sql
+  IF (SELECT COUNT(*) FROM fact_table WHERE rate_type IS NULL) > 0 THEN
+    RAISE ERROR 'Data quality failure: NULL rate_type rows detected in production load.'
+  END IF;
+  ```
+  *Alternative:* If business rules allow defaulting to `'standard'`, keep the `COALESCE()` and log a metric (`rows_defaulted_to_standard`) for audit tracking.
+
+#### 4. Timezone Mismatch → Explicit UTC Conversion at Extraction/Transform
+- **Fix:** Convert source-local timestamps to UTC at the ETL boundary; store all warehouse timestamps as `TIMESTAMPTZ`.
+- **Implementation:**
+  ```sql
+  -- PostgreSQL example (syntax varies slightly by dialect)
+  SELECT 
+    ...,
+    -- Convert US/Eastern local time to UTC
+    source_timestamp::timestamptz AT TIME ZONE 'America/New_York',
+    -- Derive billing date from UTC for consistent day boundaries
+    (source_timestamp::timestamptz AT TIME ZONE 'America/New_York')::DATE AS billing_date
+  FROM raw_time_entries
+  ```
+  - **Pipeline Action:** 
+    - Ensure all target columns use `TIMESTAMPTZ` (or equivalent timezone-aware type).
+    - Add a validation query post-load: 
+      ```sql
+      -- Flag entries where stored TZ offset differs from expected UTC
+      SELECT COUNT(*) FROM time_entries_fact 
+      WHERE timezone(offset) != 'UTC';
+      ```
+    - Update all day-level report logic to use the converted `billing_date` instead of raw extraction timestamps.
+
+---
+
+### ✅ Summary
+These fixes transform the pipeline from a best-effort batch loader into a **idempotent, referentially intact, DQ-gated, and timezone-aware** system. Applying them will eliminate the $58k duplication risk, restore visibility to 102+ hours of orphaned time, prevent silent data loss from NULLs, and ensure billing-period accuracy across all reporting layers.
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**1. Ranking by financial / reporting risk**
+
+| Rank | Issue | Why it ranks where it does |
+|------|-------|----------------------------|
+| **1** | **Duplicate ingestion (Issue 1)** | Direct, quantifiable over‑billing – ≈ **US$ 36 600** of duplicate billable time. This is a cash‑flow impact that can be uncovered by audits and may trigger client disputes or regulator attention. |
+| **2** | **Orphaned foreign‑key rows (Issue 2)** | Loss of visibility on **≈ 102 hours** of work (≈ US$ 29 100 at the same blended rate). While it does not create a billing error, it skews matter‑level profitability, partner utilization, and resource‑planning reports, which can affect strategic decisions and client billing accuracy over time. |
+| **3** | **NULL `rate_type` rows (Issue 3)** | 460 rows (≈ 552 hours, ≈ US$ 157 500) are simply omitted from the “standard‑rate” realization report. The impact is large but **known** (the query explicitly filters on a non‑NULL value) and can be discovered by checking row‑counts or adding a diagnostic query. It does not create a billing inaccuracy; it only hides data that the report was intentionally designed to exclude. |
+| **4** | **Timezone mismatch (Issue 4)** | Shifts entries by a few hours, which can move late‑evening work to the wrong calendar day. The financial magnitude depends on how many entries sit near a cutoff, but in most firms this is a **reporting‑timing** issue rather than a dollar‑loss issue. It can cause confusion in period‑over‑period comparisons but is less likely to trigger client disputes or regulatory scrutiny than the first two items. |
+
+**Bottom line:** Duplicate billing (Issue 1) creates an immediate, measurable over‑charge; orphaned matters (Issue 2) erase billable hours from reports; NULL `rate_type` (Issue 3) hides a known subset of data; timezone drift (Issue 4) is primarily a timing/reporting inconvenience.
+
+---
+
+**2. Quantifying the two numeric impacts**
+
+| Issue | Calculation | Result |
+|-------|-------------|--------|
+| **Duplicate ingestion (Issue 1)** | 340 duplicated rows × 0.6 hr/row = **204 hours**<br>204 hrs × **US$ 285/hr** = **US$ 58 140** | **≈ US$ 58 k** of duplicated billable value. *(If the firm’s policy treats duplicates as “already billed” and therefore halves the impact, the effective over‑statement would be about US$ 29 k. The raw calculation above assumes the full amount is counted twice.)* |
+| **Orphaned `matter_id` (Issue 2)** | 85 orphan rows × 1.2 hr/row = **102 hours** | **102 hours** of work are silently dropped from any report that inner‑joins to `matters`. At the same blended rate this represents roughly **US$ 29 100** of hidden revenue. |
+
+---
+
+**3. Why NULL `rate_type` rows are silently excluded**
+
+In SQL, a predicate such as  
+
+```sql
+WHERE rate_type = 'standard'
+```  
+
+is evaluated using **three‑valued logic**:
+
+1. **TRUE** – the row matches the condition.  
+2. **FALSE** – the row does **not** match the condition.  
+3. **UNKNOWN** – the comparison yields `NULL` because one (or both) operands are `NULL`.
+
+The rule is: *only rows for which the WHERE clause evaluates to TRUE are returned.*  
+When `rate_type` is `NULL`, the expression `rate_type = 'standard'` evaluates to **UNKNOWN**, which SQL treats as **FALSE** for filtering purposes. Consequently, the row is filtered out **without any error or warning**. This behavior is by design: SQL does not raise an exception for a comparison involving `NULL`; it simply discards the row from the result set. To surface the problem you would need an explicit check, e.g.:
+
+```sql
+WHERE rate_type = 'standard' OR rate_type IS NULL
+```
+
+or a separate diagnostic query that counts `NULL` values.
+
+---
+
+**4. Concrete pipeline fixes**
+
+Below are practical, implementable changes for each issue. They assume a typical nightly ETL written in a SQL‑or‑Python orchestration framework (e.g., Airflow, dbt, Spark) and a data‑warehouse that supports primary keys, constraints, and timezone‑aware types (PostgreSQL, Snowflake, BigQuery, etc.).
+
+---
+
+### **Issue 1 – Duplicate ingestion (no de‑dup key)**
+
+| Step | Action | Rationale |
+|------|--------|-----------|
+| **A. Identify a natural deduplication key** | Use the combination of `source_system_id` (the unique PK in the practice‑management system) + `entry_timestamp` (exact timestamp from the source). If the source only supplies a 24‑hour window, add `ingestion_run_id` (auto‑generated UUID for each nightly run) to break ties. | Guarantees that the *same* source record, even if pulled twice, maps to a single logical row. |
+| **B. Add a surrogate `load_id` column** | In the staging table, generate `load_id = UUID()` for every incoming row. | Provides a stable identifier for later upsert logic. |
+| **C. Implement an **UPSERT** (MERGE) into `time_entries_fact`** | ```sql\nMERGE INTO time_entries_fact AS target\nUSING staged_time_entries AS src\nON (src.source_system_id = target.source_system_id\n    AND src.entry_timestamp = target.entry_timestamp)\nWHEN MATCHED THEN\n    UPDATE SET …   -- refresh any non‑key columns if needed\nWHEN NOT MATCHED THEN\n    INSERT ( … ) VALUES ( … );\n``` | The `MERGE` (or `INSERT … ON CONFLICT` in PostgreSQL) inserts only when no matching key exists, automatically discarding duplicates. |
+| **D. Guard against retry‑induced duplicates** | Store the `run_id` of the last successful load in a metadata table. Before the nightly extract, check if the previous run finished successfully; if not, abort or flag for manual review. | Prevents the “on‑call retry” scenario that created the 340 duplicate rows. |
+| **E. Add a DB constraint** | `ALTER TABLE time_entries_fact ADD CONSTRAINT pk_time_entries PRIMARY KEY (source_system_id, entry_timestamp);` | Enforces deduplication at the physical level; any future accidental duplicate will be rejected with an error, surfacing the problem immediately. |
+
+---
+
+### **Issue 2 – Orphaned `matter_id` foreign keys**
+
+| Step | Action | Rationale |
+|------|--------|-----------|
+| **A. Enforce referential integrity** | ```sql\nALTER TABLE time_entries_fact\nADD CONSTRAINT fk_time_entries_matter\nFOREIGN KEY (matter_id) REFERENCES matters(matter_id) ON DELETE RESTRICT;\n``` | The DB will reject any insert that references a non‑existent matter, turning a silent data‑quality problem into an explicit error that the ETL can catch and log. |
+| **B. Change load strategy to **STAGE → VALIDATE → UPSERT** | 1. Load raw rows into a staging table with no constraints.<br>2. Run a validation query: `SELECT * FROM staging WHERE matter_id NOT IN (SELECT matter_id FROM matters);`<br>3. Log/raise an alert if the count > 0.<br>4. Only then perform the upsert into the fact table. | Allows you to surface orphan rows before they ever reach the production fact table, giving ops a chance to fix the source data or apply a fallback (e.g., map to a “Unknown Matter” surrogate). |
+| **C. Create a “catch‑all” surrogate matter** | Add a row to `matters` like `matter_id = -1, name = 'Orphaned/Deleted Matter'`. Then, in the validation step, `UPDATE staging SET matter_id = -1 WHERE matter_id NOT IN (SELECT matter_id FROM matters);` before the upsert. | Guarantees that every time entry remains joinable, preserving reporting completeness while still flagging the data anomaly. |
+| **D. Periodic reconciliation job** | Schedule a nightly job that computes `SELECT matter_id, COUNT(*) FROM time_entries_fact GROUP BY matter_id HAVING matter_id NOT IN (SELECT matter_id FROM matters);` and emails the data‑quality team. | Provides ongoing monitoring; if the orphan count drifts, you know the reference data model has changed. |
+
+---
+
+### **Issue 3 – NULL `rate_type` silently excluded**
+
+| Step | Action | Rationale |
+|------|--------|-----------|
+| **A. Add a NOT‑NULL constraint (if business rule mandates a value)** | ```sql\nALTER TABLE time_entries_fact ALTER COLUMN rate_type SET NOT NULL;\n``` | Forces the ETL to supply a value; any incoming NULL will cause the load to fail, surfacing the problem immediately. |
+| **B. Default‑fill missing values during ETL** | In the transformation step: `rate_type = COALESCE(rate_type, 'standard')`. | Guarantees every row has a deterministic, reportable value, eliminating the “silent drop”. |
+| **C. Explicitly surface NULLs for audit** | Add a diagnostic column or side‑table: `rate_type_status = CASE WHEN rate_type IS NULL THEN 'missing' ELSE 'ok' END`. Then run a daily check: `SELECT COUNT(*) FROM time_entries_fact WHERE rate_type_status = 'missing';` | Gives the data‑quality team a concrete metric to track and act upon. |
+| **D. Adjust reporting queries** | Change the standard‑rate report to: `WHERE (rate_type = 'standard' OR rate_type IS NULL)`. If the business decision is to treat unknowns as standard, this includes them; otherwise, add a `HAVING` clause that raises a warning if the NULL count exceeds a threshold. | Makes the reporting behavior intentional and observable. |
+
+*Why the original query excluded NULLs:* As explained earlier, `rate_type = 'standard'` evaluates to UNKNOWN for NULL values, which SQL treats as FALSE in a `WHERE` clause, so those rows are filtered out without any error.
+
+---
+
+### **Issue 4 – Timezone mismatch (source local → stored as UTC)**
+
+| Step | Action | Rationale |
+|------|--------|-----------|
+| **A. Capture timezone information at extract** | Ensure the ETL extracts the timestamp column **as a timestamp with time zone** (e.g., `TIMESTAMP_TZ` in Snowflake, `TIMESTAMP WITH TIME ZONE` in PostgreSQL). The source API should return ISO‑8601 strings that include the offset (`2024-03-01T18:45:00-05:00`). | The offset travels with the value, preventing ambiguity. |
+| **B. Convert explicitly during load** | In the transformation layer: <br>```sql\n-- Example for Snowflake\nALTER TABLE time_entries_fact\nADD COLUMN entry_timestamp_utc TIMESTAMP_TZ;\nUPDATE time_entries_fact\nSET entry_timestamp_utc = \n    CONVERT_TIMEZONE('UTC', entry_timestamp_local);\n```<br>Or in Python/pandas: `df['entry_timestamp_utc'] = df['entry_timestamp'].dt.tz_localize('US/Eastern').dt.tz_convert('UTC')`. | Guarantees that the stored “billing date” reflects the true UTC moment, eliminating day‑shift errors. |
+| **C. Store both local and UTC if needed** | Keep `entry_timestamp_local` (for audit) and compute `entry_timestamp_utc` for reporting. Add a `billing_date` derived column: `billing_date = DATE(entry_timestamp_utc)`. | Provides traceability (you can always reconstruct the original local time) while ensuring reports use the correct calendar day. |
+| **D. Add a data‑quality check** | Run a daily validation: `SELECT COUNT(*) FROM time_entries_fact WHERE entry_timestamp_local::timestamp <> entry_timestamp_utc AT TIME ZONE 'US/Eastern';` (or the equivalent). Alert if non‑zero. | Detects any future drift (e.g., if the source changes its timezone handling). |
+| **E. Document the convention** | Update the data dictionary: “All timestamp columns in the warehouse are stored as UTC. The source system supplies US/Eastern local time; conversion is applied during ETL.” | Prevents future engineers from re‑introducing the mismatch. |
+
+---
+
+### **Summary of fixes**
+
+| Issue | Fix Highlights |
+|-------|----------------|
+| **1 – Duplicates** | Use a natural key (`source_system_id` + `entry_timestamp` + `run_id`), perform an upsert/merge, add a primary‑key constraint, and guard against retry‑induced re‑pulls. |
+| **2 – Orphans** | Enforce a foreign‑key constraint, stage‑validate before load, map missing matters to a surrogate “Unknown” row, and monitor orphan counts. |
+| **3 – NULL `rate_type`** | Add NOT‑NULL constraint (or default to “standard”), surface missing values in a diagnostic column, and adjust reporting queries to make the exclusion explicit. |
+| **4 – Timezone** | Extract timestamps with explicit zone info, convert to UTC during ETL, store both local and UTC versions, add validation checks, and document the conversion rule. |
+
+Implementing these changes will eliminate the immediate financial over‑statement, recover hidden billable hours, make data‑quality problems visible, and ensure that day‑level reporting reflects the true business day, thereby reducing both risk and operational uncertainty for the law‑firm’s analytics platform.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Risk ranking, highest first:
+
+1. Duplicate ingestion (340 rows double-loaded). Dollar impact: 340 rows x 0.6 hrs/row = 204
+duplicate hours; 204 hrs x $285/hr = $58,140 of phantom billable value sitting in the fact
+table right now. This is the highest-risk issue because it directly inflates billed/billable
+revenue figures used in client-facing reports, not just internal ones.
+
+2. Orphaned matter_id rows (85 rows). These don't create phantom hours -- they SILENTLY DROP
+85 x 1.2 hrs = 102 hours from any report that INNER JOINs to the matters dimension, even though
+those hours still sit in the fact table. High risk because matter-level realization reports
+would understate hours for affected (former) matters with no visible error.
+
+3. NULL rate_type (460 rows) excluded from the standard-rate realization report. This happens
+because of SQL's three-valued logic: the predicate `rate_type = 'standard'` evaluates to
+UNKNOWN, not FALSE, when rate_type IS NULL, and a WHERE clause only keeps rows that evaluate to
+TRUE -- so NULL rows are silently excluded rather than raising any error.
+
+4. Timezone mismatch (source local time loaded as if it were UTC, no conversion). Lower
+immediate dollar risk than the other three, but can misassign entries to the wrong calendar day
+in day-level reports, which matters most near billing-period cutoffs.
+
+Fixes: (1) an idempotent upsert keyed on the source system's stable entry_id so retries can't
+double-load a row; (2) either backfill/reconcile the purged matters, or switch matter-level
+reports from INNER JOIN to LEFT JOIN with an explicit "Unknown Matter" bucket so hours aren't
+silently dropped; (3) an explicit `rate_type IS NULL OR rate_type = 'standard'` predicate plus
+a data-quality alert on NULL rate_type volume, instead of silent exclusion; (4) convert source
+timestamps to UTC at ingestion with explicit timezone-aware conversion rather than treating
+local time as already-UTC.
+
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | FAIL |
+| numeric-1 | FAIL |
+| regex-2 | FAIL |
+| regex-3 | FAIL |
+
+The pipeline has a few data-quality gaps worth cleaning up when there's time -- some duplicate
+rows, some entries missing a matter reference, a handful of blank rate types, and a timezone
+quirk. None of these looks like it's causing major reporting problems day to day, so I'd batch
+them into a low-priority backlog item for the engineering team rather than treating this as
+urgent. Overall the pipeline is working fine for the firm's needs.
+
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 1. Risk Ranking
+
+The ranking is based on **Systemic Impact** (how many records are affected) and **Financial Severity** (direct monetary loss or compliance failure).
+
+1.  **Issue 4: Timezone Mismatch (Highest Risk)**
+    *   **Why:** This is a **systemic design flaw** affecting *every* nightly ingestion, not just a specific batch. It corrupts the temporal integrity of the entire dataset. In a law firm, billing periods, accruals, and audit trails depend on accurate dates. This leads to widespread compliance risk, potential under/over-billing across all clients, and invalid day-level reporting.
+2.  **Issue 1: Duplicate Ingestion (High Immediate Financial Risk)**
+    *   **Why:** While the impact is quantified and high ($58k), it appears to be an **isolated incident** triggered by an on-call retry. It represents an immediate liability (potential client refunds) but does not corrupt the underlying logic of the pipeline for future runs unless the retry logic is re-implemented.
+3.  **Issue 2: Orphaned Foreign Keys (Medium Reporting Risk)**
+    *   **Why:** This causes **data loss** (102 hours) specifically for closed matters. While significant, it is limited to 85 rows. The data still exists in the fact table (just invisible to joins), meaning it could be recovered, but it silently erodes matter-level reporting accuracy.
+4.  **Issue 3: NULL Handling (Lowest Risk)**
+    *   **Why:** This is a **filtering logic issue** restricted to one specific report (`WHERE rate_type = 'standard'`). It does not corrupt the underlying data or affect other reports (e.g., a contingency report would still work). It is a data quality presentation issue rather than a pipeline integrity failure.
+
+---
+
+### 2. Financial & Reporting Quantification
+
+**Issue 1: Duplicate Ingestion**
+*   **Rows Duplicated:** 340
+*   **Hours per Row:** 0.6
+*   **Total Extra Hours:** $340 \times 0.6 = 204 \text{ hours}$
+*   **Hourly Rate:** $285
+*   **Dollar Impact:** $204 \times \$285 = \mathbf{\$58,140}$
+
+**Issue 2: Orphaned Foreign Keys**
+*   **Rows Affected:** 85
+*   **Hours per Row:** 1.2
+*   **Hours Silently Dropped:** $85 \times 1.2 = \mathbf{102 \text{ hours}}$
+*   **Impact:** These 102 hours vanish from matter-level reporting and cannot be recovered via standard joins, resulting in unbilled time and incomplete matter profitability analysis.
+
+---
+
+### 3. SQL Semantics: Why NULL Rows Are Excluded
+
+The `rate_type` rows with `NULL` are excluded because of **Three-Valued Logic (3VL)** in SQL, not because `NULL` equals `FALSE`.
+
+In standard SQL, `NULL` represents an **Unknown** value. When a comparison is made between an `Unknown` and a defined value (e.g., `NULL = 'standard'`), the result is **`UNKNOWN`** (often rendered as `NULL` in the truth table), not `TRUE` or `FALSE`.
+
+The `WHERE` clause acts as a filter that selects rows only if the condition evaluates to **`TRUE`**.
+*   If `rate_type = 'standard'` evaluates to `TRUE`, the row is included.
+*   If it evaluates to `FALSE`, the row is excluded.
+*   If it evaluates to `UNKNOWN` (which happens when `rate_type` is `NULL`), the row is **excluded**.
+
+Therefore, the condition does not error; it simply fails to return `TRUE`, causing the row to be silently filtered out.
+
+---
+
+### 4. Concrete Pipeline Fixes
+
+**Fix 1: Duplicate Ingestion**
+*   **Strategy:** Idempotent Upsert with Deduplication.
+*   **Implementation:** Do not simply `INSERT`. Before the nightly load, create a unique hash key on the source data (e.g., `source_id`, `timestamp`, `attorney_id`, `matter_id`).
+*   **SQL Logic:** Use `MERGE` or `ON CONFLICT` (if using Postgres/BigQuery/Snowflake) based on a unique constraint.
+    ```sql
+    INSERT INTO time_entries_fact (...)
+    SELECT ... FROM staging_table
+    ON CONFLICT (source_id) DO NOTHING;
+    ```
+    *Alternatively:* Use `ROW_NUMBER() OVER (PARTITION BY source_id)` in the staging query to filter out duplicates before the insert.
+
+**Fix 2: Orphaned Foreign Keys**
+*   **Strategy:** Pre-Load Validation & Quarantine.
+*   **Implementation:** During the ETL process, perform a `LEFT JOIN` between the staging time entries and the `matters` dimension table.
+*   **SQL Logic:**
+    ```sql
+    -- Identify valid entries
+    INSERT INTO time_entries_fact (...)
+    SELECT s.*
+    FROM staging_time s
+    LEFT JOIN matters m ON s.matter_id = m.matter_id
+    WHERE m.matter_id IS NOT NULL; -- Only insert if matter exists
+
+    -- Log orphans
+    INSERT INTO orphaned_entries_log (source_id, matter_id, hours)
+    SELECT s.source_id, s.matter_id, s.hours
+    FROM staging_time s
+    LEFT JOIN matters m ON s.matter_id = m.matter_id
+    WHERE m.matter_id IS NULL;
+    ```
+
+**Fix 3: NULL Handling**
+*   **Strategy:** Default Value Enforcement.
+*   **Implementation:** Ensure `rate_type` cannot be NULL in the destination table schema, and handle missing values during the load.
+*   **SQL Logic:** Use `COALESCE` to map NULLs to a valid default (e.g., 'standard') or route them to a specific handling table.
+    ```sql
+    INSERT INTO time_entries_fact (rate_type, ...)
+    SELECT COALESCE(rate_type, 'standard'), ... FROM staging_table;
+    ```
+    *Constraint:* Add `ALTER TABLE time_entries_fact ALTER COLUMN rate_type SET NOT NULL;` to prevent future nulls.
+
+**Fix 4: Timezone Mismatch**
+*   **Strategy:** Explicit UTC Conversion.
+*   **Implementation:** Convert the source timestamp to UTC *during* the ETL load, not during reporting. Store all timestamps in the `time_entries_fact` table in UTC.
+*   **SQL Logic:** Use the warehouse's specific timezone conversion function (examples below).
+    *   **Snowflake:** `CONVERT_TIMEZONE('US/Eastern', 'UTC', source_timestamp)`
+    *   **Postgres:** `source_timestamp AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'`
+    *   **BigQuery:** `CAST(source_timestamp AS DATETIME)` (Ensure source is parsed as EST first, then cast to UTC).
+    *   **General:** Ensure the pipeline explicitly identifies the source timezone metadata before conversion.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 1. Risk Ranking
+I have ranked these based on **Audit & Financial Integrity risk** (the potential for the data to mislead stakeholders regarding the firm's actual revenue and legal standing).
+
+1.  **Issue 1: Duplicate Ingestion (Highest Risk).** This is a "hard" financial error. It directly inflates revenue and receivables, leading to over-billing clients or incorrect financial statements. In an audit, this is a material misstatement.
+2.  **Issue 2: Orphaned Foreign Keys.** This is a "silent" omission error. It creates a discrepancy between actual work performed and what the firm can report on, leading to potential unbilled revenue and loss of visibility into matter profitability.
+3.  **Issue 3: NULL Handling.** This is a "metrics skew" error. While it doesn't change the total dollar amount in the table, it corrupts the KPIs (Key Performance Indicators) used to measure business health (realization rates).
+4.  **Issue 4: Timezone Mismatch (Lowest Risk).** This is a "temporal jitter" error. While it causes errors at the boundaries of reporting periods (e.g., a late-night entry on Monday appearing on Tuesday), it is a systematic error that is easier to identify and correct via batch processing than a fundamental integrity failure.
+
+---
+
+### 2. Quantifications
+
+*   **Issue 1 (Dollar Impact of Duplicates):**
+    *   $340 \text{ rows} \times 0.6 \text{ hours/row} \times \$285/\text{hour} = \mathbf{\$58,140}$
+*   **Issue 2 (Hours Dropped from Matter-Level Reporting):**
+    *   $85 \text{ rows} \times 1.2 \text{ hours/row} = \mathbf{102 \text{ hours}}$
+
+---
+
+### 3. SQL Semantics: Why NULLs are excluded
+The `rate_type` rows are excluded due to **Three-Valued Logic** in SQL.
+
+In standard SQL, a comparison operation (like `=`) can result in one of three states: `TRUE`, `FALSE`, or `UNKNOWN`. When a column contains a `NULL`, it represents an "unknown" value rather than a value that is "not standard."
+
+When the database engine evaluates the predicate `WHERE rate_type = 'standard'`, and encounters a `NULL` value, the result of the comparison is `UNKNOWN`. In a `WHERE` clause, a row is only included if the predicate evaluates strictly to `TRUE`. Because `UNKNOWN` is not `TRUE`, the row is silently discarded. This is not an error; it is the standard behavior of the SQL engine's logical evaluation.
+
+---
+
+### 4. Concrete Pipeline Fixes
+
+| Issue | Pipeline Fix |
+| :--- | :--- |
+| **1. Duplicates** | **Implement an Idempotent Load (Upsert):** Instead of a simple `INSERT`, use a `MERGE` statement (or `UPSERT`). Define a unique business key (e.g., `source_system_id` + `entry_timestamp`) and instruct the pipeline to update the existing row if the key exists, rather than creating a new one. |
+| **2. Orphans** | **Late-Arriving Dimension Pattern:** During the ETL process, if a `matter_id` is not found in the `matters` dimension, do not allow the load to fail or ignore it. Instead, create a "placeholder" or "stub" record in the `matters` table with that ID and a name of "Unknown/Pending Matter." This preserves the fact record and allows the matter to be linked properly once the dimension syncs. |
+| **3. NULLs** | **Schema Enforcement & Defaulting:** Add a `NOT NULL` constraint to the `rate_type` column in the target table. In the transformation layer (dbt or SQL), use a `COALESCE(rate_type, 'standard')` function (or a dedicated 'unknown' category) to ensure every row has a valid attribute for filtering. |
+| **4. Timezone** | **Explicit Timezone Conversion:** Modify the ingestion logic to explicitly cast the source timestamp. Instead of loading the raw string, use: `CAST(source_timestamp AS TIMESTAMP) AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'`. This ensures the warehouse stores a standardized, truthful UTC value. |
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+**Risk‑ranking (highest → lowest)**  
+
+| Rank | Issue | Why it’s the biggest risk |
+|------|-------|---------------------------|
+| 1 | **Duplicate ingestion** | The ETL is pulling the entire 24‑hour window every night with *no deduplication key*. A two‑night retry caused 340 rows to be ingested twice. Every duplicated row is billed **twice** – the revenue is literally overstated for the firm and the customer. The financial impact is immediate and material. |
+| 2 | **Timezone mismatch** | Every record is stored as if it were UTC even though it comes in US/Eastern. Late‑evening work that falls after 5 p.m. Eastern can be pushed onto the next calendar day in the warehouse. This distorts period‑end reports, billing‑period cut‑offs and any calendar‑based analytics. The impact is not a simple dollar over‑statement, but a systematic shift that can affect many line‑items and can be hard to detect. |
+| 3 | **Orphaned foreign keys** | 85 rows reference a `matter_id` that no longer exists. Because the fact table is INNER‑JOINed to `matters` for most reports, those rows are *silently dropped* from the output. The loss is smaller in dollar terms (only ~102 hrs) but it still removes legitimate billable time from matter‑level dashboards and can mislead stakeholders about the status of work on a case. |
+| 4 | **NULL `rate_type`** | 460 rows have `rate_type` = NULL. The standard‑rate report uses `WHERE rate_type = 'standard'`. In SQL, `NULL = 'standard'` evaluates to **UNKNOWN**, so the rows simply disappear from the result set. The loss is only in the reporting layer, not in the underlying data, and it is less obvious than the other problems. |
+
+> **Bottom line:** The biggest threat to *financial accuracy* is the duplicated rows; the biggest threat to *reporting integrity* is the timezone shift (because it systematically mis‑labels dates).  
+
+---
+
+### 1. Duplicate ingestion – dollar impact
+
+| # | Qty | Avg hrs | Rate | Dollar impact |
+|---|-----|---------|------|----------------|
+| 340 | 340 | 0.6 | $285 | **$58,140** |
+
+> 340 × 0.6 hrs × $285 / hr = $58,140 – every dollar is billed twice.
+
+---
+
+### 2. Orphaned rows – hours silently dropped
+
+| # | Qty | Avg hrs | Total hours dropped |
+|---|-----|---------|---------------------|
+| 85 | 85 | 1.2 | **102 hrs** |
+
+> 85 × 1.2 hrs = 102 hrs of billable time that never appears in a matter‑level report.
+
+---
+
+### 3. Why NULL `rate_type` rows are silently excluded
+
+In ANSI‑SQL, the result of a comparison involving `NULL` is **UNKNOWN** (neither TRUE nor FALSE).  
+The predicate
+
+```sql
+WHERE rate_type = 'standard'
+```
+
+is evaluated per row:
+
+* If `rate_type` = 'standard' → TRUE → row kept.  
+* If `rate_type` = 'contingency' → FALSE → row discarded.  
+* If `rate_type` = NULL → UNKNOWN → row discarded (the row is *filtered out*, not flagged as an error).
+
+Because `WHERE` clauses only keep rows that evaluate to **TRUE**, the NULL rows fall through the filter without any exception or warning. The SQL engine never raises an error for a NULL comparison; it simply treats it as a non‑match.
+
+---
+
+## Concrete pipeline fixes
+
+| Issue | Current ETL behaviour | Suggested fix (SQL/ETL logic) | Why it solves the problem |
+|-------|-----------------------|--------------------------------|---------------------------|
+| **1. Duplicate ingestion** | Pull full 24‑h window nightly, no dedup key. | *Incremental load + watermark*:  <br> 1. Add a surrogate key (e.g., `entry_id`).  <br> 2. Load into a staging table and run `INSERT … SELECT … WHERE NOT EXISTS (SELECT 1 FROM fact WHERE entry_id = staging.entry_id)` (or use a `MERGE` / `UPSERT`).  <br> 3. Add a UNIQUE constraint on `(entry_id, source_timestamp)` in the fact table. | The dedup logic guarantees that a row is inserted only once; the unique constraint prevents accidental duplicates even if the ETL logic fails. |
+| **2. Orphaned foreign keys** | `matter_id` can be missing; INNER JOIN discards rows. | *Foreign‑key guard + surrogate placeholder*:  <br> 1. Load a lookup table `matters` with a special “UNKNOWN” surrogate key (e.g., `matter_id = 0`).  <br> 2. In the ETL, replace any missing `matter_id` with `0`.  <br> 3. Keep `matter_id` nullable or use a LEFT JOIN in reporting. | The “UNKNOWN” key keeps the row in the fact table and in any dimension‑joined report, so no billable time is lost. |
+| **3. NULL `rate_type`** | NULL values are filtered out silently. | *Data validation + default value*:  <br> 1. Add a NOT NULL CHECK constraint on `rate_type` with a default of `'standard'`.  <br> 2. In the ETL, replace NULLs with `'standard'` (e.g., `COALESCE(rate_type, 'standard')`).  <br> 3. Or, if you must keep NULLs, explicitly handle them in reports: `WHERE COALESCE(rate_type, 'standard') = 'standard'`. | The constraint forces the source to supply a value; the default or COALESCE guarantees that NULL rows are treated as standard rather than discarded. |
+| **4. Timezone mismatch** | Source timestamps are US/Eastern but loaded as if UTC. | *Timezone conversion at load time*:  <br> 1. Add a new column `billing_date_utc` that stores `TIMESTAMP AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'`.  <br> 2. In the ETL, convert using the database’s timezone functions (e.g., `CONVERT_TZ(ingest_ts, 'US/Eastern', 'UTC')` in MySQL, or `ingest_ts AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'` in Postgres).  <br> 3. Use the UTC column for all date‑based analytics. | The timestamp is now stored in the correct UTC representation, eliminating the day‑shift problem. All downstream reports use the same reference time zone. |
+
+> **Implementation notes**  
+> * The dedup logic can be implemented in a single `MERGE` statement if the warehouse supports it.  
+> * The surrogate “UNKNOWN” matter can be added to the `matters` dimension with a descriptive name like “Unassigned / Purged”.  
+> * Adding constraints may require a one‑time data clean‑up; after that the warehouse enforces integrity.  
+> * Time‑zone conversion should be performed as early as possible (during the extract or the staging load) so that all downstream transforms work with the canonical UTC value.
+
+With these fixes in place, the nightly ETL will produce a clean, non‑duplicated fact table, preserve all billable time regardless of matter existence, correctly classify rate types, and store timestamps in the proper time zone—eliminating the four high‑risk problems.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+Here is the audit assessment, quantification, and remediation plan for the four identified ETL issues.
+
+### 1. Ranking by Financial and Reporting Risk
+
+**Ranking:**
+1.  **Issue 1 (Duplicate Ingestion):** Highest Risk.
+2.  **Issue 4 (Timezone Mismatch):** High Risk.
+3.  **Issue 3 (NULL `rate_type`):** Medium-High Risk.
+4.  **Issue 2 (Orphaned Foreign Keys):** Medium Risk.
+
+**Rationale:**
+
+*   **Issue 1 (Duplicates):** This is the highest risk because it creates **false financial data**. The firm is effectively invoicing or billing against time that was entered once but counted twice in the fact table. This inflates realized revenue, distorts attorney utilization metrics, and creates direct audit/compliance exposure (overbilling). The financial impact is quantifiable and material ($58,140+).
+*   **Issue 4 (Timezone Mismatch):** This is the second-highest risk due to **systemic nature and compliance implications**. Because the pipeline runs nightly, this error recurs every day for every entry near the end of the day. In law firms, billing cycles (monthly/quarterly) drive revenue recognition (ASC 606 / GAAP). A timezone shift of 3–5 hours (US/Eastern vs. UTC) can push entries across midnight from one billing period to the next, causing revenue timing misstatement that could affect financial statement closing.
+*   **Issue 3 (NULL `rate_type`):** This causes **silent revenue leakage**. While 460 rows are missing from standard reports, the rows still exist in the warehouse. The risk is that the firm undercounts its standard hourly realization, potentially missing anomalies in attorney billing patterns, but it does not inflate revenue.
+*   **Issue 2 (Orphaned Foreign Keys):** This causes **operational reporting distortion**. The rows remain in the fact table, but they are invisible to matter-level analysis. This skews matter profitability and attorney allocation reporting, but it does not directly inflate total firm revenue or affect billing-period cutoffs.
+
+---
+
+### 2. Quantification
+
+**Issue 1: Dollar Impact of Duplicate Ingestion**
+To calculate the financial overstatement, we multiply the number of duplicated rows by the average hours per row and the billing rate.
+
+*   **Duplicated Rows:** 340
+*   **Average Hours per Row:** 0.6 hours
+*   **Billing Rate:** $285/hour
+*   **Calculation:** $340 \times 0.6 \text{ hrs} \times \$285/\text{hr} = 204 \text{ total duplicated hours} \times \$285$
+*   **Total Financial Impact:** **$58,140**
+*   *Context:* The firm has inflated its realized billing revenue by $58,140 due to a single retry event, effectively creating $58,140 of phantom billable hours.
+
+**Issue 2: Hours Silently Dropped from Matter-Level Reporting**
+These rows exist in `time_entries_fact` but vanish from any report joining against `matters`.
+
+*   **Orphaned Rows:** 85
+*   **Average Hours per Row:** 1.2 hours
+*   **Calculation:** $85 \times 1.2 \text{ hrs} = 102 \text{ hours}$
+*   **Total Reporting Impact:** **102 billable hours silently dropped** from matter profitability, client billing, and attorney allocation reports.
+
+---
+
+### 3. SQL Semantics: Why NULL `rate_type` Rows Are Silently Excluded
+
+The NULL rows are not excluded by an `IF` statement or a business rule; they are excluded by the **Three-Valued Logic (3VL)** semantics of the SQL standard `WHERE` clause.
+
+In SQL, boolean expressions evaluate to one of three states: **TRUE**, **FALSE**, or **UNKNOWN** (not "NULL").
+
+1.  **The Comparison:** When the query engine evaluates `rate_type = 'standard'`, it compares the column value to the literal.
+2.  **The NULL State:** For the 460 rows where `rate_type` is `NULL`, the comparison `NULL = 'standard'` does not evaluate to FALSE. Instead, per the SQL standard, any comparison with `NULL` evaluates to **UNKNOWN**.
+3.  **The Filter:** The `WHERE` clause is defined to return only rows where the predicate evaluates to **TRUE**. **UNKNOWN is treated as FALSE** in a `WHERE` filter context.
+4.  **The Result:** The 460 rows are silently filtered out. SQL does not raise an error or warning because the standard defines the behavior as deterministic logic, not a runtime exception.
+
+*Corrective Logic:* To catch these, the report must use `IS NULL` logic explicitly, e.g., `WHERE (rate_type = 'standard' OR rate_type IS NULL)`, or the ETL should populate `rate_type` with a default value (`COALESCE`) at ingestion.
+
+---
+
+### 4. Concrete Pipeline Fixes
+
+#### Issue 1 Fix: Duplicate Ingestion (Deduplication)
+*   **Root Cause:** The job re-pulls full trailing 24 hours without a unique constraint or idempotency key.
+*   **Fix:** Implement a **`ROW_NUMBER()` deduplication step** in the ETL transformation layer (or a unique constraint on the target table).
+*   **Implementation:**
+    1.  Add a `source_id` or `entry_uuid` to the source extraction schema.
+    2.  In the load SQL, partition by `source_id` and assign row numbers:
+        ```sql
+        INSERT INTO time_entries_fact
+        SELECT * FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY source_entry_id ORDER BY ingested_at DESC) as rn
+            FROM staging.time_entries_raw
+        ) subq
+        WHERE rn = 1;
+        ```
+    3.  Alternatively, enforce a unique index on `(source_entry_id, load_date)` in the target table to physically prevent duplicate inserts.
+
+#### Issue 2 Fix: Orphaned Foreign Keys (Matter Reconciliation)
+*   **Root Cause:** Matters are purged from the dimension table faster than time entries sync.
+*   **Fix:** Implement a **dimension table reconciliation task** or change the reporting join strategy.
+*   **Implementation:**
+    1.  **Immediate:** Add a `LEFT JOIN` to the `matters` dimension for reporting views, and flag orphaned rows in the fact table with a `matter_status = 'orphaned'`. This prevents data from "vanishing" while alerting the team.
+    2.  **Long-term:** Add a **backfill ETL step** that scans for `matter_id` values in `time_entries_fact` that do not exist in `matters` and re-associates them to a default `matter_id` (e.g., `null_matter_001`) or triggers an alert to the data governance team to re-open the matter in the source system.
+
+#### Issue 3 Fix: NULL `rate_type` (Data Quality)
+*   **Root Cause:** Source system allows NULLs, and the ETL does not enforce non-null constraints.
+*   **Fix:** Apply **`COALESCE`** at ingestion to prevent NULL propagation, and add a data quality assertion.
+*   **Implementation:**
+    1.  In the ETL transformation layer, default the field before writing to the fact table:
+        ```sql
+        COALESCE(raw.rate_type, 'standard') AS rate_type
+        ```
+    2.  Add a **Data Quality Assertion** (e.g., in Great Expectations, dbt tests, or a pre-load validation script) that flags any row where `rate_type` is NULL before ingestion, alerting the source team to fix the upstream data entry process.
+
+#### Issue 4 Fix: Timezone Mismatch (Conversion)
+*   **Root Cause:** Source timestamps are local US/Eastern, loaded as UTC without conversion.
+*   **Fix:** Apply explicit **`AT TIME ZONE`** conversion at ingestion.
+*   **Implementation:**
+    1.  Modify the ETL extraction or transformation SQL to explicitly cast the source timestamp to UTC at the point of load. Do not rely on implicit conversion or application-level offsets.
+    2.  **SQL Snippet:**
+        ```sql
+        -- Convert from source local time to UTC explicitly
+        CAST(raw.entry_timestamp AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC') AS entry_timestamp_utc
+        ```
+    3.  **Validation:** Add a downstream validation check comparing the stored `billing_date` against the source `entry_date` + expected timezone offset (3 or 4 hours depending on DST) to ensure the pipeline is converting correctly every night.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| numeric-0 | PASS |
+| numeric-1 | PASS |
+| regex-2 | PASS |
+| regex-3 | PASS |
+
+### 1. Risk Ranking (Financial + Reporting)
+| Rank | Issue | Rationale |
+|------|-------|-----------|
+| **1** | **Duplicate Ingestion** | Highest immediate financial exposure: confirmed $58,140 in double-counted billing hours. Directly impacts cash collection, client trust, and audit trails. |
+| **2** | **NULL `rate_type`** | Highest *reporting* risk: silently corrupts a firm-wide strategic KPI (hourly-realization rate). Unquantifiable financially without avg hours, but systematic metric distortion without alerting is more dangerous than one-off duplicates. |
+| **3** | **Orphaned `matter_id`** | Moderate financial/reporting risk: 102 hrs dropped from matter-level tracking. Affects matter profitability and attorney utilization reports, but is contained to matter-level rollups and doesn't break firm-wide revenue metrics. |
+| **4** | **Timezone Mismatch** | Lowest immediate quantifiable risk: affects period-cutoff accuracy. Systemic audit/compliance risk if left unaddressed (revenue recognition misalignment), but typically impacts a small tail of entries near billing-period boundaries. |
+
+---
+
+### 2. Quantification
+**Issue 1 (Duplicate Ingestion):**  
+`340 duplicate rows × 0.6 hrs/row × $285/hr = **$58,140**` in double-ingested hours.  
+*(Note: This represents the financial exposure from the redundant 340 rows ingested after the retry. If the firm bills these hours, they represent either overbilling risk or internal double-counting that distorts realization metrics.)*
+
+**Issue 2 (Orphaned `matter_id`):**  
+`85 rows × 1.2 hrs/row = **102 hours**` silently dropped from matter-level reporting when `time_entries_fact` is `INNER JOIN`ed to `matters`.
+
+---
+
+### 3. Why `NULL rate_type` Rows Are Silently Excluded (SQL Semantics)
+This behavior is not a bug; it is a direct consequence of **SQL's Three-Valued Logic (3VL)** and the `WHERE` clause's retention semantics:
+
+- In SQL, `NULL` is not a value; it represents **missing/unknown information**.
+- When the engine evaluates `rate_type = 'standard'` on a `NULL` row, it does **not** return `FALSE`. It returns `UNKNOWN`.
+- The `WHERE` clause only retains rows where the predicate evaluates to **`TRUE`**. Both `FALSE` and `UNKNOWN` result in row exclusion.
+- SQL deliberately avoids raising errors on `NULL` comparisons because treating missing data as "invalid" would break queries on sparse/optional columns, force `IS NOT NULL` guards on every filter, and contradict the relational model's design for representing real-world incomplete data.
+
+**The danger:** Because `UNKNOWN` is silently filtered out without error, warning, or row count change, business users see a report that appears fully populated but is actually missing an unknown fraction of rows. This is why `WHERE col = X` and `WHERE col != X` both exclude `NULL`s, and why `COUNT(rate_type)` differs from `COUNT(*)`.
+
+---
+
+### 4. Concrete Pipeline Fixes
+
+| Issue | Pipeline Fix |
+|-------|--------------|
+| **1. Duplicate Ingestion** | **Idempotent upsert with a deterministic dedup key.** Compute a composite hash (e.g., `SHA256(attorney_id || matter_id || source_timestamp || duration || description)`) in the staging layer. Use a `MERGE` statement: `MERGE INTO time_entries_fact t USING staging s ON (t.dedup_key = s.dedup_key) WHEN MATCHED THEN SKIP WHEN NOT MATCHED THEN INSERT (...)`. This guarantees that re-running the job or retrying after failure never inserts duplicates, regardless of source pull behavior. |
+| **2. Orphaned Foreign Keys** | **Replace `INNER JOIN` with `LEFT JOIN` + quarantine routing.** In the ETL, `LEFT JOIN matters m ON t.matter_id = m.matter_id`. If `m.matter_id IS NULL`, route the row to a `time_entries_orphans` table with `source_timestamp`, `matter_id`, and `ingestion_job_id`. Add a daily data-quality alert that triggers if orphan count > threshold. Never silently drop; surface instead of delete. |
+| **3. NULL `rate_type`** | **Enforce default at ingestion + fix the filter.** Replace the reporting filter with `WHERE rate_type = 'standard' OR rate_type IS NULL` (if business rule treats NULL as standard), or better, normalize at load time: `INSERT ... (rate_type) VALUES (COALESCE(NULLIF(src.rate_type, ''), 'standard'))`. Pair this with a DQ monitor that alerts when `rate_type IS NULL` count > 0, treating it as a pipeline regression rather than expected behavior. |
+| **4. Timezone Mismatch** | **Explicit timezone conversion before storage.** Tag the source timestamp as `TIMESTAMP WITH TIME ZONE` and apply: `billing_date_utc = source_timestamp AT TIME ZONE 'US/Eastern' AT TIME ZONE 'UTC'` (PostgreSQL) or `FROM_TZ(source_ts, 'US/Eastern') AT TIME ZONE 'UTC'` (Oracle). Store the converted UTC timestamp in the fact table and derive `billing_date` from it (`billing_date::DATE`). Add a validation step that flags rows where `billing_date` deviates from the source calendar date by >2 hours, which catches future conversion regressions. |
+
+These fixes shift the pipeline from *silent failure tolerance* to *explicit control*: idempotent writes, referential integrity enforcement, default normalization, and timezone-aware timestamps. Each eliminates the silent data loss that currently masks the issues.
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).

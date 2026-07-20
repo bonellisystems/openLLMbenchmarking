@@ -1,0 +1,579 @@
+# Panel Judge -- Battery 1 Business Task Scoring
+
+## Role
+
+You are one of three independent judges (Claude, Codex, Gemini) scoring a set
+of blinded answers to a single MSP-realistic business task. You do not know
+which model produced which answer -- every answer below is labeled only by a
+letter. Do not try to guess model identity from writing style. Score only
+what is on the page against the anchors below.
+
+## Anchors
+
+The following anchors define what a 0, 3, 5, 7, and 10 look like for this
+business unit. Use them as the scoring scale for every answer.
+
+# Coding -- scoring anchors (0-10)
+
+Scale: integers 0-10. Anchors define 0/3/5/7/10; use 1-2/4/6/8-9 for answers between anchors.
+
+## 10 -- Frontier
+The code is correct on first read, runs or compiles as-is, and handles every edge case implied by the prompt (empty input, boundary values, failure paths) without being asked twice. It matches the requested language, framework, and version idioms, includes a verification step (tests, a worked trace, or explicit correctness reasoning), and never calls an API or library function that does not exist. Assumptions and tradeoffs (performance, complexity, security) are stated explicitly rather than silently chosen.
+Example character: a function with input validation, a named edge case, and a short test or trace proving it works; any open question is flagged, not guessed at.
+
+## 7 -- Strong
+The core logic is correct and the code is usable with at most light edits. One edge case is unhandled, error handling is thin in a non-critical path, or there is no explicit verification step, but nothing here would surprise a reviewer. It stays within the requested language and framework and does not invent APIs.
+Example character: working code that solves the stated problem cleanly but skips a boundary-condition check the prompt did not explicitly call out.
+
+## 5 -- Adequate
+The code addresses the stated problem at a surface level but has a real gap: missing error handling, an untested assumption, or a skeleton that needs another pass before it runs cleanly. It is a reasonable starting point but a developer must debug or extend it before shipping.
+Example character: a mostly-right implementation that would fail on a null or empty-list input the prompt implied should be handled.
+
+## 3 -- Weak
+The answer misreads the actual ask -- wrong language or framework, pseudo-code presented as a finished implementation, or a solution to a simpler problem than the one posed. Boilerplate explanation pads the response without adding working substance.
+Example character: a rough sketch that gestures at the right idea but would not run, with no acknowledgment that it is incomplete.
+
+## 0 -- Unusable
+The code does not run, is unrelated to the request, or is fabricated wholesale (calls to nonexistent APIs, invented syntax). Includes destructive operations presented as safe with no warning, or is an empty/refused response.
+
+## Unit-specific red flags (deduct hard)
+- Hallucinated library functions, methods, or package names presented as real.
+- Hardcoded secrets, credentials, or API keys in example code.
+- Silently swallowed exceptions or errors with no handling or logging.
+- Claiming code was run or tested when no verification is shown or possible.
+- SQL, command, or template injection vulnerabilities introduced without comment.
+
+## Unit-specific excellence markers
+- Includes a test, worked trace, or verification step, not just a final answer.
+- Explicitly handles null/empty/boundary inputs the prompt implies.
+- Names complexity or performance tradeoffs when they matter.
+- Matches the exact language/framework/version idiom requested.
+- Flags any assumption made to fill a gap in the prompt.
+
+
+## Task
+
+The task given to every model in this cohort:
+
+A payments processor uses transaction reference IDs in the exact format
+`TXN-` followed by 10 digits, followed by `-`, followed by a 3-letter uppercase ISO currency
+code -- for example `TXN-0048291344-USD`.
+
+Construct a single Python regular expression, intended to be used with `re.fullmatch`, that
+correctly classifies each of the following 7 test strings as MATCH or NO MATCH:
+
+1. `TXN-0048291344-USD` -> should MATCH
+2. `TXN-9999999999-EUR` -> should MATCH
+3. `TXN-004829134-USD` -> should NOT match (only 9 digits)
+4. `TXN-0048291344-usd` -> should NOT match (lowercase currency code)
+5. `TXN-00482913445-USD` -> should NOT match (11 digits)
+6. `TXN-0048291344-USDX` -> should NOT match (trailing extra character after the currency
+   code)
+7. `TXN0048291344-USD` -> should NOT match (missing the hyphen right after TXN)
+
+Give the regex, classify all 7 strings against it, and explain specifically why using
+`re.search` with your pattern instead of `re.fullmatch` (or omitting start/end anchors)
+would change the correct classification of test string 6.
+
+
+## Evidence
+
+Each answer below is followed by a compact table of deterministic signal
+checks (pass/fail) run against that answer's text. These are automated
+substring / regex / numeric probes, not a full grade -- treat them as
+supporting evidence only, never as the verdict itself.
+
+## Answers
+
+Letters in this packet: A, B, C, D, E, F, G, H, I, J, K, L, M
+
+### Answer A
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### The Regular Expression
+
+```python
+import re
+
+pattern = r"TXN-\d{10}-[A-Z]{3}"
+```
+
+### Classification of Test Strings
+
+| # | Input String | Result | Reason |
+|---|---|---|---|
+| 1 | `TXN-0048291344-USD` | **MATCH** | Exact format: prefix, 10 digits, separator, 3 uppercase letters. |
+| 2 | `TXN-9999999999-EUR` | **MATCH** | Exact format (different digits/currency). |
+| 3 | `TXN-004829134-USD` | **NO MATCH** | `\d{10}` requires exactly 10 digits; this has only 9. |
+| 4 | `TXN-0048291344-usd` | **NO MATCH** | `[A-Z]{3}` requires uppercase; `usd` contains lowercase. |
+| 5 | `TXN-00482913445-USD` | **NO MATCH** | `\d{10}` matches the first 10 digits, but the next char in the string is `5`, not `-`. |
+| 6 | `TXN-0048291344-USDX` | **NO MATCH** | The pattern matches the first 19 characters, but the string contains a trailing `X` that is not part of the pattern. |
+| 7 | `TXN0048291344-USD` | **NO MATCH** | The literal `TXN-` expects a hyphen after `TXN`, but the input has a `0` immediately after. |
+
+### Why `re.search` breaks Test String 6
+
+If you used `re.search(pattern, string)` (or `re.match` without anchors) on the string `TXN-0048291344-USDX` instead of `re.fullmatch`, the result would change from **NO MATCH** to **MATCH**.
+
+Here is the specific mechanism behind this failure:
+
+1.  **`re.search` is a substring scan:** It scans the string from left to right and returns `True` if the pattern is found *anywhere* within the string.
+2.  **The "Hidden" Match:** In the string `TXN-0048291344-USDX`, the engine finds the valid sequence `TXN-0048291344-USD` starting at index 0. It successfully matches indices 0 through 18.
+3.  **Ignored Tail:** Because `re.search` does not require the match to extend to the end of the string, it stops once it finds the valid substring and ignores the trailing `X`.
+
+By contrast, `re.fullmatch` requires the pattern to consume the **entire** string. Since the regex `TXN-\d{10}-[A-Z]{3}` ends after consuming `USD`, the remaining `X` is unconsumed, causing the match to fail. This is why `re.fullmatch` is critical for strict ID validation where extra characters (like copy-paste artifacts or appended metadata) must be rejected.
+
+### Answer B
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+**Regex (to be used with `re.fullmatch`)**
+
+```python
+pattern = r'TXN-\d{10}-[A-Z]{3}'
+```
+
+*Explanation of the pattern*
+
+| part | meaning |
+|------|----------|
+| `TXN-` | the literal prefix required by the spec |
+| `\d{10}` | **exactly** ten decimal digits (`0‑9`) |
+| `-` | the literal hyphen that separates the digits from the currency code |
+| `[A-Z]{3}` | **exactly** three uppercase ASCII letters (the ISO‑4217 currency code) |
+
+Because we will call `re.fullmatch`, the engine must consume the *entire* input string; there is no need for `^` or `$` anchors – `fullmatch` already enforces a match of the whole string.
+
+---
+
+### Classification of the 7 test strings
+
+| # | test string                               | `re.fullmatch(pattern, s)` | Result |
+|---|-------------------------------------------|----------------------------|--------|
+| 1 | `TXN-0048291344-USD`                       | **match**                  | ✅ MATCH |
+| 2 | `TXN-9999999999-EUR`                       | **match**                  | ✅ MATCH |
+| 3 | `TXN-004829134-USD`                        | **no match** (only 9 digits) | ❌ NO MATCH |
+| 4 | `TXN-0048291344-usd`                       | **no match** (lower‑case “usd”) | ❌ NO MATCH |
+| 5 | `TXN-00482913445-USD`                      | **no match** (11 digits)   | ❌ NO MATCH |
+| 6 | `TXN-0048291344-USDX`                      | **no match** (extra “X” after the 3‑letter code) | ❌ NO MATCH |
+| 7 | `TXN0048291344-USD`                        | **no match** (missing hyphen after “TXN”) | ❌ NO MATCH |
+
+All seven classifications are correct when the pattern is used **with `re.fullmatch`**.
+
+---
+
+### Why `re.search` (or omitting the implicit start/end anchors) would *incorrectly* accept test 6
+
+`re.search` scans the string for **any** substring that matches the pattern; it does **not** require the match to extend to the end of the string.  
+If we used the same pattern with `re.search`:
+
+```python
+re.search(r'TXN-\d{10}-[A-Z]{3}', 'TXN-0048291344-USDX')
+```
+
+the engine would find the substring **`TXN-0048291344-USD`** inside the longer string:
+
+```
+TXN-0048291344-USDX
+                ^^^^^^^   ← matches the pattern
+```
+
+Because the pattern does **not** demand that the match consume the whole input, the trailing `X` is ignored, and the search reports a match. Consequently, test 6 would be mis‑classified as **MATCH**, whereas the specification requires it to be **NO MATCH**.
+
+`re.fullmatch` (or explicitly anchoring the pattern with `^…$`) forces the engine to match **the entire string**, so the extra `X` prevents a match, preserving the correct classification. 
+
+---  
+
+**Summary**
+
+* Regex: `r'TXN-\d{10}-[A-Z]{3}'`  
+* Works correctly with `re.fullmatch` for all seven examples.  
+* Using `re.search` (or a pattern without implicit whole‑string anchoring) would cause test 6 to be incorrectly identified as a match because it would stop matching after the valid 3‑letter currency code, ignoring the trailing character.
+
+### Answer C
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| contains-2 | FAIL |
+| regex-1 | FAIL |
+
+
+
+### Answer D
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| contains-2 | FAIL |
+| regex-1 | FAIL |
+
+
+
+### Answer E
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+Pattern: `TXN-\d{10}-[A-Z]{3}`, used with `re.fullmatch(pattern, s)`.
+
+Classification of all 7 test strings:
+1. `TXN-0048291344-USD` -> MATCH (10 digits, 3 uppercase letters, exact full-string match).
+2. `TXN-9999999999-EUR` -> MATCH.
+3. `TXN-004829134-USD` -> NO MATCH -- only 9 digits before the hyphen; `\d{10}` requires
+   exactly 10 and there's no way to shift the match to make it fit.
+4. `TXN-0048291344-usd` -> NO MATCH -- `[A-Z]{3}` only matches uppercase.
+5. `TXN-00482913445-USD` -> NO MATCH -- 11 digits; `\d{10}` greedily consumes the first 10,
+   leaving a stray digit that can't match the following literal `-`.
+6. `TXN-0048291344-USDX` -> NO MATCH under `fullmatch` (there's a trailing `X` that isn't
+   consumed by any part of the pattern, so the full string can't match).
+7. `TXN0048291344-USD` -> NO MATCH -- the literal `TXN-` requires a hyphen immediately after
+   `TXN`, which isn't present.
+
+Why `re.search` (or an unanchored pattern) changes #6's classification: `re.search` only
+requires the pattern to occur somewhere in the string, not to consume the whole string. Since
+`TXN-0048291344-USD` (19 characters) IS a literal prefix of `TXN-0048291344-USDX`, calling
+`re.search("TXN-\d{10}-[A-Z]{3}", "TXN-0048291344-USDX")` finds and returns a match at
+position 0-19, silently ignoring the trailing "X". Only `re.fullmatch`, or explicit anchors
+`^TXN-\d{10}-[A-Z]{3}$`, force the pattern to account for every character and correctly
+reject #6.
+
+
+### Answer F
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### The Regex
+```python
+r"TXN-\d{10}-[A-Z]{3}"
+```
+*(Note: Since this is used with `re.fullmatch`, the pattern implicitly requires a match spanning the entire string from start to end, making explicit `^` and `$` anchors redundant.)*
+
+---
+
+### Classification of the 7 Test Strings
+| # | Test String | Result | Reason |
+|---|-------------|--------|--------|
+| 1 | `TXN-0048291344-USD` | ✅ MATCH | Exactly follows the `TXN-` + 10 digits + `-` + 3 uppercase letters format. |
+| 2 | `TXN-9999999999-EUR` | ✅ MATCH | Exactly follows the format. |
+| 3 | `TXN-004829134-USD` | ❌ NO MATCH | Only 9 digits; `\d{10}` fails. |
+| 4 | `TXN-0048291344-usd` | ❌ NO MATCH | Lowercase currency; `[A-Z]{3}` fails. |
+| 5 | `TXN-00482913445-USD` | ❌ NO MATCH | 11 digits; after matching 10, the next char is `5`, not `-`. |
+| 6 | `TXN-0048291344-USDX` | ❌ NO MATCH | Trailing `X` violates the "exact end of string" requirement of `re.fullmatch`. |
+| 7 | `TXN0048291344-USD` | ❌ NO MATCH | Missing the literal `-` after `TXN`. |
+
+---
+
+### Why `re.search` Would Incorrectly Classify String #6
+
+With `re.fullmatch`, the engine **must** consume the entire input string for the match to succeed. In string #6 (`TXN-0048291344-USDX`), the pattern successfully matches the first 22 characters (`TXN-0048291344-USD`), but the trailing `X` remains unmatched. Since `re.fullmatch` requires zero leftover characters, it correctly returns `None`.
+
+If you switch to `re.search(r"TXN-\d{10}-[A-Z]{3}", s)`, the engine only looks for **any** occurrence of the pattern anywhere in the string. It will find `TXN-0048291344-USD` starting at index 0 and immediately return a match object, **ignoring the extra `X`**. This causes string #6 to be incorrectly classified as a MATCH.
+
+The same risk applies if you omit the anchors and use `re.match` (which only anchors at the start) or plain `re.search` with `^TXN-\d{10}-[A-Z]{3}$` (which would actually work correctly for #6, but defeats the purpose of using `re.fullmatch`). The core issue is that **`re.search` validates partial containment, not exact structural compliance**, making it unsafe for strict format validation like this payment processor ID.
+
+### Answer G
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| contains-2 | FAIL |
+| regex-1 | FAIL |
+
+
+
+### Answer H
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+**Regular‑expression**
+
+```python
+r'^TXN-\d{10}-[A-Z]{3}$'
+```
+
+- `^`                      # start of string  
+- `TXN-`                    # literal prefix  
+- `\d{10}`                   # exactly ten decimal digits  
+- `-`                      # literal hyphen separator  
+- `[A-Z]{3}`                 # three uppercase ISO‑currency letters  
+- `$`                      # end of string  
+
+The anchors `^` and `$` make `re.fullmatch` unnecessary – the pattern only matches if the **entire** input string conforms to the format.
+
+---
+
+### Classification of the 7 test strings
+
+| # | Test string                | Result with `re.fullmatch(r'^TXN-\d{10}-[A-Z]{3}$', s)` | Reason |
+|---|----------------------------|----------------------------------------------------------|--------|
+| 1 | `TXN-0048291344-USD`       | **MATCH**                                                | Exactly “TXN‑” + 10 digits + “‑” + 3 uppercase letters. |
+| 2 | `TXN-9999999999-EUR`       | **MATCH**                                                | Same structure; digits are all 9’s, currency code is uppercase. |
+| 3 | `TXN-004829134-USD`        | **NO MATCH**                                             | Only **9** digits (`\d{10}` fails). |
+| 4 | `TXN-0048291344-usd`       | **NO MATCH**                                             | Currency code is lowercase; `[A-Z]{3}` requires uppercase. |
+| 5 | `TXN-00482913445-USD`      | **NO MATCH**                                             | **11** digits; `\d{10}` expects exactly ten. |
+| 6 | `TXN-0048291344-USDX`      | **NO MATCH**                                             | After the three‑letter code there is an extra “X”; `$` forces the string to end here. |
+| 7 | `TXN0048291344-USD`        | **NO MATCH**                                             | Missing the hyphen immediately after “TXN”; the literal `TXN-` does not match `TXN`. |
+
+---
+
+### Why `re.search` (or dropping the anchors) would misclassify test string 6
+
+`re.search` scans **anywhere** inside the subject string and succeeds if **any** substring matches the pattern.  
+If we used:
+
+```python
+re.search(r'TXN-\d{10}-[A-Z]{3}', "TXN-0048291344-USDX")
+```
+
+the engine finds the substring `TXN-0048291344-USD` (positions 0‑18) that **does** satisfy the pattern, and therefore returns a match object. Consequently the string would be (incorrectly) classified as **MATCH**.
+
+The `$` anchor in the pattern forces the match to reach the **end of the string**. With `re.fullmatch` (or with `^…$` in `re.search`), the trailing “X” prevents the match from succeeding, yielding the correct **NO MATCH** result for string 6. Dropping `^`/`$` (or using `re.search` without them) removes this “end‑of‑string” constraint, allowing extra characters after a valid prefix to be ignored, which is why the classification would change.
+
+### Answer I
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+## Regular Expression
+
+```python
+r'^TXN-\d{10}-[A-Z]{3}$'
+```
+
+## Test Results
+
+1. `TXN-0048291344-USD` -> **MATCH** ✓
+2. `TXN-9999999999-EUR` -> **MATCH** ✓
+3. `TXN-004829134-USD` -> **NO MATCH** ✓
+4. `TXN-0048291344-usd` -> **NO MATCH** ✓
+5. `TXN-00482913445-USD` -> **NO MATCH** ✓
+6. `TXN-0048291344-USDX` -> **NO MATCH** ✓
+7. `TXN0048291344-USD` -> **NO MATCH** ✓
+
+## Explanation of Pattern Components
+
+- `^` - Start of string anchor
+- `TXN-` - Literal text "TXN-"
+- `\d{10}` - Exactly 10 digits
+- `-` - Literal hyphen
+- `[A-Z]{3}` - Exactly 3 uppercase letters
+- `$` - End of string anchor
+
+## Impact of Using `re.search` Instead of `re.fullmatch`
+
+If we used `re.search` with the same pattern `r'TXN-\d{10}-[A-Z]{3}'` (without anchors), test string 6 (`TXN-0048291344-USDX`) would incorrectly be classified as a **MATCH**.
+
+**Why this happens:**
+- `re.search` finds the first occurrence of the pattern anywhere within the string
+- The pattern `TXN-\d{10}-[A-Z]{3}` matches `TXN-0048291344-USD` within the longer string `TXN-0048291344-USDX`
+- Since `re.search` only requires finding the pattern somewhere in the string, it would return a match object
+- However, `re.fullmatch` requires that the entire string matches the pattern exactly
+- With `re.fullmatch`, string 6 fails because the entire string doesn't match - it has an extra "X" at the end
+
+The anchors (`^` and `$`) are crucial here because they ensure the pattern matches the entire string from beginning to end, not just a substring within it. Without them, the pattern would match any string containing a valid transaction reference ID, regardless of additional characters before or after it.
+
+### Answer J
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+**Regex (intended for `re.fullmatch`)**
+
+```python
+pattern = r'^TXN-\d{10}-[A-Z]{3}$'
+```
+
+(If you use `re.fullmatch`, the leading `^` and trailing `$` are not strictly required – `fullmatch` already anchors the pattern – but keeping them makes the intent crystal‑clear.)
+
+---
+
+### Classification of the seven test strings
+
+| # | String                         | Expected result | `re.fullmatch(pattern, string)` |
+|---|--------------------------------|-----------------|---------------------------------|
+| 1 | `TXN-0048291344-USD`           | **MATCH**       | ✅ Match                       |
+| 2 | `TXN-9999999999-EUR`           | **MATCH**       | ✅ Match                       |
+| 3 | `TXN-004829134-USD`            | **NO MATCH**    | ❌ No match (only 9 digits)     |
+| 4 | `TXN-0048291344-usd`           | **NO MATCH**    | ❌ No match (lower‑case code)   |
+| 5 | `TXN-00482913445-USD`          | **NO MATCH**    | ❌ No match (11 digits)         |
+| 6 | `TXN-0048291344-USDX`          | **NO MATCH**    | ❌ No match (extra trailing char) |
+| 7 | `TXN0048291344-USD`            | **NO MATCH**    | ❌ No match (missing hyphen)    |
+
+---
+
+### Why `re.search` (or omitting the anchors) would mis‑classify test string 6
+
+`re.search` scans the input string for **any** substring that matches the pattern.  
+If we run
+
+```python
+re.search(r'TXN-\d{10}-[A-Z]{3}', 'TXN-0048291344-USDX')
+```
+
+the engine finds the substring `TXN-0048291344-USD` starting at position 0 and ending at position 20.  
+Because that substring satisfies the pattern, `search` reports a match **even though the entire string contains an extra “X” after the currency code**.
+
+In contrast, `re.fullmatch` (or a pattern with `^…$` used with `re.search`) requires the **entire** string to satisfy the pattern.  
+With `fullmatch` the trailing “X” violates the `$` anchor, so no match is returned.
+
+Therefore, using `re.search` without anchors would incorrectly classify test string 6 as a **MATCH**.
+
+### Answer K
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### Regular Expression
+
+```python
+TXN-\d{10}-[A-Z]{3}
+```
+
+### Classification of Test Strings
+
+| # | String | Classification |
+|---|--------|----------------|
+| 1 | `TXN-0048291344-USD` | **MATCH** |
+| 2 | `TXN-9999999999-EUR` | **MATCH** |
+| 3 | `TXN-004829134-USD` | **NO MATCH** |
+| 4 | `TXN-0048291344-usd` | **NO MATCH** |
+| 5 | `TXN-00482913445-USD` | **NO MATCH** |
+| 6 | `TXN-0048291344-USDX` | **NO MATCH** |
+| 7 | `TXN0048291344-USD` | **NO MATCH** |
+
+### Explanation for Test String 6 (`TXN-0048291344-USDX`)
+
+**Why `re.fullmatch` results in NO MATCH:**
+The pattern `TXN-\d{10}-[A-Z]{3}` describes a specific total structure: a prefix, exactly 10 digits, a hyphen, and exactly 3 uppercase letters. When using `re.fullmatch`, Python implicitly anchors the pattern to the **start and end** of the string. It demands that the entire string `TXN-0048291344-USDX` conforms to this structure. Since the string contains a trailing `X` (making the currency code 4 letters instead of 3), the end of the string does not align with the end of the pattern, causing the match to fail.
+
+**Why `re.search` would incorrectly result in MATCH:**
+When using `re.search`, the engine looks for the pattern **anywhere** within the string, not necessarily the whole string. In `TXN-0048291344-USDX`, the substring `TXN-0048291344-USD` at the beginning perfectly satisfies the regex pattern. `re.search` finds this valid prefix and returns a match immediately, ignoring the extra `X` at the end. This would incorrectly classify a malformed ID as valid.
+
+### Answer L
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | PASS |
+| contains-2 | PASS |
+| regex-1 | PASS |
+
+### Regular Expression
+```python
+r'TXN-\d{10}-[A-Z]{3}'
+```
+
+### Test String Classification
+
+| # | Test String | Classification |
+| :--- | :--- | :--- |
+| 1 | `TXN-0048291344-USD` | **MATCH** |
+| 2 | `TXN-9999999999-EUR` | **MATCH** |
+| 3 | `TXN-004829134-USD` | **NO MATCH** |
+| 4 | `TXN-0048291344-usd` | **NO MATCH** |
+| 5 | `TXN-00482913445-USD` | **NO MATCH** |
+| 6 | `TXN-0048291344-USDX` | **NO MATCH** |
+| 7 | `TXN0048291344-USD` | **NO MATCH** |
+
+***
+
+### Explanation regarding `re.search` and Test String 6
+
+Test string 6 (`TXN-0048291344-USDX`) fails under `re.fullmatch` because `fullmatch` requires the **entire** string to conform exactly to the pattern. Since the string contains an extra trailing character (`X`) that is not accounted for in the regex, the pattern does not cover the whole string, resulting in no match.
+
+However, if you used `re.search` (or omitted the start `^` and end `$` anchors), the regex would find a **partial match** within the string. `re.search` scans through the string from left to right and returns a match as soon as it finds a substring that satisfies the pattern. In this case, it would identify `TXN-0048291344-USD` as a valid match and ignore the trailing `X`, incorrectly classifying the string as a MATCH.
+
+### Answer M
+
+Evidence:
+
+| Check | Result |
+|---|---|
+| contains-0 | FAIL |
+| contains-2 | FAIL |
+| regex-1 | FAIL |
+
+You could use something like `TXN-\d+-[A-Z]+` to match the transaction IDs. This should catch
+the valid ones and reject anything that doesn't look right.
+
+
+
+## Instructions
+
+For EACH letter listed above:
+
+- Assign an integer score from 0 to 10 (inclusive), scored strictly against
+  the anchors above.
+- Write one short, specific, one-line reason for that score.
+
+Then provide a full ranking of ALL letters from best to worst -- a strict
+permutation of every letter listed above (no ties).
+
+## Output contract -- STRICT JSON ONLY
+
+Respond with a single JSON object and NOTHING else: no prose before or after
+it, no markdown code fences, no commentary. The object must have exactly
+these three keys, and EVERY letter listed above must appear in all three:
+
+{"scores": {"A": 7, "B": 5}, "reasons": {"A": "one-line reason", "B": "one-line reason"}, "ranking": ["A", "B"]}
+
+- "scores": object mapping each letter to an integer 0-10.
+- "reasons": object mapping each letter to a one-line string reason.
+- "ranking": array containing every letter exactly once, best first.
+
+A reply missing any letter from any of the three fields, containing a score
+outside 0-10, or containing extra text outside the JSON object, is invalid
+and will be discarded (one retry is allowed by the runner before the call is
+recorded as an error).
