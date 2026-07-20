@@ -1,6 +1,6 @@
 id: toolheavy-01
 shape: tool-heavy
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The directory `data/` contains several `.txt` files, each holding
   whitespace-separated non-negative integers (possibly across multiple
@@ -33,6 +33,7 @@ setup_repo:
     40
   data/e.txt: |
     50
+oracle_files:
   oracle_test.sh: |
     #!/bin/bash
     set -e
@@ -48,7 +49,7 @@ setup_repo:
       exit 1
     fi
     echo PASS
-protected_paths: [oracle_test.sh]
+protected_paths: [data/a.txt, data/b.txt, data/c.txt, data/d.txt, data/e.txt]
 allowed_diff_paths: [sum_all.sh]
 oracle:
   type: command
@@ -61,13 +62,27 @@ notes: |
   only builds the manifest/oracle; the observable-spawn-event wiring is a
   Phase-2 adapter concern (allowed_tools includes `subagent_spawn` here as
   forward-documentation, not an enforced mechanism yet).
-  Anti-gaming: the hidden oracle runs `sum_all.sh` TWICE -- once against
-  the visible data/ set (total 150), then again after writing one more
-  data file into its OWN /tmp copy (never touching the agent's real
-  workspace) and expecting the new total (200). A hardcoded-total or
-  fixed-filename-list solution passes the first check and fails the
-  second, the same no-op/regression discriminator idea as B6's
-  regression_signals, expressed behaviorally instead of textually.
-  `data/*.txt` are not individually protected_shas-hash-checked, but any
-  edit to them is still caught by the plain diff constraint (Design
-  Decision #1b): only `sum_all.sh` is in allowed_diff_paths.
+
+  Hidden oracle (post-review hardening, task_version 1.0.0 -> 1.1.0): this
+  manifest is the concrete disproof case the review found. With
+  `oracle_test.sh` sitting in the agent-visible `setup_repo` (the old
+  layout), an agent could simply READ the hidden test, see it writes
+  `data/f_extra.txt` and expects total 200, and write
+  `sum_all.sh` as `if [ -f data/f_extra.txt ]; then echo 200; else echo
+  150; fi` -- passing both checks with zero real summing logic. Moving
+  `oracle_test.sh` into `oracle_files` closes this structurally:
+  `materialize_repo` never writes it into the agent's workspace at all, so
+  there is nothing to read. `run_oracle` re-injects the pristine script
+  into a private copy the agent never had access to, only at validation
+  time, immediately before running it. The oracle still runs `sum_all.sh`
+  TWICE -- once against the visible data/ set (total 150), then again
+  after writing one more data file into its OWN /tmp copy (never touching
+  the agent's real workspace) -- so a genuinely dynamic-discovery
+  implementation is still the only thing that can pass both, but now
+  without a visible answer key to shortcut around.
+
+  `data/*.txt` are now individually `protected_shas`-hash-checked (not just
+  diff-constraint-covered) -- input data an agent could tamper with to
+  fake a matching hardcoded total is exactly the kind of "agent-visible
+  file that must not change" the hash-cap (Design Decision #1a) exists
+  for.

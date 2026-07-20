@@ -10,6 +10,34 @@ full file content, inline block scalars -- same idea as B6's `buggy_code`,
 just multi-file) plus a hidden behavioral ORACLE and the anti-gaming
 metadata needed to run it.
 
+THREE file categories, not two (post-review hardening -- see task-3-report.md
+"Fix note" for the finding this closes): a manifest's files split into
+  - `setup_repo` -- the agent-VISIBLE, agent-modifiable initial workspace.
+    `materialize_repo` writes ONLY this to disk; this is everything a real
+    harness adapter (Phase 2) would hand an agent.
+  - `oracle_files` -- the hidden behavioral-oracle script(s). NEVER written
+    by `materialize_repo`, NEVER present in the agent's workspace at any
+    point. `run_oracle` re-injects them into a private copy immediately
+    before running the oracle (step (c) below) -- the agent workspace it
+    was handed, and the post-run workspace it hands back, never contained
+    them, so there is nothing for the agent to read and overfit against.
+  - `protected_paths` (drawn from `setup_repo`, never from `oracle_files`)
+    -- agent-VISIBLE files that must nonetheless remain byte-identical
+    after the run (e.g. a fixture file the agent isn't supposed to touch).
+    The loader enforces `protected_paths ⊆ setup_repo.keys()`, which
+    structurally guarantees a manifest author cannot accidentally "protect"
+    a hidden oracle file instead of withholding it.
+This closes a real gap the first pass of this module had: putting
+`oracle_test.sh` inside `setup_repo` (hash-protected, but still
+agent-readable) satisfied only ONE of the two DISTINCT global constraints
+("protected files hash-checked") and not the other ("hidden validators
+live OUTSIDE the writable workspace") -- an agent could read the hidden
+test and hand-craft a workspace that satisfies it (e.g. checking for a
+specific planted filename) without doing the real task. Withholding
+`oracle_files` from the agent workspace entirely, and re-injecting only at
+validation time from a copy the agent never sees, makes "hidden" structurally
+true rather than a naming convention.
+
 LANGUAGE NOTE -- why these manifests are bash, not the Python B6 uses:
 the pinned sandbox image (`nvidia/cuda:12.6.2-base-ubuntu24.04`, Task 2)
 has NO Python, gcc, or node -- only bash/sh/perl/coreutils (confirmed by
@@ -28,14 +56,17 @@ Anti-gaming precedence (`run_oracle`, task-3-brief.md Design Decision #1) --
 HARD CAPS run first, before the behavioral oracle, and without Docker:
   (a) protected-file hash check: any `protected_shas` mismatch (or missing
       file) -> immediate `(False, ...)`, even if the behavioral task would
-      otherwise pass. This is what stops a gamer from editing the hidden
-      oracle script itself to force a pass.
+      otherwise pass. This is what stops a gamer from editing a protected,
+      agent-visible fixture file to force a pass.
   (b) diff constraint: any file that differs from `setup_repo`'s initial
       content (or is new) and is not in `allowed_diff_paths` (nor
       `protected_shas`, already covered by (a)) -> `(False, ...)`.
-  (c) only once (a) and (b) both pass: the behavioral oracle runs, via
-      `Sandbox.hidden_validate(task.oracle, workspace)` -- a FRESH,
-      read-only copy in a throwaway container outside the agent's reach.
+  (c) only once (a) and (b) both pass: `oracle_files` are re-injected into
+      a private copy of the (already-validated) workspace, and the
+      behavioral oracle runs against THAT copy via
+      `Sandbox.hidden_validate(task.oracle, ...)` -- a FRESH, read-only
+      copy in a throwaway container outside the agent's reach, that now
+      also contains the oracle the agent never got to see.
 Steps (a)/(b) never construct a `Sandbox`, so they need no Docker at all;
 only (c) does (guarded by `@requires_docker` in the test).
 """
@@ -43,6 +74,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +89,8 @@ _VALID_SHAPES = {"edit", "multi-file", "bugfix", "tool-heavy", "from-scratch"}
 
 _REQUIRED_KEYS = (
     "id", "shape", "task_version", "prompt", "allowed_tools", "budgets",
-    "setup_repo", "protected_paths", "allowed_diff_paths", "oracle",
+    "setup_repo", "oracle_files", "protected_paths", "allowed_diff_paths",
+    "oracle",
 )
 _REQUIRED_BUDGET_KEYS = ("wall_clock_s", "tokens", "steps")
 
@@ -69,7 +103,14 @@ class B8Task:
     protected_shas, task_version, fixture_sha`); the remaining fields are
     additive and required to actually MATERIALIZE a workspace and enforce
     the diff constraint -- `run_oracle`'s Design Decision #1b cannot be
-    implemented without the initial repo content to diff against."""
+    implemented without the initial repo content to diff against.
+
+    `oracle_files` is additive for the same reason and is the field that
+    makes withholding possible: `materialize_repo` never touches it, only
+    `run_oracle`'s step (c) does (re-injecting into a copy the agent never
+    sees). `setup_repo_sha` is computed over `setup_repo` ONLY -- it never
+    includes `oracle_files`, so it reflects exactly what the agent could
+    ever have observed."""
 
     id: str
     shape: str
@@ -81,6 +122,7 @@ class B8Task:
     task_version: str
     fixture_sha: str
     setup_repo: dict[str, str] = field(default_factory=dict)
+    oracle_files: dict[str, str] = field(default_factory=dict)
     protected_paths: list[str] = field(default_factory=list)
     allowed_diff_paths: list[str] = field(default_factory=list)
     prompt: str = ""
@@ -104,9 +146,11 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
     """Load all B8 task manifests from suite/b8_harness/task-*.yaml.
 
     Fail-loud (mirrors b6_fixtures.load_tasks): a missing required key, an
-    unknown shape, or a protected path absent from setup_repo raises
-    ValueError rather than silently skipping the manifest -- a
-    silently-dropped anti-gaming check is worse than no check at all.
+    unknown shape, a protected path absent from setup_repo, or a path
+    claimed by both setup_repo and oracle_files raises ValueError rather
+    than silently skipping the manifest -- a silently-dropped anti-gaming
+    check (or a hidden-oracle file that accidentally leaked into the
+    agent-visible tree) is worse than no check at all.
     """
     tasks_dir = Path(root) / "suite" / _TASKS_DIR
     if not tasks_dir.exists():
@@ -132,6 +176,17 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
                 raise ValueError("setup_repo must be a non-empty mapping of path -> content")
             if not all(isinstance(k, str) and isinstance(v, str) for k, v in setup_repo.items()):
                 raise ValueError("setup_repo keys/values must all be strings")
+
+            oracle_files = data["oracle_files"]
+            if not isinstance(oracle_files, dict) or not oracle_files:
+                raise ValueError("oracle_files must be a non-empty mapping of path -> content")
+            if not all(isinstance(k, str) and isinstance(v, str) for k, v in oracle_files.items()):
+                raise ValueError("oracle_files keys/values must all be strings")
+            file_overlap = set(setup_repo) & set(oracle_files)
+            if file_overlap:
+                raise ValueError(
+                    f"paths cannot be in both setup_repo (agent-visible) and "
+                    f"oracle_files (hidden): {sorted(file_overlap)}")
 
             protected_paths = data["protected_paths"]
             if not isinstance(protected_paths, list) or not protected_paths:
@@ -176,7 +231,8 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
                 allowed_tools=list(allowed_tools), budgets=dict(budgets),
                 oracle=list(argv), protected_shas=protected_shas,
                 task_version=str(data["task_version"]), fixture_sha=fixture_sha,
-                setup_repo=dict(setup_repo), protected_paths=list(protected_paths),
+                setup_repo=dict(setup_repo), oracle_files=dict(oracle_files),
+                protected_paths=list(protected_paths),
                 allowed_diff_paths=list(allowed_diff_paths),
                 prompt=data["prompt"], path=task_file)
             out.append(task)
@@ -189,9 +245,13 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
 def materialize_repo(task: B8Task, dest: str | Path) -> Path:
     """Write `task.setup_repo` out to `dest` as real files -- the initial
     workspace a harness adapter would hand an agent (Phase 2) or a test
-    builds by hand. Always `write_bytes` (never `write_text`): on Windows,
-    text-mode writes translate `\\n` -> `\\r\\n`, which would silently
-    corrupt the on-disk bytes relative to what `protected_shas` /
+    builds by hand. Writes ONLY `setup_repo` -- `task.oracle_files` is
+    NEVER written here, by design: the agent workspace must never contain
+    the hidden oracle. (`run_oracle`'s step (c) re-injects `oracle_files`
+    into a private, agent-never-saw-it copy, immediately before running the
+    behavioral oracle.) Always `write_bytes` (never `write_text`): on
+    Windows, text-mode writes translate `\\n` -> `\\r\\n`, which would
+    silently corrupt the on-disk bytes relative to what `protected_shas` /
     `setup_repo` hash, and would break bash scripts executed inside the
     (Linux) sandbox container.
     """
@@ -209,7 +269,9 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
     `workspace`. See the module docstring for the full precedence
     rationale; in short: protected-file tamper and out-of-bounds edits are
     HARD CAPS checked first (no Docker needed), and only then does the
-    hidden behavioral oracle run, in a fresh container-isolated copy.
+    hidden behavioral oracle run -- against a copy that has `task.
+    oracle_files` re-injected into it, since `workspace` itself (what the
+    agent actually had) never contained them.
     """
     ws = Path(workspace)
 
@@ -233,6 +295,15 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
     # traversed here -- Path.rglob has no way in Python 3.10 to stop
     # descending into a symlinked directory, which is exactly why
     # snapshot_workspace does not use it either.
+    #
+    # LIMITATION (documented, not fixed -- matches the Task 2 precedent
+    # this mirrors): a symlinked entry at a disallowed path is skipped
+    # entirely, not reported as an out-of-bounds edit. `copytree(...,
+    # symlinks=True)` in step (c) / hidden_validate copies the link itself,
+    # never its target's content, and hidden_validate's own container only
+    # ever resolves it (if at all) inside the isolated, network-less oracle
+    # container -- so this is a coverage gap in the diff-constraint's
+    # reporting, not a content leak or a way to pass the behavioral oracle.
     allowed = set(task.allowed_diff_paths) | set(task.protected_shas)
     for dirpath, dirnames, filenames in os.walk(ws, followlinks=False):
         dirnames[:] = [d for d in dirnames
@@ -250,6 +321,23 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
             if changed and rel not in allowed:
                 return False, f"out-of-bounds edit: {rel}"
 
-    # (c) behavioral oracle -- fresh, read-only, isolated copy.
-    sbx = Sandbox(workspace=ws, root=root)
-    return sbx.hidden_validate(task.oracle, ws)
+    # (c) behavioral oracle -- re-inject the pristine, never-agent-visible
+    # `oracle_files` into a private copy of the (already hard-cap-verified)
+    # workspace, THEN hand that copy to Sandbox.hidden_validate, which
+    # copies it again into a fresh, read-only, isolated container. The
+    # agent's real workspace (`ws`) is never touched or read again after
+    # this point.
+    try:
+        with tempfile.TemporaryDirectory(prefix="llmtest-b8-oracle-inject-") as tmp:
+            inject_root = Path(tmp) / "ws"
+            shutil.copytree(ws, inject_root, symlinks=True)
+            for rel_path, content in task.oracle_files.items():
+                p = inject_root / rel_path
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(content.encode("utf-8"))
+            sbx = Sandbox(workspace=inject_root, root=root)
+            return sbx.hidden_validate(task.oracle, inject_root)
+    except Exception as e:  # noqa: BLE001 - a setup failure before the oracle
+        # even runs is a validation result, not a crash -- mirrors
+        # hidden_validate's own copy-step error handling.
+        return False, f"oracle re-injection setup failed: {e!r}"

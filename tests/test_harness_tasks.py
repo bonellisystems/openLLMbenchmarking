@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -98,9 +99,12 @@ budgets: {{wall_clock_s: 60, tokens: 500, steps: 4}}
 setup_repo:
   main.sh: |
     echo {extra_file_content}
+  notes.txt: |
+    protected, agent-visible
+oracle_files:
   oracle_test.sh: |
     echo PASS
-protected_paths: [oracle_test.sh]
+protected_paths: [notes.txt]
 allowed_diff_paths: [main.sh]
 oracle:
   type: command
@@ -136,15 +140,77 @@ def test_loader_raises_when_protected_path_not_in_setup_repo(tmp_path):
     task_dir.mkdir(parents=True)
     _write_minimal_manifest(task_dir / "task-01.yaml", extra_file_content="x")
     text = (task_dir / "task-01.yaml").read_text(encoding="utf-8")
-    text = text.replace("protected_paths: [oracle_test.sh]",
+    text = text.replace("protected_paths: [notes.txt]",
                          "protected_paths: [does_not_exist.sh]")
     (task_dir / "task-01.yaml").write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match="not found in setup_repo"):
         t.load_b8_tasks(tmp_path)
 
 
+def test_loader_raises_when_path_in_both_setup_repo_and_oracle_files(tmp_path):
+    """The hidden-oracle architecture (post-review hardening) is only
+    meaningful if a manifest author can't accidentally leave the oracle
+    agent-visible by also listing its path in setup_repo -- the loader must
+    reject that outright rather than let one silently shadow the other."""
+    task_dir = tmp_path / "suite" / "b8_harness"
+    task_dir.mkdir(parents=True)
+    _write_minimal_manifest(task_dir / "task-01.yaml", extra_file_content="x")
+    text = (task_dir / "task-01.yaml").read_text(encoding="utf-8")
+    text = text.replace(
+        "setup_repo:\n  main.sh:",
+        "setup_repo:\n  oracle_test.sh: |\n    leaked\n  main.sh:",
+    )
+    (task_dir / "task-01.yaml").write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="both setup_repo .* and oracle_files"):
+        t.load_b8_tasks(tmp_path)
+
+
 def test_loader_missing_dir_returns_empty():
     assert t.load_b8_tasks(Path("/definitely/not/a/real/path")) == []
+
+
+# -- oracle withholding (the review's Important finding) --------------------
+# "hidden validators live OUTSIDE the writable workspace" is a DISTINCT
+# constraint from "protected files hash-checked" -- these tests prove the
+# former is now structurally true, not just the latter.
+
+
+def test_materialize_repo_never_writes_oracle_files():
+    """The materialized agent workspace must not contain any oracle_files
+    path, for every one of the 5 real manifests -- an agent given this
+    workspace has literally nothing to read that reveals what the hidden
+    oracle checks."""
+    all_tasks = t.load_b8_tasks(ROOT)
+    for task in all_tasks:
+        assert task.oracle_files, f"{task.id}: oracle_files must be non-empty"
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / task.id
+            t.materialize_repo(task, ws)
+            for oracle_path in task.oracle_files:
+                assert not (ws / oracle_path).exists(), (
+                    f"{task.id}: oracle file {oracle_path!r} leaked into "
+                    f"the agent-visible workspace")
+
+
+def test_toolheavy_overfit_attack_has_no_oracle_file_to_read(tmp_path):
+    """Concrete disproof from the review: with the OLD layout
+    (oracle_test.sh inside setup_repo), an agent could READ the hidden
+    test, see it writes data/f_extra.txt and expects total 200, and write
+    sum_all.sh as `if [ -f data/f_extra.txt ]; then echo 200; else echo
+    150; fi` -- passing both checks with zero real summing logic. Prove
+    this is now structurally impossible: the materialized agent workspace
+    has no oracle_test.sh (or any oracle_files path) anywhere to read, and
+    the specific probe values the attack needs (the extra filename, the
+    post-injection total) appear nowhere in it."""
+    task = _load("toolheavy-01")
+    assert "oracle_test.sh" in task.oracle_files  # sanity: still exists, just hidden
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    assert not (ws / "oracle_test.sh").exists()
+
+    all_text = "\n".join(p.read_text(encoding="utf-8") for p in ws.rglob("*") if p.is_file())
+    assert "f_extra" not in all_text
+    assert "200" not in all_text
 
 
 # -- run_oracle: precedence / anti-gaming (the brief's Step-1 scenario) -----
@@ -153,11 +219,13 @@ def test_loader_missing_dir_returns_empty():
 
 
 def test_run_oracle_false_on_protected_tamper_even_though_behavior_would_pass(tmp_path):
-    """The brief's Step-1 test: a gamer edits the hidden oracle_test.sh to
-    trivially exit 0 (bypassing the real behavioral check) AND correctly
-    fixes the bug. The protected-hash check must still catch the tampered
-    oracle file and return False -- BEFORE the (gamed, would-pass) behavioral
-    oracle ever runs."""
+    """The brief's Step-1 test, adapted to the post-review architecture: the
+    hidden oracle (oracle_test.sh) is no longer even IN the agent workspace
+    (see the "oracle withholding" tests below) -- so the hash-cap's genuine
+    target is now the agent-VISIBLE protected fixture (NOTES.md). A gamer
+    correctly fixes the bug (behavior would genuinely pass) but also tampers
+    with NOTES.md; the protected-hash check must still catch that and
+    return False -- BEFORE the behavioral oracle ever runs."""
     task = _load("bugfix-01")
     ws = tmp_path / "ws"
     t.materialize_repo(task, ws)
@@ -170,13 +238,13 @@ def test_run_oracle_false_on_protected_tamper_even_though_behavior_would_pass(tm
     assert fixed != task.setup_repo["stats.sh"]
     (ws / "stats.sh").write_bytes(fixed.encode("utf-8"))
 
-    # tamper with the protected hidden oracle: force an unconditional pass
-    (ws / "oracle_test.sh").write_bytes(b"#!/bin/bash\necho PASS\nexit 0\n")
+    # tamper with the protected, agent-visible fixture file
+    (ws / "NOTES.md").write_bytes(b"tampered\n")
 
     completed, detail = t.run_oracle(task, ws)
     assert completed is False
     assert "protected" in detail.lower()
-    assert "oracle_test.sh" in detail
+    assert "NOTES.md" in detail
 
 
 def test_run_oracle_false_on_out_of_bounds_edit(tmp_path):
@@ -235,12 +303,37 @@ def test_run_oracle_no_docker_needed_for_hard_cap_paths(tmp_path, monkeypatch):
     task = _load("bugfix-01")
     ws = tmp_path / "ws"
     t.materialize_repo(task, ws)
-    (ws / "oracle_test.sh").write_bytes(b"#!/bin/bash\necho PASS\nexit 0\n")
+    (ws / "NOTES.md").write_bytes(b"tampered\n")
     completed, _ = t.run_oracle(task, ws)
     assert completed is False
 
 
 # -- run_oracle: the real behavioral pass path (needs Docker) ---------------
+
+
+@requires_docker
+def test_run_oracle_reinjects_oracle_files_before_validating(tmp_path):
+    """Direct proof of re-injection (review item (b)): oracle_test.sh is
+    never in the agent workspace (materialize_repo doesn't write it), yet a
+    correct fix still gets validated successfully -- which is only possible
+    if run_oracle put a fresh copy of it back before calling
+    Sandbox.hidden_validate. Also locks in that `ws` itself (the agent's
+    real, real workspace) is never mutated by that re-injection -- it
+    happens on a private copy."""
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    assert not (ws / "oracle_test.sh").exists()
+
+    fixed = task.setup_repo["stats.sh"].replace(
+        "    echo $((sum / $#))\n\nsummarize",
+        "    echo $((sum / $#))\n}\n\nsummarize",
+    )
+    (ws / "stats.sh").write_bytes(fixed.encode("utf-8"))
+
+    completed, detail = t.run_oracle(task, ws)
+    assert completed is True, detail
+    assert not (ws / "oracle_test.sh").exists()
 
 
 @requires_docker
