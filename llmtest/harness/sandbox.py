@@ -33,11 +33,12 @@ Constraints), each mapped to a concrete Docker mechanism:
     caller-side (harness adapter) concern, not something the container
     itself can enforce.
   - **Anti-gaming hidden validation**: `hidden_validate(oracle, workspace)`
-    copies the workspace to a fresh temp dir and runs the oracle against it
-    from a distinct, read-only mount (`/oracle`, never `/workspace`) in its
-    own throwaway container -- deliberately decoupled from any `B8Task`
-    type (that lands in Task 3); the oracle here is a generic command list
-    or callable.
+    copies the workspace (symlinks copied AS symlinks, never dereferenced
+    host-side -- see its docstring) to a fresh temp dir and runs the
+    oracle against it from a distinct, read-only mount (`/oracle`, never
+    `/workspace`) in its own throwaway container -- deliberately decoupled
+    from any `B8Task` type (that lands in Task 3); the oracle here is a
+    generic command list or callable.
 
 Runs the pinned image by `image@digest` (not just the tag) for immutability.
 Shells out to the `docker` CLI via `subprocess` rather than the docker-py
@@ -47,6 +48,7 @@ happens to be installed on this machine but isn't declared.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -181,11 +183,28 @@ class Sandbox:
     def snapshot_workspace(self) -> dict[str, bytes]:
         """Current workspace file state as {posix relative path: bytes}.
         Reads the host bind-mount directly (it mirrors the container's
-        `/workspace` at all times) -- no container access needed."""
+        `/workspace` at all times) -- no container access needed.
+
+        Symlinks are DELIBERATELY SKIPPED, not followed: this reads via the
+        HOST process, so a workspace-planted symlink (e.g. `ln -s
+        /etc/passwd leak`) resolving here would leak host file content, and
+        a symlinked directory would let a walk traverse outside the
+        workspace entirely. Uses `os.walk(followlinks=False)` -- not
+        `Path.rglob`, which has no way in Python 3.10 to stop descending
+        into a symlinked directory -- and additionally skips any symlinked
+        *file* entry directly (a directory-prune alone doesn't cover a
+        symlinked file sitting in an otherwise-real directory)."""
         result: dict[str, bytes] = {}
-        for p in self.workspace.rglob("*"):
-            if p.is_file():
-                result[p.relative_to(self.workspace).as_posix()] = p.read_bytes()
+        base = self.workspace
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            # prune symlinked subdirectories before os.walk descends into them
+            dirnames[:] = [d for d in dirnames
+                           if not os.path.islink(os.path.join(dirpath, d))]
+            for name in filenames:
+                full = Path(dirpath) / name
+                if full.is_symlink():
+                    continue
+                result[full.relative_to(base).as_posix()] = full.read_bytes()
         return result
 
     # -- hidden (anti-gaming) validation ------------------------------------
@@ -196,35 +215,58 @@ class Sandbox:
         did to its own `/workspace` mount (or any process it left running)
         can influence the validation.
 
+        Symlinks in `workspace` are copied AS SYMLINKS
+        (`shutil.copytree(..., symlinks=True)`), never dereferenced by the
+        HOST copy step. The accurate guarantee this gives: a workspace
+        symlink (e.g. `ln -s /etc/passwd leak`, or one pointing at an
+        arbitrary host path) cannot make the HOST process read host file
+        content into the copy, and a dangling symlink cannot crash the
+        copy. If the symlink resolves at all, it only does so INSIDE the
+        isolated oracle container (`--network none`, copy mounted `:ro`,
+        against the pinned image's own filesystem) -- e.g. `/etc/passwd`
+        resolves to the *container's* passwd file, not the host's, and a
+        symlink to a host-only absolute path simply fails to resolve
+        (confined, not leaked).
+
         `oracle` is either:
           - a callable: invoked as `oracle(copy_path: Path) -> (bool, detail)`.
           - a command list (argv): run via `docker run --rm` in a brand-new
             throwaway container with the copy bind-mounted read-only at
             `/oracle` (never `/workspace`); exit code 0 => pass.
 
+        Any failure setting up the copy (e.g. an unsupported file type, or
+        any other host-side copy error) returns `(False, detail)` rather
+        than raising -- consistent with the callable-oracle path below:
+        an oracle failure is a validation result, not a crash.
+
         Deliberately decoupled from any `B8Task` type -- that type doesn't
         exist yet (Task 3). Task 3's oracle wiring is expected to build a
         command list or callable and call this method.
         """
         src = Path(workspace)
-        with tempfile.TemporaryDirectory(prefix="llmtest-sbx-oracle-") as tmp:
-            copy_root = Path(tmp) / "ws"
-            shutil.copytree(src, copy_root)
+        try:
+            with tempfile.TemporaryDirectory(prefix="llmtest-sbx-oracle-") as tmp:
+                copy_root = Path(tmp) / "ws"
+                shutil.copytree(src, copy_root, symlinks=True)
 
-            if callable(oracle):
-                try:
-                    ok, detail = oracle(copy_root)
-                except Exception as e:  # noqa: BLE001 - oracle failure is a validation result, not a crash
-                    return False, f"oracle callable raised: {e!r}"
-                return bool(ok), str(detail)
+                if callable(oracle):
+                    try:
+                        ok, detail = oracle(copy_root)
+                    except Exception as e:  # noqa: BLE001 - oracle failure is a validation result, not a crash
+                        return False, f"oracle callable raised: {e!r}"
+                    return bool(ok), str(detail)
 
-            argv = [
-                "docker", "run", "--rm",
-                "--read-only", "--tmpfs", "/tmp",
-                "--network", "none",
-                "-v", f"{copy_root}:{ORACLE_MOUNT}:ro",
-                self._image_ref,
-            ] + list(oracle)
-            r = subprocess.run(argv, capture_output=True, text=True)
-            detail = f"exit={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
-            return r.returncode == 0, detail
+                argv = [
+                    "docker", "run", "--rm",
+                    "--read-only", "--tmpfs", "/tmp",
+                    "--network", "none",
+                    "-v", f"{copy_root}:{ORACLE_MOUNT}:ro",
+                    self._image_ref,
+                ] + list(oracle)
+                r = subprocess.run(argv, capture_output=True, text=True)
+                detail = f"exit={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
+                return r.returncode == 0, detail
+        except Exception as e:  # noqa: BLE001 - any pre-oracle setup failure (e.g. an
+            # unsupported file type tripping copytree) is a validation
+            # result, not a crash -- mirrors the callable-oracle handling above.
+            return False, f"hidden_validate setup failed: {e!r}"

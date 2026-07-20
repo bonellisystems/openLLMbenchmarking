@@ -6,6 +6,7 @@ pin-loading test needs no Docker and always runs.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -145,3 +146,94 @@ def test_hidden_validate_command_oracle_mount_isolated_and_read_only(tmp_path):
     (ws / "out.txt").write_text("tampered")
     ok3, detail3 = sbx.hidden_validate(["bash", "-c", "grep -q expected-value /oracle/out.txt"], ws)
     assert ok3 is False, detail3
+
+
+# -- symlink security (post-review fix: hidden_validate/snapshot_workspace
+# must not resolve a workspace-planted symlink on the HOST) -----------------
+
+
+@requires_docker
+def test_hidden_validate_symlink_to_host_secret_not_leaked(tmp_path):
+    """An agent-planted symlink pointing at a real host file (absolute host
+    path, e.g. what `ln -s /etc/passwd leak` or a smuggled host path would
+    produce) must never let the oracle observe the host file's content. The
+    HOST harness process must copy the symlink AS a symlink (never follow
+    it during the host-side copy); if it resolves at all, it can only
+    resolve INSIDE the isolated oracle container's own filesystem."""
+    secret_dir = tmp_path / "hostsecret"
+    secret_dir.mkdir()
+    secret_file = secret_dir / "secret.txt"
+    secret_file.write_text("SECRET-HOST-CONTENT")
+
+    ws = tmp_path / "ws8"
+    ws.mkdir()
+    os.symlink(str(secret_file), ws / "leak_abs_host.txt")
+    os.symlink("/etc/passwd", ws / "leak_etc_passwd.txt")   # only meaningful inside a Linux container
+
+    sbx = Sandbox(workspace=ws)
+    # passes (exit 0) only if the host secret text is NOT visible inside the container
+    ok, detail = sbx.hidden_validate(
+        ["bash", "-c",
+         "! grep -qr SECRET-HOST-CONTENT /oracle/ 2>/dev/null"], ws)
+    assert ok is True, detail
+
+    # /etc/passwd, if it resolves at all, resolves to the CONTAINER's own
+    # /etc/passwd (never the host's -- Windows has no such path) -- sanity
+    # check it looks like a real (container-local) passwd file, not empty/host data
+    ok2, detail2 = sbx.hidden_validate(
+        ["bash", "-c", "grep -q '^root:' /oracle/leak_etc_passwd.txt"], ws)
+    assert ok2 is True, detail2
+
+
+@requires_docker
+def test_hidden_validate_dangling_symlink_does_not_raise(tmp_path):
+    """A dangling symlink in the workspace must not crash `hidden_validate`
+    (previously: default `shutil.copytree` follows symlinks and raises on a
+    dangling target -- a crash-DoS an agent could trigger deliberately)."""
+    ws = tmp_path / "ws9"
+    ws.mkdir()
+    os.symlink(str(tmp_path / "does-not-exist.txt"), ws / "dangling.txt")
+    (ws / "real.txt").write_text("present")
+
+    sbx = Sandbox(workspace=ws)
+    # must return cleanly, not raise; the dangling target is unreachable
+    # inside the container, so the oracle command itself fails cleanly
+    ok, detail = sbx.hidden_validate(["bash", "-c", "cat /oracle/dangling.txt"], ws)
+    assert ok is False, detail
+
+    # the rest of the workspace still copies and validates fine
+    def oracle(copy_path: Path):
+        return (copy_path / "real.txt").read_text() == "present", "ok"
+
+    ok2, detail2 = sbx.hidden_validate(oracle, ws)
+    assert ok2 is True, detail2
+
+
+@requires_docker
+def test_snapshot_workspace_skips_symlinks_no_leak_no_traversal(tmp_path):
+    """`snapshot_workspace` must not follow a symlinked file (would read
+    host content) or descend into a symlinked directory (would traverse
+    outside the workspace) -- both must be silently skipped, not just
+    'not returned after being read'."""
+    secret_dir = tmp_path / "hostsecret2"
+    secret_dir.mkdir()
+    secret_file = secret_dir / "secret.txt"
+    secret_file.write_text("SECRET-HOST-CONTENT")
+
+    outside_dir = tmp_path / "outside_dir"
+    outside_dir.mkdir()
+    (outside_dir / "outside_file.txt").write_text("SECRET-HOST-CONTENT")
+
+    ws = tmp_path / "ws10"
+    ws.mkdir()
+    os.symlink(str(secret_file), ws / "leak.txt")
+    os.symlink(str(outside_dir), ws / "linked_dir", target_is_directory=True)
+
+    with Sandbox(workspace=ws) as sbx:
+        sbx.run_in(["bash", "-c", "echo real > /workspace/real.txt"])
+        snap = sbx.snapshot_workspace()
+
+    assert snap.get("real.txt") == b"real\n"
+    assert "leak.txt" not in snap
+    assert not any(k.startswith("linked_dir/") for k in snap)
+    assert all(v != b"SECRET-HOST-CONTENT" for v in snap.values())
