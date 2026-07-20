@@ -28,8 +28,8 @@ Total rows loaded: **9071** (across every source_suite shard read)
 ### B1 judging progress
 
 - Baseline packets (full-roster cohorts): **360** (target 360)
-- Fully judged (all 3 judges complete): **346 / 360** (96.1%)
-- Judgment rows: 19188 ok, 388 error/other (all packets, not just the 360-baseline scope)
+- Fully judged (all 3 judges complete): **360 / 360** (100.0%)
+- Judgment rows: 19440 ok, 388 error/other (all packets, not just the 360-baseline scope)
 
 ## 2. B1 Business Scorecard (flagship)
 
@@ -48,12 +48,12 @@ Median-of-3-judges aggregation over the 360 baseline (full-roster) B1 packets, 1
 | 7 | bonsai-ternary-27b | 6.8 |
 | 8 | ornith-1.0-9b | 6.7 |
 | 9 | agents-a1-35b | 6.7 |
-| 10 | gpt-oss-120b | 6.5 |
+| 10 | gpt-oss-120b | 6.6 |
 | 11 | granite-4.1-30b | 6.4 |
 | 12 | glm-4.5-air | 6.3 |
-| 13 | gpt-oss-20b | 5.9 |
+| 13 | gpt-oss-20b | 6.0 |
 | 14 | nemotron-3-nano-30b | 5.9 |
-| 15 | llama-4-scout | 5.7 |
+| 15 | llama-4-scout | 5.6 |
 | 16 | qwen3-coder-30b | 5.0 |
 
 ### Full scorecard (units x models)
@@ -62,7 +62,7 @@ Median-of-3-judges aggregation over the 360 baseline (full-roster) B1 packets, 1
 
 | Unit | qwen3.6-27b-dense | ornith-1.0-35b | gemma-4-31b-dense | qwen3.6-35b-a3b | gemma-4-26b-a4b | qwen3-235b | bonsai-ternary-27b | ornith-1.0-9b | agents-a1-35b | gpt-oss-120b | granite-4.1-30b | glm-4.5-air | gpt-oss-20b | nemotron-3-nano-30b | llama-4-scout | qwen3-coder-30b |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Overall | 7.6 | 7.4 | 7.4 | 7.3 | 7.2 | 7.2 | 6.8 | 6.7 | 6.7 | 6.5 | 6.4 | 6.3 | 5.9 | 5.9 | 5.7 | 5.0 |
+| Overall | 7.6 | 7.4 | 7.4 | 7.3 | 7.2 | 7.2 | 6.8 | 6.7 | 6.7 | 6.6 | 6.4 | 6.3 | 6.0 | 5.9 | 5.6 | 5.0 |
 | coding | 7.5 | 7.5 | 8.4 | 7.2 | 8.0 | 8.2 | 7.2 | 7.5 | 7.4 | 8.2 | 7.9 | 6.8 | 8.1 | 8.0 | 6.5 | 6.8 |
 | cybersecurity | 7.4 | 7.2 | 7.1 | 6.5 | 6.8 | 7.0 | 5.5 | 6.5 | 6.5 | 6.0 | 6.8 | 5.7 | 4.9 | 5.7 | 5.3 | 4.6 |
 | data_analytics | 8.6 | 8.5 | 8.9 | 7.2 | 9.1 | 8.5 | 8.2 | 7.8 | 7.5 | 8.6 | 7.0 | 8.0 | 8.2 | 7.7 | 7.1 | 6.0 |
@@ -76,17 +76,17 @@ Median-of-3-judges aggregation over the 360 baseline (full-roster) B1 packets, 1
 | operations | 8.2 | 7.9 | 8.0 | 8.4 | 7.7 | 7.5 | 7.8 | 7.5 | 6.8 | 7.9 | 6.4 | 6.3 | 7.0 | 6.5 | 6.1 | 5.3 |
 | outreach | 8.2 | 8.3 | 7.9 | 7.9 | 7.7 | 7.0 | 7.3 | 6.9 | 7.4 | 6.6 | 6.1 | 6.3 | 5.3 | 5.4 | 5.1 | 4.8 |
 | project_mgmt | 7.2 | 6.6 | 7.4 | 7.1 | 6.9 | 7.1 | 6.6 | 6.5 | 6.8 | 6.7 | 6.8 | 6.5 | 5.3 | 5.5 | 5.4 | 4.0 |
-| sales | 7.9 | 6.9 | 6.9 | 7.3 | 7.1 | 6.6 | 7.6 | 7.7 | 7.6 | 4.7 | 5.8 | 7.0 | 5.1 | 4.3 | 6.2 | 5.4 |
-| seo | 7.0 | 6.8 | 7.1 | 7.2 | 6.9 | 6.7 | 6.5 | 6.5 | 6.4 | 6.0 | 6.0 | 5.7 | 5.4 | 5.4 | 5.6 | 5.1 |
+| sales | 8.0 | 7.0 | 6.9 | 7.3 | 7.1 | 6.7 | 7.6 | 7.8 | 7.7 | 4.8 | 5.9 | 7.0 | 5.2 | 4.3 | 6.2 | 5.5 |
+| seo | 6.8 | 7.0 | 7.1 | 6.9 | 6.9 | 6.8 | 6.5 | 6.7 | 6.3 | 6.2 | 6.0 | 5.8 | 5.5 | 5.7 | 5.5 | 5.1 |
 
 ## Suite Health
 
-- Agreement (spread <=1): 36.7%
-- Mean spread: 2.39
-- Kin-delta: claude=n/a, codex=-0.94, gemini=0.06
+- Agreement (spread <=1): 35.6%
+- Mean spread: 2.43
+- Kin-delta: claude=n/a, codex=-0.94, gemini=0.09
 - Drift flags: 305
-- Spread flags: 2371
-- Incomplete panels: 14
+- Spread flags: 2429
+- Incomplete panels: 0
 - Cal-fallback packets: 0
 - Errored judge-packets: 388
 
@@ -317,8 +317,8 @@ _"Empty" = zero response chars or zero predicted tokens, EXCLUDING B7 rows where
 ### Judging completeness
 
 - 360 baseline B1 packets on disk (target 360).
-- 19188 ok / 388 error judgment rows total (includes packets outside the full-roster baseline scope and 9 leftover `judge_cli_version='fake'` dry-run rows from an earlier smoke test, which the baseline-packet filter already excludes).
-- Incomplete panels (< 3 judges) among scored baseline packets: 14.
+- 19440 ok / 388 error judgment rows total (includes packets outside the full-roster baseline scope and 9 leftover `judge_cli_version='fake'` dry-run rows from an earlier smoke test, which the baseline-packet filter already excludes).
+- Incomplete panels (< 3 judges) among scored baseline packets: 0.
 - Errored judge-packet pairs counted in aggregation: 388.
-- Spread>2 flags: 2371; calibration-drift flags: 305 (see `results/FLAGS.md` if `llmtest tables` has been run separately -- this report does not regenerate it to stay pure-read).
+- Spread>2 flags: 2429; calibration-drift flags: 305 (see `results/FLAGS.md` if `llmtest tables` has been run separately -- this report does not regenerate it to stay pure-read).
 
