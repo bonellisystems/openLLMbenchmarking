@@ -185,6 +185,35 @@ def test_hidden_validate_command_oracle_mount_isolated_and_read_only(tmp_path):
     assert ok3 is False, detail3
 
 
+@requires_docker
+def test_hidden_validate_command_oracle_timeout_returns_false_and_leaves_no_container(tmp_path):
+    """I-1 fix (whole-branch review): agent-produced code runs inside the
+    oracle container -- a busy/infinite loop there previously hung `docker
+    run` forever (--cpus only throttles; --memory never trips on a
+    non-allocating loop). `timeout=` now wraps the oracle command with the
+    in-container `timeout -s KILL <n>` coreutil, matching `run_in`'s
+    existing pattern. Also proves no container leak: `docker run --rm`
+    only auto-removes a container that exits on its own -- here the
+    in-container kill IS what makes that happen (SIGKILL propagates as the
+    container's own exit code, --rm reaps it), and hidden_validate's
+    finally-block cleanup covers the case where it doesn't."""
+    ws = tmp_path / "ws-timeout"
+    ws.mkdir()
+    sbx = Sandbox(workspace=ws)
+
+    ok, detail = sbx.hidden_validate(["sleep", "30"], ws, timeout=2)
+    assert ok is False
+    assert "timeout" in detail.lower()
+
+    # no leaked container: filter by the deterministic name PREFIX
+    # hidden_validate uses (the suffix is a random uuid per call, so this
+    # matches regardless of which exact call produced it)
+    check = subprocess.run(
+        ["docker", "ps", "-a", "-q", "--filter", "name=llmtest-b8-oracle-"],
+        capture_output=True, text=True)
+    assert check.stdout.strip() == "", f"leaked oracle container(s): {check.stdout!r}"
+
+
 # -- symlink security (post-review fix: hidden_validate/snapshot_workspace
 # must not resolve a workspace-planted symlink on the HOST) -----------------
 

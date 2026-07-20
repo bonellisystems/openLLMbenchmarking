@@ -26,22 +26,36 @@ Constraints), each mapped to a concrete Docker mechanism:
   - **No host-credential mounts, secret-free environment**: `__enter__`
     never mounts any host path other than the task workspace, and never
     passes host environment variables into the container.
-  - **CPU/wall/token quotas**: `--cpus` bounds CPU; `run_in`'s `timeout`
-    bounds wall-clock per command (via the in-container `timeout -s KILL`
-    coreutil, with a Python-side subprocess timeout as a daemon-level
-    backstop); `token_budget` is accepted/stored only -- token quotas are a
-    caller-side (harness adapter) concern, not something the container
-    itself can enforce.
-  - **Anti-gaming hidden validation**: `hidden_validate(oracle, workspace)`
+  - **CPU/wall/process/token quotas**: `--cpus` bounds CPU; `--pids-limit`
+    (both the main and oracle containers) bounds live processes so a fork
+    bomb is capped by more than just `--memory` (a fork bomb can spin up
+    many non-allocating processes without ever tripping a memory limit);
+    `run_in`'s (and, since the post-review hardening below, `hidden_
+    validate`'s) `timeout` bounds wall-clock per command (via the
+    in-container `timeout -s KILL` coreutil, with a Python-side subprocess
+    timeout as a daemon-level backstop); `token_budget` is accepted/stored
+    only -- token quotas are a caller-side (harness adapter) concern, not
+    something the container itself can enforce.
+  - **Anti-gaming hidden validation, with its own wall-clock bound +
+    cleanup guarantee**: `hidden_validate(oracle, workspace, timeout=...)`
     copies the workspace (symlinks copied AS symlinks, never dereferenced
     host-side -- see its docstring) to a fresh temp dir and runs the
     oracle against it from a distinct, read-only mount (`/oracle`, never
-    `/workspace`) in its own throwaway container, hardened the same as the
-    main sandbox container (`--cap-drop ALL`, `--security-opt
-    no-new-privileges`, `--cpus`/`--memory`) since it runs agent-produced
-    code (Task 3's oracles compile/run the post-run workspace) --
-    deliberately decoupled from any `B8Task` type (that lands in Task 3);
-    the oracle here is a generic command list or callable.
+    `/workspace`) in its own throwaway, named container, hardened the same
+    as the main sandbox container (`--cap-drop ALL`, `--security-opt
+    no-new-privileges`, `--cpus`/`--memory`/`--pids-limit`) since it runs
+    agent-produced code (Task 3's oracles compile/run the post-run
+    workspace) -- deliberately decoupled from any `B8Task` type (that
+    lands in Task 3); the oracle here is a generic command list or
+    callable. `timeout` bounds the command-oracle path the same two ways
+    `run_in` does (in-container `timeout -s KILL` + host-side backstop),
+    closing a hang risk unique to this path: agent-produced code can
+    contain a busy/infinite loop that `--cpus`/`--memory` alone would not
+    stop. The oracle container is force-removed + verified gone in a
+    `finally` regardless of outcome, since `docker run --rm` only
+    auto-removes a container that exits on its own -- a host-side timeout
+    kills only the local, attached `docker run` client, which would
+    otherwise leave the container itself running, orphaned.
 
 Runs the pinned image by `image@digest` (not just the tag) for immutability.
 Shells out to the `docker` CLI via `subprocess` rather than the docker-py
@@ -55,6 +69,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 
 import yaml
@@ -67,6 +82,11 @@ ORACLE_MOUNT = "/oracle"
 # backstop never fires before the in-container kill has had a chance to.
 _TIMEOUT_SLACK_S = 15
 
+# Sane cap on live processes inside any sandbox container -- bounds a fork
+# bomb by more than just --memory (a fork bomb can spin up many
+# non-allocating processes without ever tripping a memory limit).
+_PIDS_LIMIT = "512"
+
 
 def _default_pin(root: str | Path = ".") -> dict:
     """Read the `sandbox:` block from config/runtime_pins.yaml directly (not
@@ -76,6 +96,62 @@ def _default_pin(root: str | Path = ".") -> dict:
     with path.open(encoding="utf-8") as f:
         pins = yaml.safe_load(f)
     return pins["sandbox"]
+
+
+def _walk_real_files(base: str | Path):
+    """Yield `(relative_posix_path, full_Path)` for every REAL file under
+    `base`, on the HOST filesystem, via `os.walk(followlinks=False)` --
+    never descending into a symlinked subdirectory, never yielding a
+    symlinked file. This is the ONE place this codebase decides how an
+    agent-planted symlink is treated when a workspace is read or copied on
+    the host: it is silently absent, never followed, never resolved here
+    (it may still resolve, confined, inside an isolated Linux container
+    that later mounts a copy of the result -- see `hidden_validate`).
+    `Path.rglob` cannot be used for this: it has no way in Python 3.10 to
+    stop descending into a symlinked directory.
+
+    Shared traversal core for `Sandbox.snapshot_workspace` and
+    `copy_real_files` (below) -- factored out so both treat symlinks in
+    exactly the same way, rather than each hand-rolling its own walk.
+    """
+    base = Path(base)
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+        dirnames[:] = [d for d in dirnames
+                       if not os.path.islink(os.path.join(dirpath, d))]
+        for name in filenames:
+            full = Path(dirpath) / name
+            if full.is_symlink():
+                continue
+            yield full.relative_to(base).as_posix(), full
+
+
+def copy_real_files(src: str | Path, dst: str | Path) -> Path:
+    """Copy every REAL file under `src` into `dst` (creating `dst` and any
+    needed subdirectories), via `_walk_real_files` -- i.e. a symlink-safe
+    replacement for `shutil.copytree(src, dst, symlinks=True)` for callers
+    that will subsequently write NEW files into specific paths of the
+    copy.
+
+    That distinction matters: `copytree(..., symlinks=True)` preserves an
+    agent-planted symlink AS a symlink in the copy. That is safe for
+    `hidden_validate`'s own internal copy (nothing ever writes back into
+    it afterward; the copy is only read, either by a container mount or a
+    read-only callable). It is NOT safe for a caller that then does
+    `(dst / some_known_path).write_bytes(...)` for a set of known paths --
+    if an agent planted a symlink at exactly one of those paths (e.g. a
+    guessable hidden-oracle filename), that write follows the symlink to
+    wherever it points, ON THE HOST, outside the copy entirely. Copying
+    real files only means there is never a symlink in `dst` for such a
+    write to collide with.
+    """
+    src = Path(src)
+    dst = Path(dst)
+    dst.mkdir(parents=True, exist_ok=True)
+    for rel, full in _walk_real_files(src):
+        target = dst / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(full.read_bytes())
+    return dst
 
 
 class Sandbox:
@@ -126,6 +202,7 @@ class Sandbox:
             "--network", "none",           # deny-all egress by default; see module docstring
             "--cpus", str(self.cpus),
             "--memory", self.mem_limit,
+            "--pids-limit", _PIDS_LIMIT,
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             # no -e / --env-file / extra -v: no host env, no host-credential mounts
@@ -192,27 +269,16 @@ class Sandbox:
         HOST process, so a workspace-planted symlink (e.g. `ln -s
         /etc/passwd leak`) resolving here would leak host file content, and
         a symlinked directory would let a walk traverse outside the
-        workspace entirely. Uses `os.walk(followlinks=False)` -- not
-        `Path.rglob`, which has no way in Python 3.10 to stop descending
-        into a symlinked directory -- and additionally skips any symlinked
-        *file* entry directly (a directory-prune alone doesn't cover a
-        symlinked file sitting in an otherwise-real directory)."""
-        result: dict[str, bytes] = {}
-        base = self.workspace
-        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-            # prune symlinked subdirectories before os.walk descends into them
-            dirnames[:] = [d for d in dirnames
-                           if not os.path.islink(os.path.join(dirpath, d))]
-            for name in filenames:
-                full = Path(dirpath) / name
-                if full.is_symlink():
-                    continue
-                result[full.relative_to(base).as_posix()] = full.read_bytes()
-        return result
+        workspace entirely. Delegates to the module-level `_walk_real_files`
+        (shared with `copy_real_files`) so this codebase has exactly ONE
+        place that decides how an agent-planted symlink is treated when a
+        workspace is read on the host."""
+        return {rel: full.read_bytes() for rel, full in _walk_real_files(self.workspace)}
 
     # -- hidden (anti-gaming) validation ------------------------------------
 
-    def hidden_validate(self, oracle, workspace: str | Path) -> tuple[bool, str]:
+    def hidden_validate(self, oracle, workspace: str | Path, *,
+                         timeout: float | None = None) -> tuple[bool, str]:
         """Run `oracle` against a FRESH, READ-ONLY COPY of `workspace`,
         mounted OUTSIDE the agent's writable area -- so nothing the agent
         did to its own `/workspace` mount (or any process it left running)
@@ -229,13 +295,43 @@ class Sandbox:
         against the pinned image's own filesystem) -- e.g. `/etc/passwd`
         resolves to the *container's* passwd file, not the host's, and a
         symlink to a host-only absolute path simply fails to resolve
-        (confined, not leaked).
+        (confined, not leaked). (This copytree step never has anything
+        written back into it afterward -- it is only ever read, via a
+        `:ro` container mount or a read-only callable -- so, unlike Task
+        3's re-injection copy in `llmtest.harness.tasks.run_oracle`, there
+        is no write-through-symlink risk here; see `copy_real_files` above
+        for the case where that risk IS live.)
 
         `oracle` is either:
           - a callable: invoked as `oracle(copy_path: Path) -> (bool, detail)`.
+            `timeout` is NOT enforced for a callable oracle -- there is no
+            subprocess to bound; a hanging callable is a caller bug, not
+            something this method can watch from the outside.
           - a command list (argv): run via `docker run --rm` in a brand-new
             throwaway container with the copy bind-mounted read-only at
             `/oracle` (never `/workspace`); exit code 0 => pass.
+
+        `timeout` (seconds), for the command-oracle path only, bounds the
+        oracle's wall clock the same two ways `run_in` already does: the
+        in-container `timeout -s KILL <n>` coreutil wraps the oracle
+        command itself (so a busy/infinite loop inside agent-produced code
+        gets killed regardless of CPU/memory use -- `--cpus` only
+        throttles, and `--memory` never trips on a non-allocating spin
+        loop), and a `_TIMEOUT_SLACK_S`-second-later Python-side
+        `subprocess.run` timeout backstops a hung `docker run` itself.
+        `timeout=None` (the default) disables both -- matching `run_in`'s
+        own `timeout=None` opt-out and keeping every existing Task 2 caller
+        of this method unaffected.
+
+        The oracle container is given a random `--name` and is FORCE
+        -REMOVED + verified gone in a `finally` block regardless of outcome
+        (mirroring `__exit__`'s cleanup-verification discipline). This
+        matters specifically for the timeout backstop: `docker run --rm`
+        only auto-removes a container that exits ON ITS OWN: if the
+        host-side `subprocess.run` timeout fires, only the LOCAL, ATTACHED
+        `docker run` CLIENT process gets killed -- the container itself,
+        managed independently by the Docker daemon, is never told to stop
+        and would otherwise keep running, orphaned, forever.
 
         Any failure setting up the copy (e.g. an unsupported file type, or
         any other host-side copy error) returns `(False, detail)` rather
@@ -259,21 +355,63 @@ class Sandbox:
                         return False, f"oracle callable raised: {e!r}"
                     return bool(ok), str(detail)
 
+                container_name = f"llmtest-b8-oracle-{uuid.uuid4().hex[:12]}"
+                container_cmd = (["timeout", "-s", "KILL", str(int(timeout))]
+                                  if timeout is not None else []) + list(oracle)
                 argv = [
-                    "docker", "run", "--rm",
+                    "docker", "run", "--rm", "--name", container_name,
                     "--read-only", "--tmpfs", "/tmp",
                     "--network", "none",
                     "--cpus", str(self.cpus),
                     "--memory", self.mem_limit,
+                    "--pids-limit", _PIDS_LIMIT,
                     "--cap-drop", "ALL",
                     "--security-opt", "no-new-privileges",
                     "-v", f"{copy_root}:{ORACLE_MOUNT}:ro",
                     self._image_ref,
-                ] + list(oracle)
-                r = subprocess.run(argv, capture_output=True, text=True)
+                ] + container_cmd
+                host_timeout = (timeout + _TIMEOUT_SLACK_S) if timeout is not None else None
+                timed_out = False
+                r = None
+                try:
+                    r = subprocess.run(argv, capture_output=True, text=True, timeout=host_timeout)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                finally:
+                    cleanup_status = self._force_remove_oracle_container(container_name)
+
+                if timed_out:
+                    return False, f"oracle timeout: exceeded wall-clock budget ({cleanup_status})"
                 detail = f"exit={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
+                if r.returncode in (124, 137):
+                    # 124: coreutils `timeout` itself killed the oracle command
+                    # (its own exit code when the wrapped command was killed);
+                    # 137 = 128+SIGKILL(9): the container's PID 1 (the `timeout`
+                    # process) was killed with SIGKILL and that propagated as
+                    # the container's own exit code. Either way, the
+                    # in-container wall-clock bound fired.
+                    return False, f"oracle timeout: {detail}"
                 return r.returncode == 0, detail
         except Exception as e:  # noqa: BLE001 - any pre-oracle setup failure (e.g. an
             # unsupported file type tripping copytree) is a validation
             # result, not a crash -- mirrors the callable-oracle handling above.
             return False, f"hidden_validate setup failed: {e!r}"
+
+    def _force_remove_oracle_container(self, name: str) -> str:
+        """Force-remove the throwaway oracle container by NAME and verify
+        it's actually gone -- mirrors `__exit__`'s force-remove + verify
+        discipline, but by name rather than id: the oracle container is
+        never run detached (no `-d`), so unlike `__exit__`'s
+        `self.container_id` (captured from `docker run -d`'s stdout) there
+        is no docker-assigned id available up front -- `--name` is what we
+        control instead. Deliberately separate from `__exit__`'s own
+        inline cleanup code (which already has its own tests) rather than
+        a shared refactor, to keep this addition low-risk against Task 2's
+        existing, stable behavior."""
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
+        check = subprocess.run(
+            ["docker", "ps", "-a", "-q", "--filter", f"name={name}"],
+            capture_output=True, text=True)
+        if check.stdout.strip():
+            return f"cleanup WARNING: oracle container {name} still present after docker rm -f"
+        return "cleanup verified: oracle container removed"

@@ -337,6 +337,91 @@ def test_run_oracle_reinjects_oracle_files_before_validating(tmp_path):
 
 
 @requires_docker
+def test_run_oracle_respects_wall_clock_budget_and_leaves_no_container(tmp_path):
+    """I-1 fix (whole-branch review): run_oracle must plumb the manifest's
+    budgets.wall_clock_s through to Sandbox.hidden_validate's `timeout` --
+    without it, agent-produced code in the oracle (every real manifest
+    executes some) has no wall-clock bound at all. Uses a synthetic
+    manifest with a small wall_clock_s (2s) and an oracle command that
+    sleeps well past it (30s) so this stays fast, and confirms no oracle
+    container leaks."""
+    task_dir = tmp_path / "suite" / "b8_harness"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task-01.yaml").write_text("""\
+id: edit-99
+shape: edit
+task_version: "1.0.0"
+prompt: "do a thing"
+allowed_tools: [read_file, write_file]
+budgets: {wall_clock_s: 2, tokens: 500, steps: 4}
+setup_repo:
+  main.sh: |
+    echo hi
+  notes.txt: |
+    protected, agent-visible
+oracle_files:
+  oracle_test.sh: |
+    ignored -- the oracle argv below never references this file
+protected_paths: [notes.txt]
+allowed_diff_paths: [main.sh]
+oracle:
+  type: command
+  argv: ["sleep", "30"]
+""", encoding="utf-8")
+
+    task = t.load_b8_tasks(tmp_path)[0]
+    assert task.budgets["wall_clock_s"] == 2
+
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+
+    completed, detail = t.run_oracle(task, ws)
+    assert completed is False
+    assert "timeout" in detail.lower()
+
+    check = subprocess.run(
+        ["docker", "ps", "-a", "-q", "--filter", "name=llmtest-b8-oracle-"],
+        capture_output=True, text=True)
+    assert check.stdout.strip() == "", f"leaked oracle container(s): {check.stdout!r}"
+
+
+@requires_docker
+def test_run_oracle_reinjection_does_not_write_through_symlink(tmp_path):
+    """I-2 fix (whole-branch review): `shutil.copytree(..., symlinks=True)`
+    used to preserve an agent-planted symlink in the re-injection copy;
+    the subsequent per-oracle-file `write_bytes()` would then follow it,
+    writing oracle content to an arbitrary HOST path outside the temp dir
+    -- if the agent guesses an oracle_files path (e.g. "oracle_test.sh",
+    which every one of these 5 manifests uses) and symlinks it to a
+    writable location. `copy_real_files` never preserves the symlink at
+    all, so there is nothing left to write through.
+
+    Needs Docker: the planted symlink is silently skipped (not flagged) by
+    the diff-constraint (documented limitation, step (b)), so this only
+    reaches the write-through-risk code in step (c)."""
+    outside_target = tmp_path / "outside_writable.txt"
+    outside_target.write_text("SENTINEL-BEFORE")
+
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+
+    try:
+        os.symlink(str(outside_target), ws / "oracle_test.sh")
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"os.symlink not permitted on this host: {e!r}")
+
+    # The bug is left unfixed on purpose -- this test is about the
+    # write-through, not the behavioral outcome; run_oracle must simply
+    # return cleanly (a plain (bool, str), no raise) either way, and must
+    # never touch the outside file regardless of that outcome.
+    completed, detail = t.run_oracle(task, ws)
+    assert isinstance(completed, bool), detail
+
+    assert outside_target.read_text() == "SENTINEL-BEFORE"
+
+
+@requires_docker
 def test_run_oracle_true_for_correct_bugfix_workspace(tmp_path):
     task = _load("bugfix-01")
     ws = tmp_path / "ws"

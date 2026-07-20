@@ -74,14 +74,13 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
-from llmtest.harness.sandbox import Sandbox
+from llmtest.harness.sandbox import Sandbox, copy_real_files
 
 _TASKS_DIR = "b8_harness"
 
@@ -272,6 +271,14 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
     hidden behavioral oracle run -- against a copy that has `task.
     oracle_files` re-injected into it, since `workspace` itself (what the
     agent actually had) never contained them.
+
+    The manifest's `budgets["wall_clock_s"]` is passed straight through as
+    `Sandbox.hidden_validate`'s `timeout` -- agent-produced code executes
+    inside the oracle container (Task 3's oracles compile/run the post-run
+    workspace), so an unbounded busy/infinite loop there would otherwise
+    hang indefinitely. Falls back to a sane 60s if `wall_clock_s` is ever
+    absent (the loader requires it, so this only matters for a `B8Task`
+    built outside `load_b8_tasks`, e.g. in a test).
     """
     ws = Path(workspace)
 
@@ -298,12 +305,15 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
     #
     # LIMITATION (documented, not fixed -- matches the Task 2 precedent
     # this mirrors): a symlinked entry at a disallowed path is skipped
-    # entirely, not reported as an out-of-bounds edit. `copytree(...,
-    # symlinks=True)` in step (c) / hidden_validate copies the link itself,
-    # never its target's content, and hidden_validate's own container only
-    # ever resolves it (if at all) inside the isolated, network-less oracle
-    # container -- so this is a coverage gap in the diff-constraint's
-    # reporting, not a content leak or a way to pass the behavioral oracle.
+    # entirely, not reported as an out-of-bounds edit. This is a coverage
+    # gap in the diff-constraint's REPORTING only, not a content leak: step
+    # (c) below copies the workspace into the re-injection copy via
+    # `copy_real_files` (real files only, symlinks never included at all),
+    # and `hidden_validate`'s OWN internal copy (`copytree(...,
+    # symlinks=True)`) only ever gets READ afterward (via a `:ro` container
+    # mount or a read-only callable) -- nothing downstream ever writes
+    # through a preserved symlink, so a symlink skipped here cannot smuggle
+    # host content into, or a host write out of, either copy.
     allowed = set(task.allowed_diff_paths) | set(task.protected_shas)
     for dirpath, dirnames, filenames in os.walk(ws, followlinks=False):
         dirnames[:] = [d for d in dirnames
@@ -327,16 +337,35 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
     # copies it again into a fresh, read-only, isolated container. The
     # agent's real workspace (`ws`) is never touched or read again after
     # this point.
+    #
+    # Uses `copy_real_files` (real files only -- see its docstring), NOT
+    # `shutil.copytree(..., symlinks=True)`: this step subsequently does
+    # `(inject_root / rel_path).write_bytes(...)` for every oracle_files
+    # path, and copytree would preserve an agent-planted symlink AS a
+    # symlink -- if an agent guesses an oracle_files path (e.g.
+    # "oracle_test.sh", which every one of these 5 manifests uses) and
+    # plants a symlink there pointing at an arbitrary writable host path,
+    # that write_bytes call would follow it and write oracle content to
+    # THAT host path instead of into the copy. copy_real_files never
+    # produces a symlink in inject_root, so there is nothing for the
+    # write to collide with.
     try:
         with tempfile.TemporaryDirectory(prefix="llmtest-b8-oracle-inject-") as tmp:
             inject_root = Path(tmp) / "ws"
-            shutil.copytree(ws, inject_root, symlinks=True)
+            copy_real_files(ws, inject_root)
             for rel_path, content in task.oracle_files.items():
                 p = inject_root / rel_path
+                if p.is_symlink():
+                    # Should be unreachable -- copy_real_files never creates
+                    # a symlink anywhere under inject_root. Refuse loudly
+                    # rather than silently write through one, in case that
+                    # invariant is ever broken by a future change.
+                    return False, f"oracle re-injection blocked: {rel_path} is unexpectedly a symlink"
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(content.encode("utf-8"))
+            wall_clock_s = task.budgets.get("wall_clock_s", 60)
             sbx = Sandbox(workspace=inject_root, root=root)
-            return sbx.hidden_validate(task.oracle, inject_root)
+            return sbx.hidden_validate(task.oracle, inject_root, timeout=wall_clock_s)
     except Exception as e:  # noqa: BLE001 - a setup failure before the oracle
         # even runs is a validation result, not a crash -- mirrors
         # hidden_validate's own copy-step error handling.
