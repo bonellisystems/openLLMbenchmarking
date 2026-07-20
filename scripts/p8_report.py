@@ -3,13 +3,14 @@
 Reads all battery result rows (results/rows-<suite_version>.jsonl) plus the
 B1 judge panel (results/judgments.jsonl + results/packets/*.map.json) and
 emits:
-  - results/REPORT.md   -- the comprehensive report (all 5 sections below)
+  - results/REPORT.md   -- the comprehensive report (all 6 sections below)
   - stdout               -- a condensed chat-ready summary of the same data
 
 Sections: (1) overview/run metadata, (2) B1 business scorecard (flagship,
 reuses llmtest/judging/aggregate.py's exact P3 aggregation), (3) per-battery
-deterministic summaries (B2/B3/B4/B6/B7), (4) B5 serving, (5) data-quality
-caveats.
+deterministic summaries (B2/B3/B4/B6/B7), (4) B5 serving, (5) B8 harness
+canary (completion Wilson intervals + subagent-spawn canary), (6)
+data-quality caveats.
 
 Contract (per P8 build instructions): pure read + generate. This script
 NEVER calls a GPU endpoint or a judge CLI, and NEVER writes to config/*,
@@ -36,6 +37,7 @@ _REPO_ROOT = _SCRIPT_DIR.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from llmtest.harness.stats import wilson  # noqa: E402
 from llmtest.judging.aggregate import (  # noqa: E402
     CAL_IDENTITIES, AggResult, aggregate, load_maps, load_refscores)
 from llmtest.judging.calibration_gate import calibration_status  # noqa: E402
@@ -819,12 +821,203 @@ def build_b5_section(rows: list[dict]) -> str:
 
 
 # --------------------------------------------------------------------------
-# Section 5: Data-quality caveats
+# Section 5: B8 Harness Canary (Task 9 -- real-harness completion + Wilson
+# intervals + subagent-spawn canary)
+# --------------------------------------------------------------------------
+
+# Labels `classify_first_failure` (llmtest/harness/failure_class.py, Task 8)
+# can emit for a FAILED run; a value outside this set (including the field
+# being entirely absent) is display-bucketed as _UNCLASSIFIED below.
+_B8_FAILURE_CLASS_LABELS = ("a", "b", "c", "d", "unknown")
+_B8_UNCLASSIFIED = "(unclassified)"
+
+
+def _b8_groups(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
+    """{(model_id, harness): [rows]} for a set of battery=8 rows, sorted by
+    `run_n` within each group so the per-replicate outcome list below has a
+    canonical, reproducible order regardless of on-disk row order (B8's
+    resume/`force` semantics -- see b8_harness.py's module docstring -- can
+    append rows for a cell out of run_n order over multiple invocations).
+    `harness` is parsed out of each row's condition string via the existing
+    `condition_parts()` helper (never hand-rolled) -- mirrors
+    `_base_condition`/`_full_condition` in `llmtest/batteries/b8_harness.py`,
+    which always emit a `harness=...` key in B8's condition at both plan()
+    and execute() time."""
+    out: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for r in rows:
+        harness = condition_parts(r.get("condition", "")).get("harness", "unknown")
+        out[(r["model_id"], harness)].append(r)
+    return {key: sorted(group, key=lambda r: r.get("run_n", 0)) for key, group in out.items()}
+
+
+def _b8_group_stats(group_rows: list[dict]) -> dict:
+    """Raw, unsmoothed per-(model,harness) stats for one B8 group: k/N +
+    Wilson interval on completion (spec 2.8 -- N replicates, never a
+    blended point-probability claim), the ORDERED per-replicate completion
+    list (never collapsed to a single number), median steps/tokens, the
+    subagent-spawn canary counts (yes/no/not_applicable counted
+    separately -- `not_applicable` is never folded into a 0% yes-rate, spec
+    2.7), and a first-failure-class tally over FAILED rows only.
+
+    FOLLOW-UP, NOT A BUG (see task-9-brief.md's self-review): this reads
+    `metrics.get("first_failure_class")`, but nothing in this codebase
+    POPULATES that key yet -- `classify_first_failure` (Task 8,
+    `llmtest.harness.failure_class`) classifies from a full `Trace` object,
+    which a stored row does not carry (only its summary `metrics`).
+    Actually running the classifier over B8 traces and stamping the label
+    back onto `metrics['first_failure_class']` is out of scope for this
+    task; every failed row falls through to `_B8_UNCLASSIFIED` below until
+    that follow-up job exists, and this function degrades to that
+    gracefully rather than crashing on the missing key."""
+    completions = [bool(r.get("metrics", {}).get("completion")) for r in group_rows]
+    k, n = sum(completions), len(completions)
+    lo, hi = wilson(k, n)
+
+    steps = [r.get("metrics", {}).get("steps") for r in group_rows
+             if isinstance(r.get("metrics", {}).get("steps"), (int, float))]
+    tokens = []
+    for r in group_rows:
+        m = r.get("metrics", {})
+        tp, tc = m.get("tokens_prompt"), m.get("tokens_completion")
+        if isinstance(tp, (int, float)) and isinstance(tc, (int, float)):
+            tokens.append(tp + tc)
+
+    spawn_vals = [r.get("metrics", {}).get("subagent_spawned") for r in group_rows]
+    spawn_counts = Counter(v for v in spawn_vals if v is not None)
+
+    class_counts = Counter()
+    for r, completed in zip(group_rows, completions):
+        if completed:
+            continue
+        label = r.get("metrics", {}).get("first_failure_class")
+        class_counts[label if label in _B8_FAILURE_CLASS_LABELS else _B8_UNCLASSIFIED] += 1
+
+    return {
+        "k": k, "n": n, "wilson": (lo, hi),
+        "per_replicate": completions,
+        "median_steps": statistics.median(steps) if steps else None,
+        "median_tokens": statistics.median(tokens) if tokens else None,
+        "spawn_counts": spawn_counts,
+        "class_counts": class_counts,
+    }
+
+
+def _b8_canary_line(spawn_counts: Counter) -> str:
+    """The subagent-canary headline for one (model,harness) group. Honors
+    `not_applicable` OUTRIGHT (a harness with no delegation primitive
+    reports every row as `not_applicable`) rather than ever reporting a
+    false 0% -- a harness that CAN'T delegate is not the same signal as one
+    that tried and got nothing usable. Otherwise reports the RAW
+    yes/(yes+no) count (never a rate alone with no numerator/denominator)."""
+    if not spawn_counts:
+        return "no data"
+    applicable = {k: v for k, v in spawn_counts.items() if k != "not_applicable"}
+    if not applicable:
+        return "not_applicable"
+    yes = spawn_counts.get("yes", 0)
+    no = spawn_counts.get("no", 0)
+    na = spawn_counts.get("not_applicable", 0)
+    denom = yes + no
+    rate = f"{yes}/{denom} ({100.0 * yes / denom:.0f}%)" if denom else f"{yes}/{denom}"
+    suffix = f", {na} not_applicable" if na else ""
+    return f"{rate} spawned{suffix}"
+
+
+def _render_b8_groups(group_rows_by_key: dict[tuple[str, str], list[dict]]) -> str:
+    stats_by_key = {key: _b8_group_stats(rows_) for key, rows_ in group_rows_by_key.items()}
+
+    headers = ["Model", "Harness", "Completion k/N", "Wilson 95% CI",
+               "Per-replicate outcomes", "Median steps", "Median tokens",
+               "Subagent canary"]
+    rows_out = []
+    for key in sorted(stats_by_key):
+        model, harness = key
+        s = stats_by_key[key]
+        lo, hi = s["wilson"]
+        outcomes = "[" + ", ".join("P" if c else "F" for c in s["per_replicate"]) + "]"
+        rows_out.append([
+            model, harness, f"{s['k']}/{s['n']}",
+            f"[{lo * 100:.1f}%, {hi * 100:.1f}%]",
+            outcomes,
+            fmt1(s["median_steps"]) if s["median_steps"] is not None else "-",
+            fmt1(s["median_tokens"]) if s["median_tokens"] is not None else "-",
+            _b8_canary_line(s["spawn_counts"]),
+        ])
+    table = md_table(headers, rows_out)
+
+    fc_headers = ["Model", "Harness"] + [f"class {l}" for l in _B8_FAILURE_CLASS_LABELS] + [_B8_UNCLASSIFIED]
+    fc_rows = []
+    for key in sorted(stats_by_key):
+        model, harness = key
+        cc = stats_by_key[key]["class_counts"]
+        fc_rows.append([model, harness]
+                        + [str(cc.get(l, 0)) for l in _B8_FAILURE_CLASS_LABELS]
+                        + [str(cc.get(_B8_UNCLASSIFIED, 0))])
+    fc_table = md_table(fc_headers, fc_rows)
+
+    note = (
+        "\n\n_First-failure-class distribution is DISPLAY ONLY -- actually running "
+        "`llmtest.harness.failure_class.classify_first_failure` to POPULATE "
+        "`metrics['first_failure_class']` on B8 rows is a documented FOLLOW-UP (a "
+        "stored row carries summary metrics, not the full `Trace` the classifier "
+        "needs); every column here reads 0, with every failed row falling into "
+        f"`{_B8_UNCLASSIFIED}`, until that classifier job exists and is wired in. "
+        "Wilson 95% CI uses `llmtest.harness.stats.wilson` (z=1.96); k/N and the "
+        "ordered per-replicate outcome list are always shown alongside it -- never "
+        "a single blended probability at these small (N>=5) replicate counts._"
+    )
+    return f"{table}\n\n**First-failure-class distribution (failed rows only)**\n\n{fc_table}{note}"
+
+
+def build_b8_section(root, cfg, rows: list[dict]) -> str:
+    """Section 5: per-`(model, harness)` B8 completion proportion (raw k/N
+    + Wilson interval), median steps/tokens, the subagent-spawn canary, and
+    a first-failure-class distribution -- mirrors `build_b1_section`'s
+    shape (a dedicated top-level section builder, not folded into the
+    generic ALL_BATTERIES-driven loop `build_battery_section` uses for
+    B2-B7, since B8's variance-tolerant replicate-based data doesn't fit
+    that shape). Labeled per `source_suite` via `_split_by_source_suite`,
+    same discipline as every other battery section (P1-T7 version-boundary
+    policy) -- B8 is new-battery, `suite-v2.1.0`-only scope; no `v2.0.0` B8
+    rows exist by construction.
+
+    NO REAL B8 ROWS EXIST YET as of this task (real harness runs against a
+    real external agent harness are deferred to a Blackwell box -- see
+    task-9-brief.md) -- on today's actual results/ data this always
+    degrades to "(no B8 data yet)". It is exercised against SYNTHETIC
+    battery=8 rows in `tests/test_report_b8.py`."""
+    lines = ["## 5. B8 Harness Canary (real-harness completion + subagent-spawn canary)", "",
+             "Per-`(model, harness)` completion proportion as RAW k/N + a Wilson 95% "
+             "confidence interval (`llmtest.harness.stats.wilson`, z=1.96) -- never a "
+             "smoothed point-probability claim at small N (spec 2.8) -- plus median "
+             "steps/tokens, the subagent-spawn canary (spec 2.7: `not_applicable` "
+             "honored for harnesses with no delegation primitive, never a false 0%), "
+             "and a first-failure-class distribution (DISPLAY ONLY -- see the note "
+             "below the table for the classifier-wiring follow-up).", ""]
+
+    by_suite = _split_by_source_suite(rows, 8)
+    if not by_suite:
+        lines.append("(no B8 data yet)")
+        return "\n".join(lines) + "\n"
+
+    for suite_ver in sorted(by_suite):
+        suite_rows = by_suite[suite_ver]
+        groups = _b8_groups(suite_rows)
+        lines.append(f"_source_suite: `{suite_ver}` ({len(suite_rows)} rows, "
+                      f"{len(groups)} (model,harness) group(s))_")
+        lines.append("")
+        lines.append(_render_b8_groups(groups))
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+# --------------------------------------------------------------------------
+# Section 6: Data-quality caveats
 # --------------------------------------------------------------------------
 
 def build_caveats_section(rows: list[dict], agg: AggResult, judgments: list[dict],
                            baseline_maps: dict, extra_caveats: list[str]) -> str:
-    lines = ["## 5. Data-quality caveats", ""]
+    lines = ["## 6. Data-quality caveats", ""]
 
     lines.append("### Empty-output counts by battery")
     lines.append("")
@@ -954,6 +1147,7 @@ def build_report(root: Path) -> tuple[str, str]:
     b1_section, agg = build_b1_section(root, cfg, rows, judgments, baseline_maps)
     battery_section = build_battery_section(rows, cfg, judgments, all_maps, refscores)
     b5_section = build_b5_section(rows)
+    b8_section = build_b8_section(root, cfg, rows)
     caveats_section = build_caveats_section(rows, agg, judgments, baseline_maps, caveats)
 
     header = (
@@ -963,7 +1157,7 @@ def build_report(root: Path) -> tuple[str, str]:
         "and safe to run on partial/in-progress data._\n"
     )
     full_md = "\n".join([header, overview, b1_section, battery_section, b5_section,
-                          caveats_section])
+                          b8_section, caveats_section])
 
     condensed = build_condensed(rows, roster, agg, baseline_maps, judgments,
                                  judge_ids, hardware_label)

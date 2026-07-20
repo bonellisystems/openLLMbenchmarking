@@ -291,7 +291,13 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 | qwen3.6-35b-a3b | 348.7 | 456.5 | 651.3 | 746.0 |
 
 
-## 5. Data-quality caveats
+## 5. B8 Harness Canary (real-harness completion + subagent-spawn canary)
+
+Per-`(model, harness)` completion proportion as RAW k/N + a Wilson 95% confidence interval (`llmtest.harness.stats.wilson`, z=1.96) -- never a smoothed point-probability claim at small N (spec 2.8) -- plus median steps/tokens, the subagent-spawn canary (spec 2.7: `not_applicable` honored for harnesses with no delegation primitive, never a false 0%), and a first-failure-class distribution (DISPLAY ONLY -- see the note below the table for the classifier-wiring follow-up).
+
+(no B8 data yet)
+
+## 6. Data-quality caveats
 
 ### Empty-output counts by battery
 
