@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from llmtest.harness.failure_class import (classify_first_failure, panel_classify,
-                                            parse_categorical_reply)
+                                            parse_categorical_reply, render_blinded_trace)
 from llmtest.harness.tasks import B8Task
 from llmtest.harness.trace import Trace, TraceEvent
 from llmtest.judging.adapters import JudgeReply
@@ -206,6 +206,97 @@ def test_adapter_shaped_classifier_drives_panel_via_invoke():
     label, source = classify_first_failure(
         trace, _task(), completed=False, classifiers=classifiers)
     assert (label, source) == ("c", "panel")
+
+
+# -- review fix #2: blinded presentation must never leak model identity ---
+#
+# A killed/timed-out run is NOT caught by `_is_harness_bug` (only
+# `terminal_status == "infra-error"` is) and can carry a pre-kill provider
+# `error` on its terminal event -- verbatim-rendering that payload (the
+# pre-fix `{ev.payload!r}`) could leak the model id straight into a
+# presentation the spec requires to carry NONE.
+
+
+def _killed_trace_with_terminal_error(error) -> Trace:
+    events = [
+        TraceEvent(kind="turn", payload={}),
+        TraceEvent(kind="tool_call", payload={
+            "tool": "write_file", "callID": "1", "input": {"path": "add.py"},
+            "parsed": True,
+        }),
+        TraceEvent(kind="tool_result", payload={"status": "completed", "output": "ok"}),
+        TraceEvent(kind="terminal", payload={
+            "returncode": None, "finish": None, "error": error, "missing_usage": False,
+        }),
+    ]
+    # "killed" (a timeout), deliberately NOT "infra-error" -- this is
+    # exactly the gap _is_harness_bug doesn't catch, so this trace reaches
+    # the panel (and hence render_blinded_trace) rather than short-
+    # circuiting to deterministic (d) first.
+    return Trace.from_events(events, terminal_status="killed",
+                              tokens_prompt=30, tokens_completion=0,
+                              subagent_spawned="no")
+
+
+def test_blinded_trace_redacts_terminal_error_string_no_model_identity_leak():
+    trace = _killed_trace_with_terminal_error(
+        "ContextOverflowError: request to local/gpt-oss-20b exceeded context window")
+
+    blinded = render_blinded_trace(trace, _task(), completed=None)
+    assert "gpt-oss-20b" not in blinded
+    assert "ContextOverflowError" not in blinded
+    assert "<redacted>" in blinded
+
+    # End-to-end: the panel actually receives this same redacted text, not
+    # just render_blinded_trace in isolation.
+    captured: dict = {}
+
+    class SpyClassifier:
+        def classify(self, blinded_text: str) -> str:
+            captured["text"] = blinded_text
+            return "c"
+
+    label, source = classify_first_failure(
+        trace, _task(), completed=False, classifiers=[SpyClassifier()])
+    assert source == "panel"
+    assert "gpt-oss-20b" not in captured["text"]
+
+
+def test_blinded_trace_redacts_terminal_error_dict_keeps_only_name():
+    trace = _killed_trace_with_terminal_error(
+        {"name": "ContextOverflowError",
+         "data": {"model": "local/gpt-oss-20b", "detail": "prompt too long"}})
+
+    blinded = render_blinded_trace(trace, _task(), completed=None)
+    assert "gpt-oss-20b" not in blinded
+    assert "prompt too long" not in blinded
+    assert "ContextOverflowError" in blinded  # bare error.name is safe to keep
+
+
+# -- review fix #3: the completed=None inference branch, both directions --
+
+
+def test_completed_none_with_clean_completed_terminal_is_not_applicable():
+    trace = _completed_trace()  # terminal_status == "completed", nothing deterministic fires
+
+    label, source = classify_first_failure(
+        trace, _task(), completed=None, classifiers=[RaisingClassifier()])
+
+    assert (label, source) == ("not_applicable", "deterministic")
+
+
+def test_completed_none_with_failure_terminal_routes_to_panel():
+    # terminal_status="killed" (a genuine failure) with completed=None (no
+    # oracle verdict supplied) and no deterministic detector firing -- must
+    # NOT be inferred as not_applicable (that inference is only licensed
+    # for terminal_status == "completed"); it must reach the panel.
+    trace = _killed_trace_with_terminal_error(None)
+    classifiers = [FakeClassifier("b"), FakeClassifier("b"), FakeClassifier("c")]
+
+    label, source = classify_first_failure(
+        trace, _task(), completed=None, classifiers=classifiers)
+
+    assert (label, source) == ("b", "panel")
 
 
 if __name__ == "__main__":

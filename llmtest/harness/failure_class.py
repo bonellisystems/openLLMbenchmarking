@@ -170,6 +170,65 @@ def _deterministic_failure(trace) -> tuple[str, str] | None:
 # -- blinding ----------------------------------------------------------------
 
 
+def _redact_error_field(error: Any) -> Any:
+    """Reduce a terminal/subagent event's `error` field to, at most, its
+    `name` -- NEVER its full text/`data`. A provider-side error string (the
+    `error` OpenCodeAdapter._read_trace records straight from the harness,
+    per `llmtest.harness.opencode`'s own docstring) can embed the model id
+    verbatim (the config addresses the model as e.g. `local/gpt-oss-20b`,
+    per `OpenCodeAdapter._write_opencode_config`) -- rendering it verbatim
+    into a presentation the spec requires to carry NO model identity would
+    be a live blinding leak. `error` shapes vary (a dict with `name`/`data`
+    keys, a bare string, or something else entirely) so this is
+    deliberately conservative: anything that isn't a dict with a string
+    `name` collapses to the fixed marker `"<redacted>"` rather than risk
+    passing identity-bearing text through."""
+    if error is None:
+        return None
+    if isinstance(error, dict) and isinstance(error.get("name"), str):
+        return {"name": error["name"]}
+    return "<redacted>"
+
+
+# Fields safe to render verbatim from a `terminal` event's payload -- every
+# OTHER key is dropped, not merely truncated, before the presentation is
+# built. Two are deliberately EXCLUDED despite existing on a real
+# OpenCodeAdapter terminal payload, both because they're raw free-text
+# rather than an enum/int/bool:
+#   - `error` -- handled separately via `_redact_error_field` (name-only,
+#     never the raw text/`data`) rather than being in this whitelist
+#     outright -- this is the field the review flagged as the live leak.
+#   - `launch_error` -- also a raw exception string (host-side, from
+#     subprocess launch failure), not provider text, but a free string
+#     nonetheless; in practice it only ever accompanies
+#     `terminal_status == "infra-error"`, which `_is_harness_bug` already
+#     catches deterministically before the panel ever renders anything, so
+#     dropping it here costs nothing and keeps the whitelist strictly
+#     enum/int/bool-only.
+_TERMINAL_SAFE_FIELDS = ("finish", "returncode", "status", "terminal_status",
+                          "missing_usage")
+
+# Fields safe to render verbatim from a `subagent_spawn` event's payload --
+# `tool`/`callID` are harness-internal bookkeeping (an OpenCode `task` tool
+# invocation id), never provider free text, so no redaction is needed here
+# beyond restricting to this fixed set (defense in depth against a future
+# payload key carrying something identity-bearing).
+_SUBAGENT_SAFE_FIELDS = ("tool", "callID")
+
+
+def _whitelisted_payload(payload: dict, safe_fields: tuple[str, ...]) -> dict:
+    """Project `payload` down to `safe_fields` only, `error` redacted via
+    `_redact_error_field` when present regardless of whether it's in
+    `safe_fields` (it deliberately never is -- see the field-list
+    docstrings) -- this is how a terminal event's `error` reaches the
+    presentation at all: as `{"error": {"name": ...}}` or `{"error":
+    "<redacted>"}`, never as the raw provider string/`error.data`."""
+    out = {k: payload[k] for k in safe_fields if k in payload}
+    if "error" in payload:
+        out["error"] = _redact_error_field(payload["error"])
+    return out
+
+
 def render_blinded_trace(trace, task, *, completed: bool | None = None) -> str:
     """Render `trace` + `task.prompt` into a neutral, model-blind text
     presentation for a classifier to read. The `Trace` schema itself
@@ -177,7 +236,21 @@ def render_blinded_trace(trace, task, *, completed: bool | None = None) -> str:
     docstring), so "blinding" here means simply never ADDING any --
     nothing about which model/harness/run produced this trace is surfaced,
     only the task prompt, the ordered interaction, and the terminal
-    outcome."""
+    outcome.
+
+    FIELD WHITELIST (fix, post-review): `terminal` and `subagent_spawn`
+    event payloads are NOT dumped verbatim (`{ev.payload!r}`) -- an
+    adapter-populated `terminal` payload can carry a provider `error`
+    string (see `OpenCodeAdapter._read_trace`'s `last_error`), and a
+    timed-out/killed run reaches the panel WITHOUT `_is_harness_bug`
+    catching it first (that only matches `terminal_status == "infra-
+    error"`, not `"killed"`) -- so an unredacted dump here was a real path
+    for a pre-kill provider error (which can itself embed the model id,
+    e.g. `local/gpt-oss-20b`) to leak into a presentation the spec requires
+    to carry no model identity. `tool_call`/`tool_result` payloads are
+    already rendered field-by-field (never `{ev.payload!r}` wholesale) and
+    carry no comparable free-text-from-the-provider field, so they're
+    unchanged."""
     lines: list[str] = ["## Task prompt", "", task.prompt, "",
                          "## Interaction trace", ""]
     turn_no = 0
@@ -195,9 +268,11 @@ def render_blinded_trace(trace, task, *, completed: bool | None = None) -> str:
                 f"  tool_result: status={ev.payload.get('status')!r} "
                 f"output={ev.payload.get('output')!r}")
         elif ev.kind == "subagent_spawn":
-            lines.append(f"  subagent_spawn: {ev.payload!r}")
+            lines.append(
+                f"  subagent_spawn: {_whitelisted_payload(ev.payload, _SUBAGENT_SAFE_FIELDS)!r}")
         elif ev.kind == "terminal":
-            lines.append(f"  terminal: {ev.payload!r}")
+            lines.append(
+                f"  terminal: {_whitelisted_payload(ev.payload, _TERMINAL_SAFE_FIELDS)!r}")
 
     lines.append("")
     lines.append(f"## Terminal status: {trace.terminal_status}")
