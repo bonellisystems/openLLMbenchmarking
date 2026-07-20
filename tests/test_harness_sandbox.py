@@ -1,0 +1,147 @@
+"""Contract test for the container sandbox (Task 2, Part 2 Phase 1 B8): the
+security boundary a real agent-harness run will (Phase 2, deferred) execute
+inside. Docker Desktop/WSL2 required for the container-behavior tests --
+`pytest.mark.skipif` guards those so CI without Docker skips cleanly. The
+pin-loading test needs no Docker and always runs.
+"""
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from llmtest.harness.sandbox import Sandbox
+
+
+def _docker_available() -> bool:
+    try:
+        r = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+requires_docker = pytest.mark.skipif(not _docker_available(), reason="Docker not reachable")
+
+
+def test_default_pin_loaded_from_runtime_pins_yaml():
+    """No Docker needed -- just config wiring. Sandbox() with no explicit
+    image/digest reads config/runtime_pins.yaml's `sandbox:` block."""
+    sbx = Sandbox(workspace=Path("does-not-need-to-exist-for-this-check"))
+    assert sbx.image == "nvidia/cuda:12.6.2-base-ubuntu24.04"
+    assert sbx.digest == (
+        "sha256:631ec7090c36ab846cf021073ff4a64fb9cffa90b4f9f0083799288c607073ce"
+    )
+
+
+@requires_docker
+def test_workspace_write_persists_and_outside_write_fails(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    with Sandbox(workspace=ws) as sbx:
+        code, out, err = sbx.run_in(
+            ["bash", "-c", "echo hello > /workspace/inside.txt && cat /workspace/inside.txt"])
+        assert code == 0
+        assert "hello" in out
+        # persisted to the host dir (the bind mount, not a container-only write)
+        assert (ws / "inside.txt").read_text().strip() == "hello"
+
+        code2, out2, err2 = sbx.run_in(["bash", "-c", "echo bad > /outside.txt"])
+        assert code2 != 0
+        assert "read-only" in (out2 + err2).lower()
+
+
+@requires_docker
+def test_spawned_process_killed_on_container_teardown(tmp_path):
+    ws = tmp_path / "ws2"
+    ws.mkdir()
+    sbx = Sandbox(workspace=ws)
+    sbx.__enter__()
+    cid = sbx.container_id
+    try:
+        assert cid
+        code, out, _ = sbx.run_in(["bash", "-c", "sleep 300 & disown; echo spawned"])
+        assert code == 0 and "spawned" in out
+        # confirm the background process is actually alive before teardown
+        code2, out2, _ = sbx.run_in(
+            ["bash", "-c", "pgrep -f 'sleep 300' >/dev/null && echo ALIVE"])
+        assert code2 == 0 and "ALIVE" in out2
+    finally:
+        sbx.__exit__(None, None, None)
+
+    # container force-removed => its whole process tree (incl. the
+    # backgrounded sleep, reparented but still in the same cgroup) is gone
+    ps = subprocess.run(["docker", "ps", "-a", "-q", "--filter", f"id={cid}"],
+                        capture_output=True, text=True)
+    assert ps.stdout.strip() == ""
+
+
+@requires_docker
+def test_network_none_blocks_non_endpoint_egress(tmp_path):
+    ws = tmp_path / "ws3"
+    ws.mkdir()
+    with Sandbox(workspace=ws) as sbx:
+        code, out, err = sbx.run_in(
+            ["bash", "-c", "exec 3<>/dev/tcp/1.1.1.1/80"], timeout=5)
+        assert code != 0
+        assert "unreachable" in (out + err).lower() or "network" in (out + err).lower()
+
+
+@requires_docker
+def test_run_in_timeout_kills_the_exec(tmp_path):
+    ws = tmp_path / "ws4"
+    ws.mkdir()
+    with Sandbox(workspace=ws) as sbx:
+        code, _, _ = sbx.run_in(["sleep", "10"], timeout=2)
+        assert code != 0  # killed by wall-clock timeout, not a clean 0 exit
+
+
+@requires_docker
+def test_snapshot_workspace_reflects_current_files(tmp_path):
+    ws = tmp_path / "ws5"
+    ws.mkdir()
+    with Sandbox(workspace=ws) as sbx:
+        sbx.run_in(["bash", "-c",
+                    "echo one > /workspace/a.txt && mkdir -p /workspace/sub "
+                    "&& echo two > /workspace/sub/b.txt"])
+        snap = sbx.snapshot_workspace()
+    assert snap["a.txt"] == b"one\n"
+    assert snap["sub/b.txt"] == b"two\n"
+
+
+@requires_docker
+def test_hidden_validate_callable_oracle_sees_post_run_state(tmp_path):
+    ws = tmp_path / "ws6"
+    ws.mkdir()
+    with Sandbox(workspace=ws) as sbx:
+        sbx.run_in(["bash", "-c", "echo final-answer > /workspace/answer.txt"])
+
+    def oracle(copy_path: Path):
+        content = (copy_path / "answer.txt").read_text().strip()
+        return content == "final-answer", f"content={content!r}"
+
+    ok, detail = Sandbox(workspace=ws).hidden_validate(oracle, ws)
+    assert ok is True, detail
+
+
+@requires_docker
+def test_hidden_validate_command_oracle_mount_isolated_and_read_only(tmp_path):
+    ws = tmp_path / "ws7"
+    ws.mkdir()
+    (ws / "out.txt").write_text("expected-value")
+    sbx = Sandbox(workspace=ws)
+
+    # oracle references /oracle -- a path distinct from /workspace, proving
+    # it runs against an isolated mount, not the agent's writable one
+    ok, detail = sbx.hidden_validate(["bash", "-c", "grep -q expected-value /oracle/out.txt"], ws)
+    assert ok is True, detail
+
+    # the oracle mount is read-only: an attempted write fails
+    ok2, detail2 = sbx.hidden_validate(["bash", "-c", "echo y > /oracle/out.txt"], ws)
+    assert ok2 is False, detail2
+
+    # tampering with the real workspace after the fact is caught on re-validate
+    (ws / "out.txt").write_text("tampered")
+    ok3, detail3 = sbx.hidden_validate(["bash", "-c", "grep -q expected-value /oracle/out.txt"], ws)
+    assert ok3 is False, detail3
