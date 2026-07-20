@@ -502,3 +502,144 @@ def test_launch_uses_unwrapped_node_argv_not_the_cmd_shim(monkeypatch, tmp_path)
     # cmd-shim bug this test guards against.
     assert multiline_prompt in captured["argv"]
     assert captured["argv"][-2:] == ["-m", "local/gpt-oss-20b"]
+
+
+# -- #1 (Important, post-review): opencode.json must NOT land in the -------
+# -- agent-visible workspace -- delivered via OPENCODE_CONFIG env var only -
+
+
+def test_opencode_config_not_written_into_agent_workspace(tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path)
+
+    # run_oracle's diff constraint (tasks.py) flags any new file not in
+    # allowed_diff_paths as an out-of-bounds edit -- a leftover
+    # opencode.json in the agent-visible workspace would silently FAIL an
+    # otherwise-correct run. Only the task's own materialized files may be
+    # present after setup().
+    workspace_files = {p.name for p in adapter.workspace.iterdir()}
+    assert "opencode.json" not in workspace_files
+    assert workspace_files == {"greet.sh"}
+
+
+def test_opencode_config_written_as_sibling_and_passed_via_env(monkeypatch, tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path)
+
+    # config exists on disk, but OUTSIDE the workspace (a sibling, mirroring
+    # _log_path), never under /workspace.
+    assert adapter._config_path is not None
+    assert adapter._config_path.exists()
+    assert adapter._config_path.parent == adapter.workspace.parent
+    cfg = json.loads(adapter._config_path.read_text(encoding="utf-8"))
+    assert cfg["provider"]["local"]["options"]["baseURL"] == "http://127.0.0.1:8080/v1"
+
+    captured = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return FakeProcess(pid=1, hang=False, returncode=0)
+
+    monkeypatch.setattr(oc.subprocess, "Popen", fake_popen)
+    adapter._launch(["opencode", "run", "hi", "-m", "local/gpt-oss-20b"],
+                     cwd=adapter.workspace, timeout=5)
+
+    assert captured["env"] is not None
+    assert captured["env"].get("OPENCODE_CONFIG") == str(adapter._config_path)
+
+
+# -- #2 (Important, post-review): session correlation must not misclassify -
+# -- a genuinely completed run as infra-error -------------------------------
+
+
+def test_session_correlated_via_git_root_ancestor_not_misclassified(monkeypatch, tmp_path):
+    # workspace nested inside some ancestor dir OpenCode recorded as
+    # `session.directory` instead of the literal workspace cwd (the
+    # hypothesized git-worktree-root shape) -- must still correlate to a
+    # completed run, not silently fall to infra-error.
+    db_path = tmp_path / "opencode.db"
+    ws = tmp_path / "repo" / "ws"
+    ws.mkdir(parents=True)
+    ancestor_dir = str((tmp_path / "repo").resolve())
+    session_id = "ses_repo"
+    messages = [
+        ("m1", 100, {"role": "user"}),
+        ("m2", 200, {"role": "assistant", "finish": "stop",
+                     "tokens": {"input": 10, "output": 5, "reasoning": 0}}),
+    ]
+    _make_db(db_path, session_id=session_id, directory=ancestor_dir, session_time=50,
+              messages=messages, parts=[("p1", "m2", 150, {"type": "step-start"})])
+
+    adapter = oc.OpenCodeAdapter(model="gpt-oss-20b", db_path=db_path)
+    adapter.setup(_make_task(), endpoint="http://127.0.0.1:8080", workspace=ws)
+    monkeypatch.setattr(adapter, "_launch", lambda argv, cwd, timeout: (0, False, None))
+    adapter._since_ts = 0
+
+    trace = adapter.run()
+
+    assert trace.terminal_status == "completed"
+    assert trace.steps == 1
+
+
+def test_session_time_based_fallback_when_directory_correlation_totally_fails(monkeypatch, tmp_path):
+    # directory matches NOTHING -- not exact, not case-insensitive, not an
+    # ancestor (e.g. a future OpenCode version records `directory` in some
+    # other shape entirely). As long as exactly one session was created in
+    # the post-launch time window (the adapter launches and awaits exactly
+    # one opencode subprocess per run), it must still be used -- never
+    # losing a genuinely-completed run to a directory-correlation miss.
+    db_path = tmp_path / "opencode.db"
+    ws = tmp_path / "ws"
+    session_id = "ses_unrelated_dir"
+    messages = [
+        ("m1", 100, {"role": "user"}),
+        ("m2", 200, {"role": "assistant", "finish": "stop",
+                     "tokens": {"input": 3, "output": 2, "reasoning": 0}}),
+    ]
+    _make_db(db_path, session_id=session_id, directory="Z:\\totally\\unrelated\\path",
+              session_time=50, messages=messages, parts=[])
+
+    adapter = _new_adapter(tmp_path, db_path)
+    monkeypatch.setattr(adapter, "_launch", lambda argv, cwd, timeout: (0, False, None))
+    adapter._since_ts = 0
+
+    trace = adapter.run()
+
+    assert trace.terminal_status == "completed"
+
+
+# -- #5 (trivial, post-review): _launch resets self.process once handled --
+
+
+def test_launch_resets_process_handle_after_clean_exit(monkeypatch, tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path)
+    monkeypatch.setattr(oc.subprocess, "Popen",
+                         lambda *a, **k: FakeProcess(pid=1, hang=False, returncode=0))
+
+    adapter._launch(["opencode", "run", "hi", "-m", "local/gpt-oss-20b"],
+                     cwd=adapter.workspace, timeout=5)
+
+    assert adapter.process is None
+
+
+def test_launch_resets_process_handle_after_kill_so_teardown_is_a_true_noop(monkeypatch, tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path)
+    monkeypatch.setattr(oc.subprocess, "Popen",
+                         lambda *a, **k: FakeProcess(pid=1, hang=True))
+    killed = []
+    monkeypatch.setattr(oc.subprocess, "run",
+                         lambda argv, **k: killed.append(argv) or subprocess.CompletedProcess(argv, 0))
+
+    adapter._launch(["opencode", "run", "hi", "-m", "local/gpt-oss-20b"],
+                     cwd=adapter.workspace, timeout=1)
+    assert adapter.process is None
+    assert len(killed) == 1
+
+    adapter.teardown()  # must be a genuine no-op now -- no second taskkill
+    assert len(killed) == 1

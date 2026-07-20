@@ -8,12 +8,21 @@ RESOLVED DESIGN (Phase-0/0.2 spikes, see `docs/superpowers/notes/
 b8-spike-serverprofile.md`, "Update 4 -- DEFINITIVE PASS" -- these are
 confirmed facts, not choices re-made here):
 
-- OpenCode only works headlessly with an `opencode.json` granting
+- OpenCode only works headlessly with a config granting
   `permission: {edit, bash, webfetch: "allow"}` -- headless `opencode run`
   has no TTY, so without this the write/bash tools block on approval and
   the run hangs forever. `setup()` writes this config (plus a `local`
-  `@ai-sdk/openai-compatible` provider pointed at `endpoint + "/v1"`) into
-  the workspace before launch.
+  `@ai-sdk/openai-compatible` provider pointed at `endpoint + "/v1"`) to
+  `self._config_path`, a SIBLING of the workspace (never inside it), and
+  `_launch` hands it to `opencode` via the `OPENCODE_CONFIG` env var --
+  NOT as an `opencode.json` file in the cwd. (An earlier version of this
+  adapter did write it into the workspace, matching what the Phase-0.2
+  spike itself did; Task-4 review correctly flagged that as a live
+  landmine -- `run_oracle`'s diff constraint, Task 3, would flag the
+  leftover `opencode.json` as an out-of-bounds edit and FAIL an otherwise-
+  correct run. Verified live: a run with zero `opencode.json` anywhere
+  under the workspace, config supplied purely via `OPENCODE_CONFIG`,
+  completed successfully end-to-end against the real endpoint.)
 - `opencode run "<prompt>" -m local/<model>` is invoked with its own
   process's `stdout`/`stderr` NOT piped: OpenCode is verbose (INFO-level
   service logs on top of whatever `--print-logs` adds), and on Windows a
@@ -34,9 +43,16 @@ confirmed facts, not choices re-made here):
   (`~/.local/share/opencode/opencode.db`, or an injected `db_path`), which
   is written incrementally as the run progresses and survives a kill:
     - `session(id, directory, time_created, ...)` -- the run's session is
-      identified by the newest row whose `directory` matches this run's
-      workspace (absolute path) with `time_created` at or after a
-      timestamp recorded just before launch.
+      identified among rows with `time_created` at or after a timestamp
+      recorded just before launch, preferring the one whose `directory`
+      matches this run's workspace (exact, then case-insensitive, then a
+      filesystem-ancestor check for a hypothesized git-worktree-root
+      shape -- see `_find_session_id`'s docstring), but falling back to
+      simply the NEWEST session in that window if none of those match --
+      exactly one `opencode` subprocess is launched and synchronously
+      awaited per `run()` call, so a directory-correlation miss must never
+      by itself misclassify a genuinely-completed run as `infra-error`
+      (Task-4 review finding #2).
     - `message(id, session_id, time_created, data)` -- `data` is a JSON
       blob: `role` ("user"/"assistant"), `tokens{input,output,reasoning}`,
       `finish` (finish reason; ABSENT, not e.g. `"error"`, on a
@@ -65,19 +81,20 @@ is a localized change to those two methods -- the sqlite trace mapping
 (`_read_trace()`) is execution-environment-agnostic (it just reads a db
 path) and needs no change either way.
 
-KNOWN GAP (flagged, not fixed here -- see task-4-report.md "Concerns"):
-`setup()` currently writes `opencode.json` INTO the agent-visible
-workspace (matching what the spike itself did). That is fine for this
-task's fault-injection tests and host-only live smoke, but it means a real
-B8 run would have `run_oracle`'s Design-Decision-1b diff constraint
-(Task 3, `llmtest.harness.tasks.run_oracle`) flag `opencode.json` as an
-out-of-bounds new file, since it isn't in `allowed_diff_paths`. The
-eventual battery wiring needs the config supplied OUTSIDE the workspace
-(e.g. an `OPENCODE_CONFIG` env var pointed at a sibling file, if OpenCode
-supports one) or `opencode.json` added to every manifest's
-`allowed_diff_paths`/ignored entirely from the diff walk -- deferred to
-the battery-wiring task since it needs a manifest-format decision, not an
-adapter-internal one.
+TOKEN SOURCE (verified, per the family brief's "server-side llama-server
+usage, NOT harness proxies" requirement): `message.data.tokens` IS the
+`@ai-sdk/openai-compatible` provider's passthrough of llama-server's own
+OpenAI-compatible `usage` object, not a value OpenCode recomputes locally.
+Structural proof, not just plausibility: OpenCode's `tokens.cache.
+{read,write}` fields map directly onto llama-server's own
+`usage.prompt_tokens_details.cached_tokens` (confirmed live via a direct
+non-streaming `/v1/chat/completions` request to the same endpoint -- the
+raw response contains exactly that field). A client-side tokenizer has no
+way to know how many prompt tokens hit the SERVER's own KV cache -- that
+is purely a runtime fact about the server's own state, not a property of
+the text -- so a populated, plausible `cache.read`/`cache.write` in
+OpenCode's stored tokens could only have come from the server's response,
+never from OpenCode computing token counts independently.
 """
 from __future__ import annotations
 
@@ -138,6 +155,7 @@ class OpenCodeAdapter(HarnessAdapter):
         self.process = None
         self._since_ts: int | None = None
         self._log_path: Path | None = None
+        self._config_path: Path | None = None
         self._version: str | None = None
 
     # -- HarnessAdapter lifecycle -----------------------------------------
@@ -148,11 +166,13 @@ class OpenCodeAdapter(HarnessAdapter):
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
         materialize_repo(task, self.workspace)
-        self._write_opencode_config()
         # Record BEFORE launch (with slack) so `_read_trace` can find this
         # run's session even if OpenCode's own clock is a hair behind ours.
         self._since_ts = int(time.time() * 1000) - _SESSION_TS_SLACK_MS
-        self._log_path = self.workspace.parent / f".opencode-{uuid.uuid4().hex[:8]}.log"
+        token = uuid.uuid4().hex[:8]
+        self._log_path = self.workspace.parent / f".opencode-{token}.log"
+        self._config_path = self.workspace.parent / f".opencode-config-{token}.json"
+        self._write_opencode_config()
 
     def run(self) -> Trace:
         prompt = self.task.prompt
@@ -263,6 +283,23 @@ class OpenCodeAdapter(HarnessAdapter):
     # -- config -------------------------------------------------------------
 
     def _write_opencode_config(self) -> None:
+        """Write the `local`-provider config to `self._config_path` -- a
+        SIBLING of the workspace (mirrors `_log_path`), NEVER inside
+        `/workspace`. Delivered to the `opencode` process via the
+        `OPENCODE_CONFIG` env var (`_launch`), not by placing
+        `opencode.json` in the cwd.
+
+        FIX (post-Task-4-review Important finding #1): the original version
+        wrote `opencode.json` directly into the agent-visible workspace --
+        confirmed live to be a real problem: after a run, `ls` on the
+        workspace showed `opencode.json` sitting alongside the task's own
+        files. `run_oracle`'s diff constraint (Task 3,
+        `llmtest.harness.tasks.run_oracle`) treats any new file not in
+        `allowed_diff_paths` as an out-of-bounds edit -> that would
+        silently FAIL an otherwise-correct run. Verified the env-var path
+        works live: a probe run with NO `opencode.json` anywhere under the
+        workspace, config supplied purely via `OPENCODE_CONFIG`, completed
+        successfully end-to-end against the real gpt-oss-20b endpoint."""
         cfg = {
             "$schema": "https://opencode.ai/config.json",
             "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
@@ -275,7 +312,7 @@ class OpenCodeAdapter(HarnessAdapter):
                 }
             },
         }
-        (self.workspace / "opencode.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        self._config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     # -- seam: subprocess launch (host today; Sandbox.run_in later) --------
 
@@ -295,6 +332,18 @@ class OpenCodeAdapter(HarnessAdapter):
         workspace, never inside it) rather than piped -- see the module
         docstring for why piping deadlocks a verbose headless OpenCode run
         on Windows.
+
+        The config is delivered via `OPENCODE_CONFIG` (not a workspace
+        file -- see `_write_opencode_config`), on top of the full parent
+        environment (`opencode`/node need normal PATH/USERPROFILE/etc. to
+        run at all; this is additive, not a replacement).
+
+        `self.process` is reset to `None` once this method has fully
+        handled the process either way (clean exit OR killed-on-timeout)
+        -- post-review trivial fix #5: leaving the handle set after
+        `_launch` itself already resolved the outcome meant a later
+        `teardown()` would re-run `taskkill` against an already-finished
+        PID instead of being a true no-op.
         """
         try:
             log_fh = open(self._log_path, "w", encoding="utf-8")
@@ -302,17 +351,21 @@ class OpenCodeAdapter(HarnessAdapter):
             return None, False, f"could not open log file: {e!r}"
         try:
             resolved_argv = self._resolved_argv(argv)
+            env = {**os.environ, "OPENCODE_CONFIG": str(self._config_path)}
             try:
                 self.process = subprocess.Popen(resolved_argv, cwd=str(cwd), stdout=log_fh,
-                                                 stderr=subprocess.STDOUT)
+                                                 stderr=subprocess.STDOUT, env=env)
             except OSError as e:
                 return None, False, str(e)
 
             try:
                 self.process.wait(timeout=timeout)
-                return self.process.returncode, False, None
+                returncode = self.process.returncode
+                self.process = None
+                return returncode, False, None
             except subprocess.TimeoutExpired:
                 self._kill_process_tree(self.process)
+                self.process = None
                 return None, True, None
         finally:
             log_fh.close()
@@ -414,25 +467,66 @@ class OpenCodeAdapter(HarnessAdapter):
 
     @staticmethod
     def _find_session_id(con: sqlite3.Connection, workspace: str, since_ts: int) -> str | None:
-        """Newest session whose `directory` matches `workspace` exactly,
-        among sessions created at/after `since_ts`. Falls back to a
-        case-insensitive comparison (Windows paths are case-insensitive)
-        if no exact match is found, before giving up -- small hardening
-        against a drive-letter-casing mismatch between this process's
-        `Path.resolve()` and OpenCode's own recorded `directory`, without
-        weakening the "exact match preferred" behavior the spike verified."""
+        """Correlate this run to ONE session, tried from most to least
+        specific, among sessions created at/after `since_ts`:
+
+          1. exact `directory` == `workspace` match.
+          2. case-insensitive exact match (Windows drive-letter casing).
+          3. `directory` is a filesystem ANCESTOR of `workspace`
+             (`_is_ancestor_dir`) -- hardening for a hypothesized shape
+             where OpenCode records a git-worktree ROOT instead of the
+             literal cwd when the workspace sits inside a repo. NOTE: this
+             was investigated live (a workspace nested one level inside a
+             real `git init`-ed ancestor) and did NOT reproduce --
+             `session.directory` was still the literal cwd; it was
+             `project.worktree` (a DIFFERENT table) that held the git
+             root. Kept anyway as defensive hardening for a shape not
+             confirmed impossible in every OpenCode version/scenario.
+          4. PRIMARY GUARANTEE -- if nothing above matched but at least one
+             session exists in the time window, return the NEWEST one
+             regardless of `directory`. `run()` launches and synchronously
+             awaits exactly one `opencode` subprocess per call, so under
+             that assumption the newest session created in the post-launch
+             window IS this run's. This is what stops a genuinely-completed
+             run from being misclassified `infra-error` purely because
+             directory correlation happens to miss (Task-4 review finding
+             #2) -- `directory` matching is now a preference for
+             disambiguating among candidates, not a hard gate on whether a
+             session is found at all.
+
+        Only `rows` being completely EMPTY (no session at all in the time
+        window -- e.g. opencode crashed before ever writing one) still
+        yields `None`; `run()`'s own launch-outcome handling (nonzero
+        exit / launch_error) is what explains that case, not this method.
+        """
         cur = con.cursor()
         cur.execute("SELECT id, directory FROM session WHERE time_created >= ? "
                     "ORDER BY time_created DESC", (since_ts,))
         rows = cur.fetchall()
+        if not rows:
+            return None
         for sid, directory in rows:
             if directory == workspace:
                 return sid
-        norm_ws = os.path.normcase(workspace)
+        norm_ws = os.path.normcase(os.path.normpath(workspace))
         for sid, directory in rows:
-            if directory is not None and os.path.normcase(directory) == norm_ws:
+            if directory is not None and os.path.normcase(os.path.normpath(directory)) == norm_ws:
                 return sid
-        return None
+        for sid, directory in rows:
+            if directory is not None and _is_ancestor_dir(directory, workspace):
+                return sid
+        return rows[0][0]
+
+
+def _is_ancestor_dir(candidate: str, workspace: str) -> bool:
+    """True if `candidate` is `workspace` itself or a filesystem ANCESTOR
+    of it (case-insensitive, Windows-path-safe comparison). Used by
+    `OpenCodeAdapter._find_session_id` to accept a session whose recorded
+    `directory` is a git-worktree root (or any other ancestor) rather than
+    the literal workspace cwd."""
+    cand = os.path.normcase(os.path.normpath(candidate))
+    ws = os.path.normcase(os.path.normpath(workspace))
+    return ws == cand or ws.startswith(cand + os.sep)
 
 
 def _unwrap_npm_cmd_shim(cmd_path: str) -> list[str] | None:
