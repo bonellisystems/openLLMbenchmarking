@@ -1,10 +1,17 @@
 suite_version: suite-v2.0.0
-condition_order: [runtime, spec, kv, ctx, cond, conc, sysp, temp, toolfmt]
+# B8 additive keys (harness, task, attempt_id, execution_provenance_sha)
+# appended at the END -- canonical_condition (schema.py) only emits keys
+# present in a given battery's own parts dict, so B1-B7's condition strings
+# (whose parts never contain these four keys) are byte-identical whether
+# these keys exist here or not. See llmtest/batteries/b8_harness.py module
+# docstring for the full row-identity rationale (task-7-brief.md).
+condition_order: [runtime, spec, kv, ctx, cond, conc, sysp, temp, toolfmt,
+                  harness, task, attempt_id, execution_provenance_sha]
 condition_vocab:
   runtime: [fork, ollama, vllm]
   spec: [ngram32, off]
   kv: [f16, q8, q4]
-  cond: [PEAK, SUSTAINED32K, B1, B2, B3, B4, B6, B7, SELFTEST]
+  cond: [PEAK, SUSTAINED32K, B1, B2, B3, B4, B6, B7, B8, SELFTEST]
   conc: [1, 2, 4, 8, 16, 32, 64, 128]
   # B7 harness/config-matrix dimensions (see b7: block below + b7-report.md
   # for the interpretation note -- TESTPLAN 5.7 names an external-harness
@@ -13,6 +20,13 @@ condition_vocab:
   sysp: [default, minimal]
   temp: [t0, tdef]
   toolfmt: [native, prompted]
+  # B8 harness axis -- OpenCode only today (Task 4); Hermes/WSL2 and a
+  # LiteLLM-fronted Claude Code land later (see b7-report.md's P6 note).
+  # `task`/`attempt_id`/`execution_provenance_sha` are NOT enumerated here
+  # (unlike the small closed vocab above) -- they're open-ended identifiers
+  # (a task id, a uuid/session id, a sha256 hex digest), the same reason
+  # task_id itself never appears in condition_vocab for any other battery.
+  harness: [opencode]
 n_runs_judged: 3
 n_runs_harness: 2
 b1:
@@ -173,3 +187,40 @@ b7:
         # the string "off" in Python rather than sourcing it from YAML).
         values: [ngram32, "off"]
         baseline: ngram32
+b8:
+  # Real-harness battery (Part 2 Phase 2): OpenCode (Task 4) driving models
+  # through the suite/b8_harness/task-*.yaml manifests, scored by the
+  # anti-gaming completion oracle (llmtest.harness.tasks.run_oracle), not
+  # static content signals. `models` is a deliberately SMALL subset (not
+  # the full non-quant-arm roster B1/B6/B7 use) -- each replicate is a
+  # real, possibly slow, external-process harness run against a live
+  # endpoint. Grow this list once the OpenCode/Hermes/LiteLLM-CC pipeline
+  # has been live-smoked against more of the roster.
+  models: [gpt-oss-20b]
+  harnesses: [opencode]
+  # >=5 per (model, harness, task) cell -- physical harness runs are noisy
+  # (real subprocess, real timing, real tool-call variance); replicate_n is
+  # the LOGICAL repeat axis (rides in run_n), orthogonal to attempt_id (the
+  # PHYSICAL-execution axis, rides in condition) -- see b8_harness.py.
+  replicates: 5
+  ctx: 32768
+  kv: q8_0
+  # Per-run budgets an execute() call enforces. wall_clock_s is plumbed
+  # straight into the adapter's own timeout (OpenCodeAdapter's
+  # `wall_clock_s` constructor arg overrides its per-task budgets.
+  # wall_clock_s fallback). tokens/steps are recorded here for provenance
+  # and future enforcement -- the OpenCode adapter interface (Task 4) does
+  # not yet accept a token/step cutoff of its own; each task manifest's own
+  # `budgets.steps`/`budgets.tokens` (llmtest.harness.tasks.B8Task) are the
+  # authoritative per-task figures today.
+  budgets:
+    wall_clock_s: 180
+    tokens: 4000
+    steps: 20
+  # In-Sandbox execution seam (see b8_harness.py module docstring's SANDBOX
+  # SEAM note + llmtest.harness.sandbox): OpenCode runs on the HOST today
+  # because the pinned sandbox image has no Node runtime. Flipping this to
+  # true before that image exists makes execute() raise NotImplementedError
+  # loudly rather than silently keep running on the host.
+  sandbox:
+    enabled: false

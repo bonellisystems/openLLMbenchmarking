@@ -1,0 +1,407 @@
+"""Tests for Battery 8 -- real agent-harness execution + its additive row
+identity (execution_provenance_sha / attempt_id / replicate_n).
+
+Mirrors test_b6.py's / test_b7.py's `FakeStore`/`_stub_ctx`-injected-ctx
+pattern -- no live harness process, no live endpoint, no Docker anywhere in
+this file: `execute()` is exercised entirely through the `ctx.b8_adapters` /
+`ctx.b8_run_oracle` / `ctx.b8_attempt_id` seams `llmtest/batteries/
+b8_harness.py` defines for exactly this purpose.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from llmtest import batteries, schema
+from llmtest.batteries import b8_fixtures as b8f
+from llmtest.batteries.b8_harness import (
+    B8Harness, _base_condition, _execution_provenance_sha, _full_condition,
+)
+from llmtest.harness.base import MockHarnessAdapter
+from llmtest.harness.trace import TraceEvent
+from llmtest.registry import load_config
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeStore:
+    """Fake store for plan() tests -- no seeded rows."""
+    def iter_rows(self):
+        return []
+
+
+def _stub_ctx(tmp_path, cfg, *, adapter=None, run_oracle_result=(True, "stub-pass"),
+             attempt_id=None):
+    """ctx with every B8 execute() seam wired to a controllable stand-in:
+    a stub ServerManager/EndpointHandle (never makes a real HTTP call --
+    the injected adapter never touches it either), an injected
+    MockHarnessAdapter (no real harness subprocess), a controllable
+    run_oracle result (no Docker), and an optional fixed attempt_id."""
+    class StubHandle:
+        session_id = "s-stub"
+        base_url = "http://127.0.0.1:9/"
+        normalized_config = {"ctx": 32768, "kv_dtype": "q8_0"}
+
+    class StubMgr:
+        def request_endpoint(self, *a, **k):
+            return StubHandle()
+
+    kwargs = dict(cfg=cfg, root=tmp_path, server_manager=lambda: StubMgr(),
+                 b8_run_oracle=lambda task, workspace, root=".": run_oracle_result)
+    if adapter is not None:
+        kwargs["b8_adapters"] = {"opencode": adapter}
+    if attempt_id is not None:
+        kwargs["b8_attempt_id"] = attempt_id
+    return SimpleNamespace(**kwargs)
+
+
+def _mock_adapter(*, version_str="mock-1.0", terminal_status="completed",
+                  tokens_prompt=120, tokens_completion=80, subagent_spawned="no"):
+    events = [TraceEvent(kind="turn"),
+             TraceEvent(kind="tool_call", payload={"tool": "bash_exec"}),
+             TraceEvent(kind="tool_result", payload={"status": "completed"}),
+             TraceEvent(kind="turn")]
+
+    class _Versioned(MockHarnessAdapter):
+        def version(self) -> str:
+            return version_str
+
+    return _Versioned(scripted_events=events, terminal_status=terminal_status,
+                      tokens_prompt=tokens_prompt, tokens_completion=tokens_completion,
+                      subagent_spawned=subagent_spawned)
+
+
+def _first_item(cfg, model_id=None, store=None):
+    model_id = model_id or cfg.suite["b8"]["models"][0]
+    items = B8Harness().plan(cfg, store or FakeStore(), model_filter=model_id)
+    assert items, "plan() produced no WorkItems -- fixtures/config missing?"
+    return items[0]
+
+
+# --- Battery registry -------------------------------------------------------
+
+
+def test_battery_8_registers():
+    b = batteries.get(8)
+    assert isinstance(b, B8Harness)
+    assert b.id == 8
+
+
+# --- suite.yaml wiring -------------------------------------------------------
+
+
+def test_suite_yaml_has_b8_block_and_condition_additions():
+    cfg = load_config(ROOT)
+    assert "b8" in cfg.suite
+    assert cfg.suite["b8"]["replicates"] >= 5
+    assert cfg.suite["b8"]["models"]
+    assert cfg.suite["b8"]["harnesses"]
+    for k in ("harness", "task", "attempt_id", "execution_provenance_sha"):
+        assert k in cfg.suite["condition_order"]
+    assert "B8" in cfg.suite["condition_vocab"]["cond"]
+
+
+# --- Battery.plan() -----------------------------------------------------------
+
+
+def test_plan_item_count_matches_models_x_harnesses_x_tasks_x_replicates():
+    """Step-1 assertion #1: plan() item count == len(models) x len(harnesses)
+    x len(tasks) x replicates."""
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    tasks = b8f.load_tasks(ROOT)
+    assert tasks, "no suite/b8_harness/task-*.yaml fixtures found"
+
+    items = B8Harness().plan(cfg, FakeStore())
+    expected = len(b8cfg["models"]) * len(b8cfg["harnesses"]) * len(tasks) * b8cfg["replicates"]
+    assert expected > 0
+    assert len(items) == expected
+
+    for item in items:
+        assert item.battery == 8
+        assert item.task_id.startswith("b8.")
+        assert 1 <= item.run_n <= b8cfg["replicates"]
+
+
+def test_plan_model_filter():
+    cfg = load_config(ROOT)
+    model_id = cfg.suite["b8"]["models"][0]
+    items = B8Harness().plan(cfg, FakeStore(), model_filter=model_id)
+    assert items
+    assert {i.model_id for i in items} == {model_id}
+
+
+def _seed_full_condition(order, harness_name, task_id):
+    return schema.canonical_condition(
+        {"cond": "B8", "harness": harness_name, "task": task_id,
+         "attempt_id": "seed-attempt", "execution_provenance_sha": "0" * 64}, order)
+
+
+def test_plan_resume_skips_already_recorded_replicates():
+    """Resume/dedup lives in plan() for B8 (see b8_harness.py module
+    docstring's RESUME note) -- unlike B1/B6/B7, a B8 WorkItem's row_id
+    never matches its own eventual row's row_id (attempt_id/exec_sha are
+    stamped only at execute() time), so run_cmd.py's row_id-membership
+    resume check is a structural no-op for this battery; plan() itself
+    must be the thing that skips already-recorded replicate_ns."""
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    order = cfg.suite["condition_order"]
+    model_id = b8cfg["models"][0]
+    harness_name = b8cfg["harnesses"][0]
+    task = b8f.load_tasks(ROOT)[0]
+    task_id = f"b8.{task.id}"
+
+    full_condition = _seed_full_condition(order, harness_name, task.id)
+    seeded_rows = [
+        {"model_id": model_id, "task_id": task_id, "condition": full_condition,
+         "run_n": n, "row_id": f"seed-{n}"}
+        for n in (1, 2, 3)
+    ]
+
+    class SeededStore:
+        def iter_rows(self):
+            return seeded_rows
+
+    items = B8Harness().plan(cfg, SeededStore(), model_filter=model_id)
+    matching = [i for i in items if i.task_id == task_id]
+    assert sorted(i.run_n for i in matching) == list(range(4, b8cfg["replicates"] + 1))
+
+
+def test_plan_force_bumps_one_run_n_beyond_existing():
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    order = cfg.suite["condition_order"]
+    model_id = b8cfg["models"][0]
+    harness_name = b8cfg["harnesses"][0]
+    task = b8f.load_tasks(ROOT)[0]
+    task_id = f"b8.{task.id}"
+
+    full_condition = _seed_full_condition(order, harness_name, task.id)
+    seeded_rows = [
+        {"model_id": model_id, "task_id": task_id, "condition": full_condition,
+         "run_n": n, "row_id": f"seed-{n}"}
+        for n in (1, 2, 3)
+    ]
+
+    class SeededStore:
+        def iter_rows(self):
+            return seeded_rows
+
+    items = B8Harness().plan(cfg, SeededStore(), model_filter=model_id, force=True)
+    matching = [i for i in items if i.task_id == task_id]
+    assert len(matching) == 1
+    assert matching[0].run_n == 4
+
+
+# --- Battery.execute() ---------------------------------------------------------
+
+
+def test_execute_produces_schema_valid_row(tmp_path):
+    """Step-1 assertion #2: execute() with an injected MockHarnessAdapter (+
+    a controllable run_oracle completion) produces a schema-valid row,
+    battery==8, needs_judging==False, metrics populated from the Trace."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status="completed", tokens_prompt=120,
+                            tokens_completion=80, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter, run_oracle_result=(True, "stub-pass"),
+                    attempt_id="attempt-fixed")
+
+    rows = B8Harness().execute(item, ctx)
+    assert len(rows) == 1
+    row = rows[0]
+
+    errs = schema.validate_row(row)
+    assert errs == [], errs
+    assert row["battery"] == 8
+    assert row["needs_judging"] is False
+    assert row["status"] == "ok"
+    assert row["run_n"] == item.run_n
+
+    assert row["metrics"]["completion"] is True
+    assert row["metrics"]["steps"] == 2               # 2 "turn" events scripted
+    assert row["metrics"]["tokens_prompt"] == 120
+    assert row["metrics"]["tokens_completion"] == 80
+    assert row["metrics"]["terminal_status"] == "completed"
+    assert row["metrics"]["subagent_spawned"] == "no"
+
+    assert adapter.calls == ["setup", "run", "teardown"]
+
+    parts = dict(p.split("=", 1) for p in row["condition"].split(";"))
+    assert parts["attempt_id"] == "attempt-fixed"
+    assert len(parts["execution_provenance_sha"]) == 64
+    assert parts["harness"] == "opencode"
+
+
+def test_execute_completion_false_when_oracle_fails(tmp_path):
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status="completed")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter,
+                    run_oracle_result=(False, "out-of-bounds edit: sneaky.sh"),
+                    attempt_id="attempt-fixed")
+
+    row = B8Harness().execute(item, ctx)[0]
+    assert row["metrics"]["completion"] is False
+    assert schema.validate_row(row) == []
+
+
+def test_execute_different_attempt_ids_never_collide(tmp_path):
+    """Step-1 assertion #3 (append-only invariant): same cell, two different
+    attempt_ids -> different row_id."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+
+    ctx_a = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-A")
+    ctx_b = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-B")
+
+    row_a = B8Harness().execute(item, ctx_a)[0]
+    row_b = B8Harness().execute(item, ctx_b)[0]
+
+    assert row_a["row_id"] != row_b["row_id"]
+    assert row_a["condition"] != row_b["condition"]
+    # everything else about the cell is identical -- only attempt_id differs
+    assert row_a["task_id"] == row_b["task_id"]
+    assert row_a["model_id"] == row_b["model_id"]
+    assert row_a["run_n"] == row_b["run_n"]
+
+
+def test_execute_same_attempt_id_reproduces_same_row_id(tmp_path):
+    """The flip side of the append-only invariant: replaying the SAME
+    attempt_id under the same harness/profile/prompt must reproduce the
+    SAME row_id -- exec_sha has no timestamp/randomness in its inputs."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+
+    ctx1 = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-same")
+    ctx2 = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-same")
+
+    row1 = B8Harness().execute(item, ctx1)[0]
+    row2 = B8Harness().execute(item, ctx2)[0]
+
+    assert row1["row_id"] == row2["row_id"]
+    assert row1["condition"] == row2["condition"]
+
+
+def test_execute_execution_provenance_sha_changes_when_harness_version_changes(tmp_path):
+    """Step-1 assertion #4 (integration level): execution_provenance_sha
+    changes when the (mock) harness version() changes, with attempt_id held
+    fixed so the effect is isolated to the version change alone."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+
+    ctx1 = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(version_str="opencode-v1"),
+                     attempt_id="attempt-fixed")
+    ctx2 = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(version_str="opencode-v2"),
+                     attempt_id="attempt-fixed")
+
+    row1 = B8Harness().execute(item, ctx1)[0]
+    row2 = B8Harness().execute(item, ctx2)[0]
+
+    parts1 = dict(p.split("=", 1) for p in row1["condition"].split(";"))
+    parts2 = dict(p.split("=", 1) for p in row2["condition"].split(";"))
+    assert parts1["execution_provenance_sha"] != parts2["execution_provenance_sha"]
+    assert row1["row_id"] != row2["row_id"]
+
+
+def test_execution_provenance_sha_changes_when_harness_version_changes_unit():
+    """Same assertion as above, at the unit level -- calls
+    _execution_provenance_sha directly rather than round-tripping through
+    execute()."""
+    common = dict(litellm_version="", server_profile={"flags": {}, "template_sha": "x" * 64},
+                 rendered_prompt="do the thing")
+    sha_a = _execution_provenance_sha(harness_version="opencode-0.1.0", **common)
+    sha_b = _execution_provenance_sha(harness_version="opencode-0.2.0", **common)
+    assert sha_a != sha_b
+    assert len(sha_a) == len(sha_b) == 64
+
+
+def test_execution_provenance_sha_deterministic_for_same_inputs():
+    kwargs = dict(harness_version="opencode-0.1.0", litellm_version="",
+                 server_profile={"flags": {"ctx": 32768}, "template_sha": "y" * 64},
+                 rendered_prompt="do the thing")
+    assert _execution_provenance_sha(**kwargs) == _execution_provenance_sha(**kwargs)
+
+
+def test_execute_raises_notimplementederror_when_sandbox_enabled(tmp_path):
+    """Sandbox seam: flipping suite.yaml b8.sandbox.enabled to true before a
+    Node-capable Sandbox image exists must fail loudly, not silently keep
+    running on the host."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    cfg.suite["b8"]["sandbox"]["enabled"] = True
+    ctx = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-fixed")
+
+    with pytest.raises(NotImplementedError):
+        B8Harness().execute(item, ctx)
+
+
+# --- condition helpers --------------------------------------------------------
+
+
+def test_base_condition_omits_attempt_and_exec_sha():
+    cfg = load_config(ROOT)
+    order = cfg.suite["condition_order"]
+    condition = _base_condition(order, "opencode", "edit-01")
+    parts = dict(p.split("=", 1) for p in condition.split(";"))
+    assert parts == {"cond": "B8", "harness": "opencode", "task": "edit-01"}
+
+
+def test_full_condition_includes_attempt_and_exec_sha():
+    cfg = load_config(ROOT)
+    order = cfg.suite["condition_order"]
+    condition = _full_condition(order, "opencode", "edit-01", "att-1", "f" * 64)
+    parts = dict(p.split("=", 1) for p in condition.split(";"))
+    assert parts["attempt_id"] == "att-1"
+    assert parts["execution_provenance_sha"] == "f" * 64
+
+
+# --- Regression: compute_row_id additivity (Step-1 assertion #5) -------------
+
+
+def test_regression_known_b1_b6_row_ids_unchanged():
+    """A B8 touch to config/suite.yaml's condition_order/condition_vocab
+    must NEVER change what compute_row_id returns for B1/B6 (or any other
+    pre-existing battery) -- canonical_condition only emits keys present in
+    the caller's own `parts` dict, so appending harness/task/attempt_id/
+    execution_provenance_sha to condition_order is inert for every battery
+    that never puts those keys in its parts. These two digests are pinned
+    literals (fully self-contained inputs, not loaded from live
+    config/fixtures) computed against llmtest.schema.compute_row_id BEFORE
+    this task's changes landed -- if this test ever fails, compute_row_id's
+    hashing algorithm itself changed, which must never happen silently."""
+    b6_row_id = schema.compute_row_id(
+        suite_version="suite-v2.0.0", model_id="gpt-oss-20b",
+        quant_sha256="4e4f9cd88d6456e4f389e7262eca4a8d565211e2b22ece9ca7a8556168ff3c66",
+        battery=6, task_id="b6.scratch-01",
+        fixture_sha="a" * 64,
+        condition="runtime=fork;spec=ngram32;kv=q8;ctx=32k;cond=B6", run_n=1)
+    assert b6_row_id == "fd856a152b2863ce0e93984b07f4a25e2b18d50feb794506bf1f6191cd0f9432"
+
+    b1_row_id = schema.compute_row_id(
+        suite_version="suite-v2.0.0", model_id="gpt-oss-20b",
+        quant_sha256="4e4f9cd88d6456e4f389e7262eca4a8d565211e2b22ece9ca7a8556168ff3c66",
+        battery=1, task_id="b1.coding.short.01",
+        fixture_sha="b" * 64,
+        condition="runtime=fork;spec=ngram32;kv=q8;ctx=32k;cond=B1", run_n=1)
+    assert b1_row_id == "d73d39811df299d7510538fe75ef9e994f86609e0023c7225768026f4975b66d"
+
+
+def test_regression_real_b6_fixture_row_id_unchanged_by_condition_order_growth():
+    """Same idea, but against the REAL, currently-loaded suite.yaml/registry
+    -- proves growing condition_order for B8 didn't perturb an actual B6
+    plan()-computed row_id (B6's condition parts never include the new
+    keys, so canonical_condition's output -- and therefore compute_row_id's
+    -- is unaffected)."""
+    from llmtest.batteries.b6_agenticcoding import B6AgenticCoding
+
+    cfg = load_config(ROOT)
+    items = B6AgenticCoding().plan(cfg, FakeStore(), model_filter="gpt-oss-20b")
+    assert items
+    item = items[0]
+    assert "harness=" not in item.condition
+    assert "attempt_id=" not in item.condition
+    assert "execution_provenance_sha=" not in item.condition

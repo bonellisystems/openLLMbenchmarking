@@ -57,6 +57,8 @@ def get(battery_id: int) -> Battery:
             from llmtest.batteries import b6_agenticcoding  # noqa: F401
         elif battery_id == 7:
             from llmtest.batteries import b7_harnessmatrix  # noqa: F401
+        elif battery_id == 8:
+            from llmtest.batteries import b8_harness  # noqa: F401
     if battery_id not in _REGISTRY:
         raise KeyError(f"unknown battery {battery_id}")
     return _REGISTRY[battery_id]()
