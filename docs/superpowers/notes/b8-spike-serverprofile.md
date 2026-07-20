@@ -64,3 +64,39 @@ not gpt-oss harmony), project-standard flags (`-ngl 99 -c 40960 --jinja -fa on
 
 Relaunch endpoint (Qwen3-Coder) when resuming:
 `bonsai/bin/llama-server.exe -m bonsai/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf -ngl 99 -c 40960 --jinja -fa on --spec-type ngram-mod --spec-ngram-mod-n-match 32 --cache-ram 0 --cache-type-k q8_0 --cache-type-v q8_0 --host 127.0.0.1 --port 8080`
+
+## Update 3 — CORRECTION + fuller diagnosis (2026-07-20)
+**Correcting Update 2's "environment-blocked stream hang" — that conclusion was wrong.**
+A test-script bug (`{ …; echo "CREATED"; } || echo "no file"` — the `||` guards the always-
+succeeding final `echo`, not `cat`) produced false "CREATED" reports; `ls -la` shows **no
+hello.txt was ever actually created** in any OpenCode run. Re-diagnosed properly:
+
+**Solidly established (evidence):**
+1. **OpenCode headless basic path WORKS.** `opencode models` → exit 0 (lists local models);
+   a **non-tool** `opencode run "reply READY"` → exit 0, returns "READY" (full harness → provider
+   → LLM round-trip). So bootstrap/config/plugins/LLM-call are fine.
+2. **Server-side tool-calling WORKS, including streaming.** A `stream:true` curl with one `write`
+   tool emitted **10 `"tool_calls"` deltas, zero XML-as-content** — llama-server reassembles
+   parsed OpenAI tool_calls over SSE. gpt-oss harmony template also loads clean.
+3. **Required headless config:** `permission: {edit/bash/webfetch: "allow"}` in opencode.json
+   (headless has no TTY; the write tool is otherwise gated).
+
+**NOT established — the real open item:**
+- **No `opencode run` reliably executed a tool end-to-end.** Tool-requiring runs were
+  intermittent: some reached the model (13–14 k-token agentic prompt processed), some produced
+  `<function=write>` XML **as assistant text** (Qwen3-Coder), some timed out with no server
+  traffic. Net: **end-to-end tool execution through OpenCode headless is currently unreliable**,
+  and the failures are not yet isolated to one reproducible cause (candidates: streaming
+  tool-argument reassembly in `@ai-sdk/openai-compatible`, model/template tool-format vs the
+  parser, OpenCode headless run-lifecycle, permission schema validity for v1.2.15).
+
+## Verdict (final for this session)
+- **Server profile: SOLVED** — one llama-server config (`-c 40960`, `--jinja -fa on`, q8 KV)
+  serves parsed OpenAI tool_calls (streaming) for standard-format models.
+- **OpenCode-direct harness: PROMISING but NOT yet confirmed working** — basic + server-side
+  proven; end-to-end tool exec needs focused debugging that this hotspot environment blocks
+  (no reliable OpenCode-docs access; can't cross-check the provider's stream tool-arg handling).
+- Recommend the **definitive harness validation run on a rented Blackwell** (datacenter network,
+  where the assessment + gpt-oss blob live, per spec §2.10) — not on the hotspot. The LiteLLM
+  proxy path (§2.0 spike 0.1) may also resolve the streaming tool-arg question and is worth
+  trying first there.
