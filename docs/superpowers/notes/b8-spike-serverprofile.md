@@ -100,3 +100,40 @@ hello.txt was ever actually created** in any OpenCode run. Re-diagnosed properly
   where the assessment + gpt-oss blob live, per spec §2.10) — not on the hotspot. The LiteLLM
   proxy path (§2.0 spike 0.1) may also resolve the streaming tool-arg question and is worth
   trying first there.
+
+## Update 4 — OpenCode spike 0.2 DEFINITIVE PASS (2026-07-20)
+Earlier "unreliable" verdict was a TEST-SCRIPT artifact (a `{...}||echo` bug that always
+printed "CREATED") + a missing permission config. Corrected + re-tested properly:
+
+**PASS — OpenCode drives the local model end-to-end, executes tools, writes correct content.**
+`opencode run "Create hello.txt containing HELLO_FROM_OPENCODE" -m local/gpt-oss-20b` →
+exit 0, `write` tool `status=started`, **file created with exact content** `HELLO_FROM_OPENCODE`.
+
+### Required config (the actual fix)
+- `opencode.json`: `"permission": {"edit":"allow","bash":"allow","webfetch":"allow"}` — headless
+  `opencode run` has no TTY; without this the write tool blocks on approval and the run hangs.
+- Endpoint: prism `llama-server -c 40960` (OpenCode requests `max_tokens:32000` by default),
+  `--jinja -fa on`, q8 KV. **gpt-oss-20b (harmony)** parses cleanly; Qwen3-Coder emitted
+  `<function=write>` as TEXT under OpenCode's agentic prompt (harmony is the reliable anchor).
+
+### Trace source (for the Task-4 adapter) — robust to hangs
+`--format json` buffers to stdout and yields NOTHING on a kill. Use OpenCode's **sqlite store**
+`~/.local/share/opencode/opencode.db` instead (survives kills):
+- `session` (correlate by `directory`==workspace + newest `time_created`).
+- `message.data` JSON: `role`, `tokens{input,output,reasoning}`, `finish`, `modelID`.
+- `part.data` JSON by `type`: **`step-start`** = turn boundary (`steps` = count) · **`tool`**
+  `{callID, tool, state{status: completed|error|running, input, output}}` = tool_call+tool_result
+  · `text`/`reasoning` = assistant output · `tool="task"` = subagent_spawn.
+
+### Intermittency (not a blocker)
+gpt-oss-20b (a reasoning model) sometimes reasons past a short timeout → the run hangs and is
+killed. This is a legitimate B8 MEASUREMENT (budget→kill→`terminal_status`), and the sqlite
+store still holds the partial trace. The adapter enforces budgets and maps a kill to
+`killed`/`budget-exceeded`.
+
+### Scope note for Task 4 (local build)
+OpenCode is a **Node** CLI; the Phase-1 sandbox image (`nvidia/cuda:base`) has no Node, so
+running the harness INSIDE the sandbox needs a Node-capable image (deferred to the Blackwell
+run). Task-4 local scope: adapter logic + sqlite→Trace mapping + fault-injection unit tests
+(mocked, no live harness) + a HOST-based live smoke on a trivial write task (bash minimized).
+In-sandbox harness execution + realistic tasks = Blackwell/Phase-2-proper.
