@@ -237,6 +237,10 @@ def test_execute_produces_schema_valid_row(tmp_path):
 
 
 def test_execute_completion_false_when_oracle_fails(tmp_path):
+    """Also covers the coordinator's Minor #1: the oracle's failure detail
+    (WHY run_oracle rejected the run) must not be discarded -- Task 8
+    (first-failure classification) reads it from det_checks.oracle.detail,
+    not just the bare completion bool in metrics."""
     cfg = load_config(ROOT)
     item = _first_item(cfg)
     adapter = _mock_adapter(terminal_status="completed")
@@ -247,6 +251,48 @@ def test_execute_completion_false_when_oracle_fails(tmp_path):
     row = B8Harness().execute(item, ctx)[0]
     assert row["metrics"]["completion"] is False
     assert schema.validate_row(row) == []
+    assert row["det_checks"]["oracle"]["pass"] is False
+    assert row["det_checks"]["oracle"]["detail"] == "out-of-bounds edit: sneaky.sh"
+
+
+def test_execute_completion_true_still_carries_oracle_detail(tmp_path):
+    """Flip side: a passing oracle's detail (e.g. a stub-pass reason) is
+    threaded through too, not just the failure case."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status="completed")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter,
+                    run_oracle_result=(True, "PASS"), attempt_id="attempt-fixed")
+
+    row = B8Harness().execute(item, ctx)[0]
+    assert row["det_checks"]["oracle"]["pass"] is True
+    assert row["det_checks"]["oracle"]["detail"] == "PASS"
+
+
+@pytest.mark.parametrize("terminal_status", ["killed", "infra-error", "budget-exceeded"])
+def test_execute_handles_non_completed_terminal_status(tmp_path, terminal_status):
+    """Coordinator's Minor #2: killed/infra-error/budget-exceeded are legal
+    Trace.terminal_status values (llmtest.harness.trace.
+    VALID_TERMINAL_STATUSES) and execute() passes trace.terminal_status
+    straight through with no branching -- but nothing pinned that a
+    non-"completed" status still produces a schema-valid row instead of
+    crashing. A real budget-exceeding/killed harness run is exactly the
+    case B8 most needs to measure (reasoning models regularly run long),
+    so this must not raise."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status=terminal_status, tokens_prompt=50,
+                            tokens_completion=0, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter,
+                    run_oracle_result=(False, f"terminal_status={terminal_status}"),
+                    attempt_id="attempt-fixed")
+
+    row = B8Harness().execute(item, ctx)[0]
+    assert schema.validate_row(row) == []
+    assert row["battery"] == 8
+    assert row["metrics"]["terminal_status"] == terminal_status
+    assert row["metrics"]["completion"] is False
+    assert row["det_checks"]["oracle"]["detail"] == f"terminal_status={terminal_status}"
 
 
 def test_execute_different_attempt_ids_never_collide(tmp_path):

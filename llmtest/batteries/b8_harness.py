@@ -298,7 +298,7 @@ class B8Harness(Battery):
             adapter.teardown()
 
         run_oracle_fn = _resolve_run_oracle(ctx)
-        completed, _detail = run_oracle_fn(task, workspace, root=root)
+        completed, oracle_detail = run_oracle_fn(task, workspace, root=root)
 
         attempt_id = _resolve_attempt_id(ctx)
         harness_version = adapter.version()
@@ -330,6 +330,12 @@ class B8Harness(Battery):
             session_id=getattr(endpoint, "session_id", "unknown"),
             sampling={"harness": harness_name, "wall_clock_s": budgets.get("wall_clock_s")},
             needs_judging=False,
+            # Surfaces WHY run_oracle rejected a run (e.g. "out-of-bounds
+            # edit: sneaky.sh", "protected file tampered: NOTES.md", an
+            # oracle timeout) on every completion=False row -- Task 8
+            # (first-failure classification) reads this, not just the bare
+            # completed bool in metrics below.
+            det_checks={"oracle": {"pass": completed, "detail": oracle_detail}},
             metrics={
                 "completion": completed,
                 "steps": trace.steps,
