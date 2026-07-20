@@ -1,0 +1,76 @@
+id: bugfix-01
+shape: bugfix
+task_version: "1.0.0"
+prompt: |
+  The following bash script is supposed to define `average` and
+  `summarize` functions, but it is broken. Symptom: `bash -n stats.sh`
+  (syntax check only) immediately reports a syntax error before anything
+  else -- the script never even runs.
+
+      #!/bin/bash
+      average() {
+          local sum=0
+          for n in "$@"; do
+              sum=$((sum + n))
+          done
+          echo $((sum / $#))
+
+      summarize() {
+          local avg
+          avg="$(average "$@")"
+          echo "summary: avg=$avg"
+      }
+
+  Find the bug and return the complete corrected `stats.sh`. Only modify
+  `stats.sh`.
+allowed_tools: [read_file, write_file, bash_exec]
+budgets: {wall_clock_s: 180, tokens: 3000, steps: 8}
+setup_repo:
+  stats.sh: |
+    #!/bin/bash
+    average() {
+        local sum=0
+        for n in "$@"; do
+            sum=$((sum + n))
+        done
+        echo $((sum / $#))
+
+    summarize() {
+        local avg
+        avg="$(average "$@")"
+        echo "summary: avg=$avg"
+    }
+  oracle_test.sh: |
+    #!/bin/bash
+    set -e
+    bash -n stats.sh
+    out="$(bash -c 'source stats.sh; summarize 2 4 6')"
+    if [ "$out" != "summary: avg=4" ]; then
+      echo "FAIL: summarize 2 4 6 -> '$out' (want 'summary: avg=4')"
+      exit 1
+    fi
+    out2="$(bash -c 'source stats.sh; summarize 10 20')"
+    if [ "$out2" != "summary: avg=15" ]; then
+      echo "FAIL: summarize 10 20 -> '$out2' (want 'summary: avg=15')"
+      exit 1
+    fi
+    echo PASS
+protected_paths: [oracle_test.sh]
+allowed_diff_paths: [stats.sh]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && bash oracle_test.sh"]
+notes: |
+  Shape: bugfix -- reuses suite/b6_agenticcoding/task-06.yaml's exact bug
+  SHAPE (a single missing block terminator causes an immediate parse-time
+  failure before any output: B6's Python `def summarize(nums)` missing its
+  trailing `:`, here `average()`'s missing closing `}`), ported to bash
+  because the pinned sandbox image (nvidia/cuda:12.6.2-base-ubuntu24.04,
+  Task 2) has no Python interpreter -- only bash/perl/coreutils. `bash -n`
+  is the direct behavioral analog of B6's `compile()`-only syntax check
+  (parses without executing). Beyond syntax, the oracle actually SOURCES
+  the fixed file and calls `summarize` with two different inputs and checks
+  the real computed average -- so a "fix" that makes the file parse by
+  deleting/no-op-ing summarize() (which would still satisfy a naive
+  compile-only check) fails here, mirroring B6's regression_signals
+  no-op detector.

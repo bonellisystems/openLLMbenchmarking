@@ -36,9 +36,12 @@ Constraints), each mapped to a concrete Docker mechanism:
     copies the workspace (symlinks copied AS symlinks, never dereferenced
     host-side -- see its docstring) to a fresh temp dir and runs the
     oracle against it from a distinct, read-only mount (`/oracle`, never
-    `/workspace`) in its own throwaway container -- deliberately decoupled
-    from any `B8Task` type (that lands in Task 3); the oracle here is a
-    generic command list or callable.
+    `/workspace`) in its own throwaway container, hardened the same as the
+    main sandbox container (`--cap-drop ALL`, `--security-opt
+    no-new-privileges`, `--cpus`/`--memory`) since it runs agent-produced
+    code (Task 3's oracles compile/run the post-run workspace) --
+    deliberately decoupled from any `B8Task` type (that lands in Task 3);
+    the oracle here is a generic command list or callable.
 
 Runs the pinned image by `image@digest` (not just the tag) for immutability.
 Shells out to the `docker` CLI via `subprocess` rather than the docker-py
@@ -260,6 +263,10 @@ class Sandbox:
                     "docker", "run", "--rm",
                     "--read-only", "--tmpfs", "/tmp",
                     "--network", "none",
+                    "--cpus", str(self.cpus),
+                    "--memory", self.mem_limit,
+                    "--cap-drop", "ALL",
+                    "--security-opt", "no-new-privileges",
                     "-v", f"{copy_root}:{ORACLE_MOUNT}:ro",
                     self._image_ref,
                 ] + list(oracle)

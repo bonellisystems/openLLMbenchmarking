@@ -36,6 +36,43 @@ def test_default_pin_loaded_from_runtime_pins_yaml():
     )
 
 
+def test_hidden_validate_command_oracle_container_is_hardened(tmp_path, monkeypatch):
+    """Task 3 hardening (forward-noted in the Task 2 report): the throwaway
+    oracle container in hidden_validate's command-oracle path must carry
+    the same hardening flags as the main `__enter__` container, since it
+    now runs agent-produced code (Task 3's oracles compile/run the post-run
+    workspace). Monkeypatches subprocess.run to capture the `docker run`
+    argv without needing a real container -- runs everywhere, no Docker
+    required, matching the brief's "test the hard-cap paths without
+    Docker" intent applied to this hardening specifically."""
+    ws = tmp_path / "ws-hardening"
+    ws.mkdir()
+    (ws / "f.txt").write_text("x")
+
+    captured = {}
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if argv[:2] == ["docker", "run"]:
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    sbx = Sandbox(workspace=ws, cpus=1.5, mem_limit="1g")
+    ok, detail = sbx.hidden_validate(["true"], ws)
+    assert ok is True, detail
+
+    argv = captured.get("argv")
+    assert argv is not None, "docker run was never invoked"
+    assert "--cap-drop" in argv and argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert ("--security-opt" in argv
+            and argv[argv.index("--security-opt") + 1] == "no-new-privileges")
+    assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "1.5"
+    assert "--memory" in argv and argv[argv.index("--memory") + 1] == "1g"
+
+
 @requires_docker
 def test_workspace_write_persists_and_outside_write_fails(tmp_path):
     ws = tmp_path / "ws"
