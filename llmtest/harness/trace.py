@@ -4,8 +4,11 @@ produced it.
 
 `steps` is DERIVED, not supplied directly: it is the count of `"turn"`
 events in `events`. Build a `Trace` via `Trace.from_events(...)` rather than
-the dataclass constructor directly so that derivation happens in one place.
-Token counts are stored fields populated by the adapter (e.g. from scripted
+the dataclass constructor directly so that derivation happens in one place;
+`__post_init__` enforces the invariant either way, so direct construction
+with a mismatched `steps` raises `ValueError` rather than silently
+constructing an inconsistent `Trace`. Token counts are stored fields
+populated by the adapter (e.g. from scripted
 data in `MockHarnessAdapter`, or a real harness's own accounting in later
 tasks) -- this module has no opinion on where they come from.
 """
@@ -54,6 +57,11 @@ class Trace:
             raise ValueError(
                 f"invalid Trace.subagent_spawned: {self.subagent_spawned!r} "
                 f"(must be one of {sorted(VALID_SUBAGENT_SPAWNED)})")
+        expected = sum(1 for e in self.events if e.kind == "turn")
+        if self.steps != expected:
+            raise ValueError(
+                f"steps ({self.steps}) must equal the number of 'turn' events "
+                f"({expected})")
 
     @classmethod
     def from_events(cls, events: list[TraceEvent], terminal_status: str,
@@ -61,8 +69,11 @@ class Trace:
                      subagent_spawned: str) -> Trace:
         """Construct a `Trace`, deriving `steps` as the count of `"turn"`
         events in `events`. This is the intended construction path -- the
-        dataclass constructor itself requires `steps` explicitly but callers
-        should go through here so derivation stays in one place."""
+        dataclass constructor itself requires `steps` explicitly, but
+        `__post_init__` enforces that it matches the turn-event count
+        regardless of construction path, so going through here (rather than
+        computing `steps` by hand) is the easiest way to satisfy the
+        invariant."""
         steps = sum(1 for e in events if e.kind == "turn")
         return cls(events=events, terminal_status=terminal_status, steps=steps,
                     tokens_prompt=tokens_prompt, tokens_completion=tokens_completion,

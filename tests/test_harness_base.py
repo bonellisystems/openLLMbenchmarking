@@ -64,3 +64,17 @@ def test_invalid_subagent_spawned_raises_value_error():
 def test_invalid_event_kind_raises_value_error():
     with pytest.raises(ValueError):
         TraceEvent(kind="not_a_kind", payload={})
+
+
+def test_direct_construction_with_mismatched_steps_raises_value_error():
+    events = _scripted_events()  # 2 "turn" events
+    with pytest.raises(ValueError):
+        Trace(events=events, terminal_status="completed", steps=999,
+              tokens_prompt=0, tokens_completion=0, subagent_spawned="no")
+
+
+def test_direct_construction_with_correct_steps_succeeds():
+    events = _scripted_events()  # 2 "turn" events
+    trace = Trace(events=events, terminal_status="completed", steps=2,
+                   tokens_prompt=0, tokens_completion=0, subagent_spawned="no")
+    assert trace.steps == 2
