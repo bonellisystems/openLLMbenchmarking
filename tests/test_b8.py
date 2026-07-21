@@ -124,17 +124,21 @@ def test_suite_yaml_has_b8_block_and_condition_additions():
     assert "B8" in cfg.suite["condition_vocab"]["cond"]
 
 
-def test_suite_yaml_b8_tasks_allowlist_is_the_six_real_python_task_ids():
-    """The real suite.yaml (task-b8expand) restricts a live run to exactly
-    the 6 real Python task ids -- the 5 bash placeholder manifests
-    (task-01..05.yaml) are loaded (load_b8_tasks still returns them) but
-    never crossed by plan()."""
+def test_suite_yaml_b8_tasks_allowlist_is_the_five_hard_python_task_ids():
+    """The real suite.yaml (task-b8hard) restricts a live run to exactly
+    the 5 HARDER Python task ids -- the original 6 real Python tasks
+    (task-06..11.yaml) and the 5 bash placeholder manifests
+    (task-01..05.yaml) are all loaded (load_b8_tasks still returns them)
+    but never crossed by plan(). The original 6 are all solved 30/30 by
+    gpt-oss-20b and don't discriminate; the 5 harder manifests
+    (task-12..16.yaml) are calibrated so a capable 20B model is genuinely
+    expected to fail some fraction of the time."""
     cfg = load_config(ROOT)
     allowlist = cfg.suite["b8"].get("tasks")
-    assert allowlist, "suite.yaml b8.tasks allowlist must be set (task-b8expand)"
+    assert allowlist, "suite.yaml b8.tasks allowlist must be set (task-b8hard)"
     assert set(allowlist) == {
-        "py-bugfix-01", "py-fromscratch-01", "py-edit-01",
-        "py-multifile-01", "py-toolheavy-01", "py-fromscratch-02",
+        "py-hard-bugfix-01", "py-hard-algo-01", "py-hard-edge-01",
+        "py-hard-multifile-01", "py-hard-toolheavy-01",
     }
     all_task_ids = {task.id for task in b8f.load_tasks(ROOT)}
     for task_id in allowlist:

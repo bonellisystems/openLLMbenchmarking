@@ -48,9 +48,16 @@ _NEW_PY_TASK_IDS = ("py-bugfix-01", "py-fromscratch-01", "py-edit-01")
 # (task-09..11.yaml) -- multi-file/tool-heavy in Python for the first
 # time, plus a harder from-scratch task.
 _B8EXPAND_NEW_PY_TASK_IDS = ("py-multifile-01", "py-toolheavy-01", "py-fromscratch-02")
-# All 6 real Python task manifests -- also exactly suite.yaml's b8.tasks
-# allowlist (see test_suite_yaml_b8_tasks_allowlist_is_the_six_python_ids
-# in test_b8.py).
+# All 6 original real Python task manifests. NOTE (task-b8hard): these are
+# no longer suite.yaml's b8.tasks allowlist -- that now targets 5 HARDER
+# manifests instead (task-12..16.yaml, ids `py-hard-*`; see
+# test_suite_yaml_b8_tasks_allowlist_is_the_five_hard_python_task_ids in
+# test_b8.py) because these original 6 are all solved 30/30 by gpt-oss-20b
+# and don't discriminate. This tuple is still exactly right for THIS
+# file's own purpose: exercising the task-b8local/task-b8expand real-run
+# enablement plumbing against manifests known to load/materialize/execute
+# correctly, independent of whatever suite.yaml's allowlist currently
+# targets.
 _ALL_PY_TASK_IDS = _NEW_PY_TASK_IDS + _B8EXPAND_NEW_PY_TASK_IDS
 
 

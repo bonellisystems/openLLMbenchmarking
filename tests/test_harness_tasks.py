@@ -45,14 +45,18 @@ def _load(task_id: str) -> t.B8Task:
 
 
 def test_load_b8_tasks_returns_all_manifests_with_required_fields():
-    """11 manifests total (task-b8expand, was 8): the original 5 bash
+    """16 manifests total (task-b8hard, was 11): the original 5 bash
     placeholders (task-01..05.yaml), the first 3 real Python task
-    manifests (task-06..08.yaml, task-b8local), plus 3 more real Python
-    task manifests (task-09..11.yaml, task-b8expand) covering the
-    multi-file/tool-heavy shapes in Python for the first time and a
-    harder from-scratch task."""
+    manifests (task-06..08.yaml, task-b8local), 3 more real Python task
+    manifests (task-09..11.yaml, task-b8expand) covering the multi-file/
+    tool-heavy shapes in Python for the first time and a harder
+    from-scratch task, plus 5 HARDER Python manifests (task-12..16.yaml,
+    task-b8hard, ids `py-hard-*`) calibrated so a capable 20B model is
+    genuinely expected to fail some fraction of the time -- the original 6
+    real Python tasks are all solved 30/30 by gpt-oss-20b and don't
+    discriminate."""
     all_tasks = t.load_b8_tasks(ROOT)
-    assert len(all_tasks) == 11
+    assert len(all_tasks) == 16
     assert [x.id for x in all_tasks] == sorted(x.id for x in all_tasks)
     for task in all_tasks:
         assert task.id
@@ -239,6 +243,17 @@ def test_toolheavy_overfit_attack_has_no_oracle_file_to_read(tmp_path):
 _ALL_PY_TASK_IDS = ("py-bugfix-01", "py-fromscratch-01", "py-edit-01",
                     "py-multifile-01", "py-toolheavy-01", "py-fromscratch-02")
 
+# The 5 HARDER Python manifests (task-b8hard, task-12..16.yaml) -- kept as
+# a separate tuple (rather than folded into _ALL_PY_TASK_IDS) so the
+# generic "correct solution passes" / "sys.exit(0) gaming rejected" tests
+# below can be parametrized over ALL 11 real Python tasks at once
+# (_ALL_PY_TASK_IDS + _HARD_PY_TASK_IDS) while task-specific "known-flawed
+# solution fails" tests (further below, one per hard task -- the flawed
+# solutions differ in shape per task, so a single generic parametrization
+# doesn't fit) can target just these 5.
+_HARD_PY_TASK_IDS = ("py-hard-bugfix-01", "py-hard-algo-01", "py-hard-edge-01",
+                     "py-hard-multifile-01", "py-hard-toolheavy-01")
+
 # task id -> {relative path: correct file content}. A REFERENCE solution
 # for each task, mirroring its own `notes:`/prompt contract -- used only by
 # this test file, never shipped to an agent.
@@ -326,6 +341,176 @@ _CORRECT_SOLUTIONS = {
             "    return tokens\n"
         ),
     },
+    "py-hard-bugfix-01": {
+        "search_utils.py": (
+            "def first_occurrence(nums, target):\n"
+            "    lo, hi = 0, len(nums) - 1\n"
+            "    result = -1\n"
+            "    while lo <= hi:\n"
+            "        mid = (lo + hi) // 2\n"
+            "        if nums[mid] == target:\n"
+            "            result = mid\n"
+            "            hi = mid - 1\n"
+            "        elif nums[mid] < target:\n"
+            "            lo = mid + 1\n"
+            "        else:\n"
+            "            hi = mid - 1\n"
+            "    return result\n"
+        ),
+    },
+    "py-hard-algo-01": {
+        "lru_cache.py": (
+            "from collections import OrderedDict\n\n\n"
+            "class LRUCache:\n"
+            "    def __init__(self, capacity):\n"
+            "        self.capacity = capacity\n"
+            "        self._data = OrderedDict()\n\n"
+            "    def get(self, key):\n"
+            "        if key not in self._data:\n"
+            "            return -1\n"
+            "        self._data.move_to_end(key)\n"
+            "        return self._data[key]\n\n"
+            "    def put(self, key, value):\n"
+            "        if key in self._data:\n"
+            "            self._data.move_to_end(key)\n"
+            "        self._data[key] = value\n"
+            "        if len(self._data) > self.capacity:\n"
+            "            self._data.popitem(last=False)\n"
+        ),
+    },
+    "py-hard-edge-01": {
+        "rankfind.py": (
+            "def second_largest_unique(nums):\n"
+            "    largest = second = None\n"
+            "    for x in nums:\n"
+            "        if largest is None or x > largest:\n"
+            "            if largest is not None and largest != x:\n"
+            "                second = largest\n"
+            "            largest = x\n"
+            "        elif x != largest and (second is None or x > second):\n"
+            "            second = x\n"
+            "    return second\n"
+        ),
+    },
+    "py-hard-multifile-01": {
+        "checkout.py": (
+            "from pricing import apply_discount, apply_tax\n\n\n"
+            "def checkout_total(cart, flat_discount, tax_rate):\n"
+            "    subtotal = cart.subtotal()\n"
+            "    discounted = apply_discount(subtotal, flat_discount)\n"
+            "    total = apply_tax(discounted, tax_rate)\n"
+            "    return round(total, 2)\n"
+        ),
+    },
+    "py-hard-toolheavy-01": {
+        "letter_grade.py": (
+            "def letter_grade(score):\n"
+            "    if score >= 90:\n"
+            "        return \"A\"\n"
+            "    elif score >= 80:\n"
+            "        return \"B\"\n"
+            "    elif score >= 70:\n"
+            "        return \"C\"\n"
+            "    elif score >= 60:\n"
+            "        return \"D\"\n"
+            "    else:\n"
+            "        return \"F\"\n"
+        ),
+    },
+}
+
+# Known-FLAWED reference solutions for the 5 hard tasks -- each is a
+# plausible-but-wrong solution missing exactly the edge the task's hidden
+# oracle traps (see each manifest's own `notes:` for the full rationale).
+# For py-hard-bugfix-01/py-hard-multifile-01/py-hard-toolheavy-01 this
+# happens to be identical to the manifest's own shipped (unfixed)
+# setup_repo content -- the simplest, most direct proof that "doing
+# nothing" is correctly rejected. py-hard-algo-01/py-hard-edge-01 are
+# from-scratch tasks (no setup_repo file to leave unfixed), so their
+# flawed variants are constructed explicitly below.
+_HARD_FLAWED_SOLUTIONS = {
+    "py-hard-bugfix-01": {
+        "search_utils.py": (
+            "def first_occurrence(nums, target):\n"
+            "    lo, hi = 0, len(nums) - 1\n"
+            "    result = -1\n"
+            "    while lo <= hi:\n"
+            "        mid = (lo + hi) // 2\n"
+            "        if nums[mid] == target:\n"
+            "            result = mid\n"
+            "            lo = mid + 1\n"  # BUG: should be `hi = mid - 1`
+            "        elif nums[mid] < target:\n"
+            "            lo = mid + 1\n"
+            "        else:\n"
+            "            hi = mid - 1\n"
+            "    return result\n"
+        ),
+    },
+    "py-hard-algo-01": {
+        "lru_cache.py": (
+            "from collections import OrderedDict\n\n\n"
+            "class LRUCache:\n"
+            "    def __init__(self, capacity):\n"
+            "        self.capacity = capacity\n"
+            "        self._data = OrderedDict()\n\n"
+            "    def get(self, key):\n"
+            "        if key not in self._data:\n"
+            "            return -1\n"
+            "        self._data.move_to_end(key)\n"
+            "        return self._data[key]\n\n"
+            "    def put(self, key, value):\n"
+            # BUG: never move_to_end() an EXISTING key -- put() doesn't
+            # refresh recency, only get() does.
+            "        self._data[key] = value\n"
+            "        if len(self._data) > self.capacity:\n"
+            "            self._data.popitem(last=False)\n"
+        ),
+    },
+    "py-hard-edge-01": {
+        "rankfind.py": (
+            "def second_largest_unique(nums):\n"
+            # BUG: sentinel 0 instead of None -- breaks on empty/single/
+            # all-duplicate input (returns 0, not None) and on all-negative
+            # input (no value ever exceeds the 0 sentinel).
+            "    largest = second = 0\n"
+            "    for x in nums:\n"
+            "        if x > largest:\n"
+            "            second = largest\n"
+            "            largest = x\n"
+            "        elif x > second and x != largest:\n"
+            "            second = x\n"
+            "    return second\n"
+        ),
+    },
+    "py-hard-multifile-01": {
+        "checkout.py": (
+            "from pricing import apply_discount, apply_tax\n\n\n"
+            "def checkout_total(cart, flat_discount, tax_rate):\n"
+            "    subtotal = cart.subtotal()\n"
+            # BUG: tax applied to the full subtotal BEFORE the discount is
+            # subtracted -- wrong order per the stated business rule.
+            "    taxed = apply_tax(subtotal, tax_rate)\n"
+            "    total = apply_discount(taxed, flat_discount)\n"
+            "    return round(total, 2)\n"
+        ),
+    },
+    "py-hard-toolheavy-01": {
+        "letter_grade.py": (
+            "def letter_grade(score):\n"
+            # BUG: `>` instead of `>=` on every boundary -- a curved score
+            # of exactly 90/80/70/60 gets the WRONG (one-lower) grade.
+            "    if score > 90:\n"
+            "        return \"A\"\n"
+            "    elif score > 80:\n"
+            "        return \"B\"\n"
+            "    elif score > 70:\n"
+            "        return \"C\"\n"
+            "    elif score > 60:\n"
+            "        return \"D\"\n"
+            "    else:\n"
+            "        return \"F\"\n"
+        ),
+    },
 }
 
 
@@ -346,7 +531,7 @@ def _run_oracle_locally(task_id: str, extra_files: dict, tmp_path: Path):
                           capture_output=True, text=True, timeout=30)
 
 
-@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS)
+@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS + _HARD_PY_TASK_IDS)
 def test_python_oracle_passes_for_a_genuinely_correct_solution(task_id, tmp_path):
     """Regression: the subprocess-isolation hardening must not break a
     real pass -- a genuinely correct solution still gets PASS/exit 0."""
@@ -355,7 +540,7 @@ def test_python_oracle_passes_for_a_genuinely_correct_solution(task_id, tmp_path
     assert "PASS" in r.stdout
 
 
-@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS)
+@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS + _HARD_PY_TASK_IDS)
 def test_python_oracle_rejects_sys_exit_zero_at_import_solution(task_id, tmp_path):
     """The gaming vector task-b8expand closes (codex review Important #1's
     Python analog of the bash `source is_prime.sh; exit 0` finding): a
@@ -376,6 +561,29 @@ def test_python_oracle_rejects_sys_exit_zero_at_import_solution(task_id, tmp_pat
         f"{task_id}: a sys.exit(0)-at-import solution was WRONGLY marked "
         f"complete -- stdout={r.stdout!r}")
     assert "PASS" not in r.stdout
+
+
+# -- hard tasks (task-b8hard): known-flawed solutions must FAIL ------------
+# The load-bearing proof that these 5 manifests actually DISCRIMINATE (the
+# whole point of authoring them): a genuinely correct solution passes
+# (covered generically above, `_ALL_PY_TASK_IDS + _HARD_PY_TASK_IDS`
+# includes all 5), and a PLAUSIBLE-BUT-WRONG solution -- each missing
+# exactly the edge its manifest's `notes:` documents -- fails. Hermetic
+# (no Docker): runs the oracle's own subprocess-isolated logic directly
+# against the host python, same as `_run_oracle_locally`'s other callers.
+
+
+@pytest.mark.parametrize("task_id", _HARD_PY_TASK_IDS)
+def test_hard_task_known_flawed_solution_is_rejected(task_id, tmp_path):
+    r = _run_oracle_locally(task_id, _HARD_FLAWED_SOLUTIONS[task_id], tmp_path)
+    assert r.returncode != 0, (
+        f"{task_id}: known-flawed solution was WRONGLY marked complete -- "
+        f"stdout={r.stdout!r}")
+    assert "PASS" not in r.stdout
+    # The failure detail must actually name a discriminating case (not just
+    # "something failed") -- this is the text that becomes
+    # det_checks.oracle.detail for the first-failure classifier.
+    assert "FAIL:" in r.stdout
 
 
 # -- run_oracle: precedence / anti-gaming (the brief's Step-1 scenario) -----
@@ -882,3 +1090,165 @@ def fmt_result(x):
 """)
     completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
     assert completed is False, detail
+
+
+# -- run_oracle: task-b8hard, the 5 harder Python manifests, REAL container -
+# Full end-to-end proof (real Docker container, real Sandbox.hidden_validate,
+# real protected-hash + diff-constraint hard caps) for every one of the 5
+# harder manifests: a genuinely correct fix passes, and the manifest's own
+# documented flawed/unfixed variant fails -- the strongest form of the
+# "oracle discriminates" proof the task-b8hard build calls for, on top of
+# the hermetic (no-Docker) versions above.
+
+
+@requires_docker
+def test_run_oracle_true_for_correct_hard_bugfix_workspace(tmp_path):
+    task = _load("py-hard-bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "search_utils.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-bugfix-01"]["search_utils.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_bugfix_unfixed_workspace(tmp_path):
+    """No edit at all -- the last-occurrence bug (duplicates) is still
+    present."""
+    task = _load("py-hard-bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False, detail
+
+
+@requires_docker
+def test_run_oracle_true_for_correct_hard_algo_workspace(tmp_path):
+    task = _load("py-hard-algo-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "lru_cache.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-algo-01"]["lru_cache.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_algo_workspace_missing_put_mru_update(tmp_path):
+    """The `put()`-on-an-existing-key-must-refresh-recency edge, via the
+    REAL container path -- the flaw the hermetic parametrized test above
+    also covers, re-verified end to end."""
+    task = _load("py-hard-algo-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "lru_cache.py").write_bytes(
+        _HARD_FLAWED_SOLUTIONS["py-hard-algo-01"]["lru_cache.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False, detail
+
+
+@requires_docker
+def test_run_oracle_true_for_correct_hard_edge_workspace(tmp_path):
+    task = _load("py-hard-edge-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "rankfind.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-edge-01"]["rankfind.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_edge_sentinel_zero_workspace(tmp_path):
+    task = _load("py-hard-edge-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "rankfind.py").write_bytes(
+        _HARD_FLAWED_SOLUTIONS["py-hard-edge-01"]["rankfind.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False, detail
+
+
+@requires_docker
+def test_run_oracle_true_for_correct_hard_multifile_workspace(tmp_path):
+    task = _load("py-hard-multifile-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "checkout.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-multifile-01"]["checkout.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_multifile_unfixed_workspace(tmp_path):
+    """No edit at all -- checkout.py still applies tax before the
+    discount."""
+    task = _load("py-hard-multifile-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_multifile_protected_tamper_even_with_correct_fix(tmp_path):
+    """The "real protected_paths fixture" requirement: cart.py/pricing.py
+    are agent-visible but hash-checked. A gamer correctly fixes checkout.py
+    (behavior would genuinely pass) but also tampers with the protected
+    pricing.py -- the hard cap must catch that BEFORE the behavioral
+    oracle ever runs, mirroring the brief's Step-1 scenario."""
+    task = _load("py-hard-multifile-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "checkout.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-multifile-01"]["checkout.py"].encode("utf-8"))
+    (ws / "pricing.py").write_bytes(b"tampered\n")
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False
+    assert "protected" in detail.lower()
+    assert "pricing.py" in detail
+
+
+@requires_docker
+def test_run_oracle_true_for_correct_hard_toolheavy_workspace(tmp_path):
+    task = _load("py-hard-toolheavy-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "letter_grade.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-toolheavy-01"]["letter_grade.py"].encode("utf-8"))
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_toolheavy_unfixed_workspace(tmp_path):
+    """No edit at all -- the `>`-vs-`>=` boundary bug is still present."""
+    task = _load("py-hard-toolheavy-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_hard_toolheavy_decoy_tamper_even_with_correct_fix(tmp_path):
+    """The decoy-protection requirement this manifest is specifically
+    designed to exercise: `curve.py` is an unusual-looking but CORRECT
+    file (the deliberate red herring) and is agent-visible/protected. A
+    model that correctly fixes `letter_grade.py` (behavior would
+    genuinely pass) but ALSO "fixes" the decoy `curve.py` must still be
+    rejected by the hard cap, before the behavioral oracle ever runs --
+    exactly the failure mode a model that doesn't trust the instructions
+    ("only modify letter_grade.py") would hit."""
+    task = _load("py-hard-toolheavy-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "letter_grade.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-hard-toolheavy-01"]["letter_grade.py"].encode("utf-8"))
+    (ws / "curve.py").write_bytes(b"tampered\n")
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is False
+    assert "protected" in detail.lower()
+    assert "curve.py" in detail

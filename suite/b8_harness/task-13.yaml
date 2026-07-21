@@ -1,0 +1,195 @@
+id: py-hard-algo-01
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Write a NEW Python file `lru_cache.py` (the repo has no such file yet)
+  that defines a class `LRUCache` implementing a fixed-capacity
+  Least-Recently-Used cache with this EXACT contract:
+
+  - `LRUCache(capacity)` -- `capacity` is a positive integer (>= 1): the
+    maximum number of key/value pairs the cache may hold at once.
+  - `get(key)` -- if `key` is present, return its value AND mark `key` as
+    the MOST recently used entry. If `key` is not present, return `-1`
+    (and do not change anything about the cache's contents or order).
+  - `put(key, value)` -- insert or update the value for `key`, and mark
+    `key` as the MOST recently used entry (this applies whether `key` is
+    brand new OR already present -- updating an EXISTING key's value is
+    ALSO a "use" of that key, not just `get`). If `key` is new and adding
+    it would push the cache over `capacity`, first evict the LEAST
+    recently used entry (the one that has gone the longest without a
+    `get` or a `put`) to make room. Updating an EXISTING key's value must
+    NEVER trigger an eviction (the number of distinct keys stored does not
+    change).
+
+  Worked example (capacity 2):
+
+      cache = LRUCache(2)
+      cache.put(1, 1)
+      cache.put(2, 2)
+      cache.get(1)      # -> 1; key 1 is now the most-recently-used
+      cache.put(3, 3)   # over capacity -> evicts key 2 (the LRU one)
+      cache.get(2)      # -> -1 (evicted)
+      cache.put(4, 4)   # evicts key 1
+      cache.get(1)      # -> -1
+      cache.get(3)      # -> 3
+      cache.get(4)      # -> 4
+
+  Create exactly one new file, `lru_cache.py`. Do not create or edit any
+  other file (including `NOTES.md`).
+allowed_tools: [write_file, bash_exec]
+budgets: {wall_clock_s: 240, tokens: 5000, steps: 12}
+setup_repo:
+  NOTES.md: |
+    # lru_cache
+
+    See the task prompt for the exact contract `lru_cache.py` must satisfy:
+    class `LRUCache` with `get(key)`/`put(key, value)`, fixed capacity,
+    least-recently-used eviction. Both `get` AND `put` on an existing key
+    count as a "use" that refreshes its recency.
+oracle_files:
+  oracle_test.py: |
+    import subprocess
+    import sys
+    from collections import OrderedDict
+
+    # Each case: (capacity, ops) where ops is a list of
+    #   ("put", key, value)  -- no expected output
+    #   ("get", key)          -- expected output computed live from the reference
+    CASES = [
+        (2, [("put", 1, 1), ("put", 2, 2), ("get", 1), ("put", 3, 3), ("get", 2),
+             ("put", 4, 4), ("get", 1), ("get", 3), ("get", 4)]),
+        (1, [("put", 1, 1), ("get", 1), ("put", 2, 2), ("get", 1), ("get", 2)]),
+        (2, [("put", 1, 1), ("put", 2, 2), ("put", 1, 10), ("put", 3, 3),
+             ("get", 2), ("get", 1), ("get", 3)]),
+        (2, [("put", 1, 1), ("put", 2, 2), ("get", 1), ("get", 1), ("get", 1),
+             ("put", 3, 3), ("get", 2), ("get", 1), ("get", 3)]),
+        (3, [("put", 1, 1), ("put", 2, 2), ("put", 3, 3), ("get", 2), ("put", 4, 4),
+             ("get", 1), ("get", 2), ("get", 3), ("get", 4), ("put", 5, 5),
+             ("get", 2), ("get", 5)]),
+        (2, [("get", 1), ("put", 1, 1), ("get", 1), ("get", 2)]),
+    ]
+
+
+    class _RefLRU:
+        """A known-correct reference implementation (stdlib OrderedDict),
+        used ONLY to compute expected output live -- no hand-transcribed
+        expected values to get wrong."""
+
+        def __init__(self, capacity):
+            self.capacity = capacity
+            self.od = OrderedDict()
+
+        def get(self, key):
+            if key not in self.od:
+                return -1
+            self.od.move_to_end(key)
+            return self.od[key]
+
+        def put(self, key, value):
+            if key in self.od:
+                self.od.move_to_end(key)
+            self.od[key] = value
+            if len(self.od) > self.capacity:
+                self.od.popitem(last=False)
+
+
+    def _expected(capacity, ops):
+        ref = _RefLRU(capacity)
+        out = []
+        for op in ops:
+            if op[0] == "put":
+                ref.put(op[1], op[2])
+            else:
+                out.append(ref.get(op[1]))
+        return out
+
+
+    def _run(capacity, ops):
+        """Build and execute the op sequence against the CANDIDATE
+        `lru_cache.LRUCache` inside a FRESH subprocess -- never imported
+        into this checker's own process (see py-multifile-01's oracle
+        notes for the full anti-gaming rationale: a module-level
+        `sys.exit(0)` in the candidate can only kill its own throwaway
+        subprocess, leaving no matching stdout, so the comparison below
+        still correctly fails)."""
+        lines = ["from lru_cache import LRUCache", f"cache = LRUCache({capacity!r})"]
+        for op in ops:
+            if op[0] == "put":
+                lines.append(f"cache.put({op[1]!r}, {op[2]!r})")
+            else:
+                lines.append(f"print(cache.get({op[1]!r}))")
+        code = "\n".join(lines) + "\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        for capacity, ops in CASES:
+            want = _expected(capacity, ops)
+            r = _run(capacity, ops)
+            got_lines = r.stdout.strip().splitlines()
+            want_lines = [str(x) for x in want]
+            if got_lines != want_lines:
+                print(f"FAIL: capacity={capacity} ops={ops} -> {got_lines!r} "
+                      f"(want {want_lines!r}); exit={r.returncode} "
+                      f"stderr={r.stderr.strip()!r}")
+                sys.exit(1)
+        print("PASS")
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [NOTES.md]
+allowed_diff_paths: [lru_cache.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (HARD tier, task-b8hard) -- a small, precise data
+  structure (LRU cache) implemented correctly from an exact spec, per the
+  "algorithmic from-scratch" slot of the harder-B8 build brief. Unlike
+  py-fromscratch-01/02 (a linear-scan palindrome check, a recursive-
+  descent expression evaluator), the difficulty here is state/ordering
+  correctness across a SEQUENCE of operations, not a single pure-function
+  call -- a solution can look plausible and pass a simple two-step smoke
+  test while still getting the recency bookkeeping wrong.
+
+  THE TRAP (stated explicitly in the prompt/contract, not hidden -- the
+  difficulty is in IMPLEMENTING it correctly, not in guessing the spec):
+  `put` on an ALREADY-PRESENT key must also refresh its recency, exactly
+  like `get` does. A very natural (and wrong) simplification is to treat
+  `put` as "just write the value" and only wire up recency-tracking
+  (`move_to_end`, or equivalent) inside `get` -- this passes the most
+  common textbook LRU walkthrough (capacity exceeded by brand-new keys
+  only) but fails the moment an existing key is updated shortly before an
+  eviction decision. Case 3 in `oracle_test.py` isolates exactly this:
+  `put(1,1) put(2,2) put(1,10) put(3,3)` must evict key `2` (the true LRU
+  -- key `1` was refreshed by the `put(1,10)` update), not key `1`.
+
+  Verified empirically (task-b8hard authoring): a correct reference
+  (`OrderedDict`-backed, `move_to_end` on both `get` and an existing-key
+  `put`) passes every case; a flawed variant that only calls
+  `move_to_end` inside `get` (never inside `put`) fails exactly Case 3 --
+  `capacity=2 ops=[...put(1,10)...] -> ['2', '-1', '3']` (want `['-1',
+  '10', '3']`) -- proving the oracle discriminates on the intended edge,
+  not just on total breakage.
+
+  Ground truth computed LIVE by a reference `_RefLRU` class inside the
+  oracle (not hand-transcribed per-case literals) -- removes manual-
+  bookkeeping transcription risk from a stateful, multi-step scenario.
+
+  Hidden oracle, SUBPROCESS-ISOLATED from the start (mirrors every
+  existing Python B8 oracle): the candidate `LRUCache` is only ever
+  constructed and driven inside a FRESH `python3 -c "..."` subprocess per
+  case, never imported into this checker's own process -- a module-level
+  `sys.exit(0)` in `lru_cache.py` can only kill its own throwaway
+  subprocess (verified directly, task-b8hard authoring, against a
+  `sys.exit(0)`-at-import variant of the correct reference, which still
+  correctly fails). `oracle_test.py` lives in `oracle_files`, never
+  written into the agent's workspace. Stdlib only (`subprocess`, `sys`,
+  `collections.OrderedDict`) -- no pytest.
+
+  `lru_cache.py` does not exist in `setup_repo` at all -- only in
+  `allowed_diff_paths` (mirrors py-fromscratch-01/02's "this exact new
+  path may be created" convention). `NOTES.md` is the agent-VISIBLE
+  protected file exercising the hash-cap.

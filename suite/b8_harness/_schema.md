@@ -53,10 +53,46 @@ pass. Every Python oracle now runs the candidate solution in a FRESH
 `subprocess.run([sys.executable, ...])` per check and asserts on that
 subprocess's stdout from the outside — a `sys.exit(0)` can only kill its
 own throwaway subprocess, leaving no output to match, so the check still
-correctly fails. `config/suite.yaml`'s `b8.tasks` allowlist (additive)
-restricts a live `plan()` to exactly these 6 real Python task ids,
-excluding the 5 bash placeholders (task-01..05.yaml, left in place, not
-deleted) from the run.
+correctly fails.
+
+**Update (task-b8hard):** the 6 real Python manifests above (task-06..
+11.yaml) are all solved 30/30 by gpt-oss-20b in a live run — they don't
+discriminate. 5 more, HARDER Python manifests were added
+(task-12..16.yaml, ids `py-hard-bugfix-01`/`py-hard-algo-01`/
+`py-hard-edge-01`/`py-hard-multifile-01`/`py-hard-toolheavy-01`),
+calibrated so a capable 20B model is genuinely expected to land roughly
+40-80% completion on each — difficulty comes from CORRECTNESS/EDGE-CASE
+reasoning, never obscurity or hidden syntax:
+- `py-hard-bugfix-01` (shape `bugfix`) — a binary search whose matched-case
+  branch continues right instead of left, so it silently returns the
+  LAST occurrence of a duplicated target instead of the first; invisible
+  on any input without duplicate target values.
+- `py-hard-algo-01` (shape `from-scratch`) — an LRU cache; the trap is
+  that `put()` on an ALREADY-PRESENT key must also refresh recency, not
+  just `get()` (a very natural, wrong simplification only shows up right
+  before an eviction decision).
+- `py-hard-edge-01` (shape `from-scratch`) — second-largest-distinct-value;
+  traps the classic `sorted(nums)[-2]` (no dedup) and sentinel-`0`
+  (instead of `None`/`-inf`) naive approaches, both of which fail on
+  duplicates-at-the-top and all-negative/all-duplicate/empty input
+  respectively.
+- `py-hard-multifile-01` (shape `multi-file`) — a checkout system spanning
+  `cart.py`/`pricing.py` (both individually correct) and `checkout.py`
+  (which applies tax before the discount instead of after) — the bug is
+  an order-of-operations/interaction bug invisible from any single file.
+- `py-hard-toolheavy-01` (shape `tool-heavy`) — a 5-file grade reporter
+  where `curve.py` is an unusual-looking but fully CORRECT decoy, and the
+  real bug (a uniform `>` vs `>=` boundary bug) is in `letter_grade.py`.
+
+All 5 follow the exact same three-category schema and Python-oracle
+subprocess-isolation convention as task-06..11.yaml (each was verified,
+at authoring time, to pass a known-correct reference solution and fail a
+known-flawed one on the specific documented edge). `config/suite.yaml`'s
+`b8.tasks` allowlist (additive) now targets these 5 harder ids instead of
+the original 6 — both the original 6 real Python manifests and the 5
+bash placeholders (task-01..05.yaml) are left in place, not deleted, and
+still load via `load_b8_tasks`, just excluded from a live `plan()` by
+this allowlist.
 
 ## Two distinct anti-gaming mechanisms, both required
 

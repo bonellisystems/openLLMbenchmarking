@@ -1,0 +1,195 @@
+id: py-hard-bugfix-01
+shape: bugfix
+task_version: "1.0.0"
+prompt: |
+  The repo has one file, `search_utils.py`, containing a function that is
+  meant to satisfy this exact contract:
+
+      first_occurrence(nums, target) -- `nums` is a list of integers sorted
+      in NON-DECREASING order (it may contain duplicate values). Return the
+      index of the FIRST (left-most) occurrence of `target` in `nums`, or
+      -1 if `target` does not appear anywhere in `nums`.
+
+  E.g. `first_occurrence([1, 2, 2, 2, 3], 2)` must return `1` (the index of
+  the *first* `2`, not any other one), and `first_occurrence([5, 5, 5], 5)`
+  must return `0`.
+
+  The current implementation is a binary search that looks reasonable, and
+  it is valid Python (it runs fine and returns a plausible-looking answer
+  for many inputs) -- but it does NOT correctly satisfy the contract above
+  in every case. There is a real, non-obvious logic bug in it. Find the bug
+  and fix it so `first_occurrence` satisfies the contract exactly in every
+  case, including whenever `target` appears more than once in `nums`.
+
+  ```python
+  def first_occurrence(nums, target):
+      """Return the index of the first (left-most) occurrence of `target`
+      in `nums`, a list sorted in non-decreasing order. `nums` may contain
+      duplicate values. Return -1 if `target` is not present anywhere in
+      `nums`."""
+      lo, hi = 0, len(nums) - 1
+      result = -1
+      while lo <= hi:
+          mid = (lo + hi) // 2
+          if nums[mid] == target:
+              result = mid
+              lo = mid + 1
+          elif nums[mid] < target:
+              lo = mid + 1
+          else:
+              hi = mid - 1
+      return result
+  ```
+
+  Only modify `search_utils.py` -- do not create or edit any other file
+  (including `NOTES.md`).
+allowed_tools: [read_file, write_file, bash_exec]
+budgets: {wall_clock_s: 200, tokens: 4000, steps: 10}
+setup_repo:
+  search_utils.py: |
+    def first_occurrence(nums, target):
+        """Return the index of the first (left-most) occurrence of `target`
+        in `nums`, a list sorted in non-decreasing order. `nums` may contain
+        duplicate values. Return -1 if `target` is not present anywhere in
+        `nums`."""
+        lo, hi = 0, len(nums) - 1
+        result = -1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if nums[mid] == target:
+                result = mid
+                lo = mid + 1
+            elif nums[mid] < target:
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return result
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import subprocess
+    import sys
+
+    CASES = [
+        ([], 5),
+        ([5], 5),
+        ([5], 9),
+        ([1, 3, 5, 7, 9], 5),
+        ([1, 3, 5, 7, 9], 2),
+        ([1, 3, 5, 7, 9], 1),
+        ([1, 3, 5, 7, 9], 9),
+        ([2, 2, 2], 2),
+        ([1, 2, 2, 2, 3], 2),
+        ([2, 2, 2, 3, 4], 2),
+        ([0, 1, 2, 2, 2], 2),
+        ([4, 4, 4, 4, 4], 4),
+        ([-5, -3, -3, -3, -1], -3),
+        ([-5, -3, -1], -10),
+        ([-5, -3, -1], 10),
+        ([v for v in range(0, 500) for _ in range(2)], 250),
+        ([1, 1, 2, 3, 3, 3, 4, 5, 5], 3),
+        ([7, 7], 7),
+        ([7, 8], 7),
+        ([7, 8], 8),
+    ]
+
+
+    def _want(nums, target):
+        """Ground truth computed from stdlib `list.index`, which itself
+        returns the LEFT-MOST matching index -- no hand-transcribed
+        expected values to get wrong."""
+        return nums.index(target) if target in nums else -1
+
+
+    def _run(nums, target):
+        """Run `search_utils.first_occurrence(...)` in a FRESH subprocess
+        and return the completed process -- never `import search_utils`
+        into THIS process. A solution containing a module-level
+        `sys.exit(0)` (or one that monkeypatches this checker) can only
+        affect the throwaway subprocess, whose observable stdout is then
+        compared against the exact expected text; it cannot short-circuit
+        this oracle's own exit code the way an in-process `import` could."""
+        code = f"import search_utils\nprint(search_utils.first_occurrence({nums!r}, {target!r}))\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        for nums, target in CASES:
+            want = _want(nums, target)
+            r = _run(nums, target)
+            got = r.stdout.strip()
+            if got != str(want):
+                preview = nums if len(nums) <= 20 else f"<{len(nums)} items>"
+                print(f"FAIL: first_occurrence({preview}, {target}) -> {got!r} "
+                      f"(want {want!r}); exit={r.returncode} stderr={r.stderr.strip()!r}")
+                sys.exit(1)
+        print("PASS")
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [NOTES.md]
+allowed_diff_paths: [search_utils.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: bugfix (HARD tier, task-b8hard) -- the 6 existing real Python B8
+  tasks (task-06..11.yaml) are all solved 30/30 by gpt-oss-20b; this task
+  and its 4 siblings (task-13..16.yaml) are deliberately calibrated to be
+  genuinely failable (target ~40-80% completion for a capable 20B model),
+  with difficulty coming from CORRECTNESS/EDGE-CASE reasoning rather than
+  obscurity, per the "harder B8" build brief.
+
+  THE BUG (never stated in the prompt or in a code comment -- only the
+  CONTRACT is given, exactly like the shipped file's own docstring): the
+  planted implementation, on finding a match at `mid`, continues searching
+  the RIGHT half (`lo = mid + 1`) instead of the LEFT half (`hi = mid -
+  1`). Since it keeps overwriting `result` with every match found further
+  right before the loop ends, this makes it converge on the LAST
+  occurrence of `target`, not the first -- the exact opposite of the
+  stated contract. This is deliberately NOT a crash and NOT distinguishable
+  from a correct solution on any input where `target` occurs at most once
+  (first == last occurrence trivially) -- it only diverges on inputs with
+  DUPLICATE target values, which is exactly the edge the hidden oracle
+  hammers (`[2, 2, 2]`, `[1, 2, 2, 2, 3]`, `[2, 2, 2, 3, 4]`, `[0, 1, 2, 2,
+  2]`, `[4, 4, 4, 4, 4]`, a negative-number duplicate run, and a 1000-
+  element list with every value duplicated). A model that "tests" its fix
+  against a handful of no-duplicate examples (which is exactly what makes
+  this bug NON-obvious -- the buggy code already looks like it works) will
+  not catch this without either reasoning through the binary-search
+  invariant precisely or actually running a duplicate-containing case.
+
+  Verified empirically (task-b8hard authoring): a corrected reference
+  solution (`hi = mid - 1` on match) passes every case; the ORIGINAL
+  unfixed file (`lo = mid + 1` on match, i.e. the file exactly as shipped
+  above) fails on the very first duplicate case, `first_occurrence([2, 2,
+  2], 2)` -> `2` (want `0`) -- proving the oracle actually discriminates,
+  not just checks syntax.
+
+  Ground truth computed LIVE in the oracle via stdlib `nums.index(target)`
+  (which itself returns the left-most match) rather than hand-transcribed
+  literals -- removes manual-arithmetic transcription risk from the oracle
+  itself.
+
+  Hidden oracle, SUBPROCESS-ISOLATED from the start (mirrors every existing
+  Python B8 oracle -- task-b8expand hardening, `llmtest/harness/tasks.py`
+  module docstring / codex review Important #1): `search_utils` is never
+  `import`ed into this checker's own process; each case launches a fresh
+  `python3 -c "import search_utils; print(search_utils.first_occurrence(...))"`
+  subprocess and asserts on ITS stdout from the outside, so a module-level
+  `sys.exit(0)` planted in a candidate `search_utils.py` can only kill its
+  own throwaway subprocess (leaving no matching stdout), not this oracle's
+  exit code -- verified directly (task-b8hard authoring) against a
+  `sys.exit(0)`-at-import variant of the correct reference solution, which
+  still correctly fails. `oracle_test.py` lives in `oracle_files`, never
+  written into the agent's workspace by `materialize_repo`. Stdlib only
+  (`subprocess`, `sys`) -- no pytest, since `python:3.11-slim` doesn't have
+  it installed.
+
+  `NOTES.md` is the agent-VISIBLE protected file exercising the hash-cap
+  (Design Decision #1a), same convention as every other manifest.

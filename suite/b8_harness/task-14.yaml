@@ -1,0 +1,178 @@
+id: py-hard-edge-01
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Write a NEW Python file `rankfind.py` (the repo has no such file yet)
+  that defines a function `second_largest_unique(nums)` with this EXACT
+  contract:
+
+  - `nums` is a list of integers. It may be empty, may contain negative
+    numbers, may contain zero, and may contain duplicate values.
+  - Return the second-largest DISTINCT value that appears in `nums` --
+    i.e. the largest value strictly less than the overall maximum, among
+    the values that actually occur in `nums`.
+  - If `nums` has fewer than 2 DISTINCT values (this includes: `nums` is
+    empty, `nums` has exactly one element, or every element in `nums` is
+    equal to every other element), return `None`.
+
+  Examples:
+
+      >>> second_largest_unique([7, 7, 7, 5])
+      5
+      >>> second_largest_unique([1, 2, 3, 4, 5])
+      4
+      >>> second_largest_unique([5, 4, 3, 2, 1])
+      4
+      >>> second_largest_unique([5, 5, 5])
+      None
+      >>> second_largest_unique([])
+      None
+      >>> second_largest_unique([-1, -2, -3])
+      -2
+
+  Note the first example: the value `7` occurs three times and `5` occurs
+  once, but the answer is about DISTINCT values, not raw list positions --
+  `7` is the largest distinct value and `5` is the second-largest distinct
+  value, regardless of how many times `7` repeats.
+
+  Create exactly one new file, `rankfind.py`. Do not create or edit any
+  other file (including `NOTES.md`).
+allowed_tools: [write_file, bash_exec]
+budgets: {wall_clock_s: 200, tokens: 4000, steps: 10}
+setup_repo:
+  NOTES.md: |
+    # rankfind
+
+    See the task prompt for the exact contract `rankfind.py` must satisfy:
+    `second_largest_unique(nums)`, second-largest DISTINCT value or `None`
+    if fewer than 2 distinct values exist. Watch the edge cases: empty
+    input, a single element, all-duplicate input, negative numbers, and
+    zero.
+oracle_files:
+  oracle_test.py: |
+    import subprocess
+    import sys
+
+    CASES = [
+        [],
+        [5],
+        [7, 7, 7],
+        [7, 7, 7, 5],
+        [5, 7, 7, 7],
+        [-1, -2, -3],
+        [-5, -5, -1, -1],
+        [1, 2, 3, 4, 5],
+        [5, 4, 3, 2, 1],
+        [3, 3, 3, 8, 8],
+        [10 ** 18, 10 ** 18, 5],
+        [0, 0, 0],
+        [0, -1],
+        [3, 9],
+        [4, 4],
+        [1, 1, 1, 2, 2, 2],
+        [9, 9, 8, 8, 7],
+        [1, 1, 2, 2, 3],
+        [0, 0, -5, -5],
+        list(range(100)) + list(range(100)),
+        [-10 ** 9, -10 ** 9, -10 ** 9 + 1],
+    ]
+
+
+    def _want(nums):
+        """Ground truth computed live from `sorted(set(...))` -- no
+        hand-transcribed expected values to get wrong."""
+        distinct = sorted(set(nums), reverse=True)
+        if len(distinct) < 2:
+            return None
+        return distinct[1]
+
+
+    def _run(nums):
+        """Run `rankfind.second_largest_unique(...)` in a FRESH subprocess
+        and return the completed process -- never `import rankfind` into
+        THIS process. A solution containing a module-level `sys.exit(0)`
+        can only affect the throwaway subprocess, whose observable stdout
+        is then compared against the exact expected text; it cannot
+        short-circuit this oracle's own exit code the way an in-process
+        `import` could."""
+        code = f"import rankfind\nprint(rankfind.second_largest_unique({nums!r}))\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        for nums in CASES:
+            want = _want(nums)
+            r = _run(nums)
+            got = r.stdout.strip()
+            if got != str(want):
+                preview = nums if len(nums) <= 20 else f"<{len(nums)} items>"
+                print(f"FAIL: second_largest_unique({preview}) -> {got!r} "
+                      f"(want {want!r}); exit={r.returncode} stderr={r.stderr.strip()!r}")
+                sys.exit(1)
+        print("PASS")
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [NOTES.md]
+allowed_diff_paths: [rankfind.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (HARD tier, task-b8hard) -- the "edge-case trap"
+  slot of the harder-B8 build brief: the OBVIOUS naive one-liner solutions
+  each pass a happy-path smoke test but fail a specific, real trap:
+
+  - `sorted(nums)[-2]` (no dedup at all) fails `[7, 7, 7, 5]` -> returns
+    `7` (want `5`) -- the classic "duplicates at the top" trap.
+  - A hand-rolled single-pass tracker seeded with sentinel `largest =
+    second = 0` (instead of `None`/`-inf`) fails EVERY all-negative input
+    (`[-1, -2, -3]` -> returns `0`, want `-2`) because no negative value
+    ever exceeds the `0` sentinel -- the "negatives" trap -- and ALSO fails
+    the "fewer than 2 distinct values" cases (`[]`, `[5]`, `[7, 7, 7]`,
+    `[0, 0, 0]`) by returning `0` instead of `None`, since the sentinel
+    itself looks like a valid (wrong) answer -- the "empty/single/all-
+    duplicate" trap, made worse by the fact that `0` is also a legitimate
+    DATA value (`[0, 0, 0]` is indistinguishable from "never found
+    anything" under a `0` sentinel).
+  - Other traps covered: two-distinct-values-with-heavy-duplication
+    (`[3, 3, 3, 8, 8]`), already-ascending and already-descending input,
+    huge integers (`10**18`, no floating-point/precision shortcuts
+    tolerated), a 200-element list (every value 0..99 duplicated) so an
+    O(n^2) "for each value, count how many are strictly greater" approach
+    still must be exactly correct rather than approximately-plausible on a
+    small hand list, and a negative-number pair straddling a very large
+    magnitude (`-10**9` twice, then `-10**9 + 1`).
+
+  Verified empirically (task-b8hard authoring): a correct single-pass
+  reference (largest/second seeded with `None`, `is`-based distinctness
+  checks) passes every case; a flawed sentinel-`0` variant fails on the
+  very FIRST case, `second_largest_unique([])` -> `'0'` (want `None`) --
+  and would separately fail every all-negative/all-duplicate/zero-only
+  case too -- proving the oracle discriminates on the intended traps, not
+  just on total breakage.
+
+  Ground truth computed LIVE via `sorted(set(nums), reverse=True)[1]`
+  (guarded by the `< 2` length check) rather than hand-transcribed
+  literals -- removes manual-arithmetic transcription risk, especially for
+  the 200-element case.
+
+  Hidden oracle, SUBPROCESS-ISOLATED from the start (mirrors every
+  existing Python B8 oracle): `rankfind` is never `import`ed into this
+  checker's own process; each case launches a fresh `python3 -c "..."`
+  subprocess and asserts on ITS stdout from the outside -- a module-level
+  `sys.exit(0)` in `rankfind.py` can only kill its own throwaway
+  subprocess (verified directly, task-b8hard authoring, against a
+  `sys.exit(0)`-at-import variant of the correct reference, which still
+  correctly fails). `oracle_test.py` lives in `oracle_files`, never
+  written into the agent's workspace. Stdlib only (`subprocess`, `sys`) --
+  no pytest.
+
+  `rankfind.py` does not exist in `setup_repo` at all -- only in
+  `allowed_diff_paths`. `NOTES.md` is the agent-VISIBLE protected file
+  exercising the hash-cap, and it explicitly lists the edge-case
+  categories (without giving away which specific naive approaches fail
+  them) since the prompt's own contract is the fair, exact spec a genuinely
+  correct solution needs -- the hidden oracle is what actually enforces it.
