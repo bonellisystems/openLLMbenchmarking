@@ -335,10 +335,23 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".",
     allowed = set(task.allowed_diff_paths) | set(task.protected_shas)
     for dirpath, dirnames, filenames in os.walk(ws, followlinks=False):
         dirnames[:] = [d for d in dirnames
-                       if not os.path.islink(os.path.join(dirpath, d))]
+                       if not os.path.islink(os.path.join(dirpath, d))
+                       and d not in ("__pycache__", ".pytest_cache", ".mypy_cache")]
         for name in filenames:
             full = Path(dirpath) / name
             if full.is_symlink():
+                continue
+            # Transient tooling artifacts an agent's OWN test run auto-creates
+            # (Python bytecode is the common one -- `python solution.py` writes
+            # __pycache__/*.pyc into the workspace). These are never a meaningful
+            # edit; without this exclusion the diff-constraint false-flags a
+            # CORRECT solution as an "out-of-bounds edit" and reports a false
+            # task failure (B8 local-run finding, 2026-07-21: it dominated
+            # gpt-oss-20b's apparent failures, all "out-of-bounds edit:
+            # __pycache__/*.pyc"). Note: .pyc are excluded from the OUT-OF-BOUNDS
+            # walk only; protected_paths hash-checks (step a) still cover any
+            # protected source file, so this doesn't widen the gaming surface.
+            if name.endswith((".pyc", ".pyo")):
                 continue
             rel = full.relative_to(ws).as_posix()
             if rel in task.protected_shas:
