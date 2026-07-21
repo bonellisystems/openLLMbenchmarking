@@ -445,11 +445,15 @@ def test_execute_handles_non_completed_terminal_status(tmp_path, terminal_status
     """Coordinator's Minor #2: killed/infra-error/budget-exceeded are legal
     Trace.terminal_status values (llmtest.harness.trace.
     VALID_TERMINAL_STATUSES) and execute() passes trace.terminal_status
-    straight through with no branching -- but nothing pinned that a
-    non-"completed" status still produces a schema-valid row instead of
-    crashing. A real budget-exceeding/killed harness run is exactly the
-    case B8 most needs to measure (reasoning models regularly run long),
-    so this must not raise."""
+    straight through UNCHANGED whenever it is already non-"completed" (the
+    Wave 1a budget-enforcement branch only ever substitutes "budget-
+    exceeded" for a RAW "completed" status -- see
+    test_execute_killed_run_over_token_budget_keeps_killed_status below for
+    that overlap case) -- but nothing pinned that a non-"completed" status
+    still produces a schema-valid row instead of crashing. A real budget-
+    exceeding/killed harness run is exactly the case B8 most needs to
+    measure (reasoning models regularly run long), so this must not
+    raise."""
     cfg = load_config(ROOT)
     item = _first_item(cfg)
     adapter = _mock_adapter(terminal_status=terminal_status, tokens_prompt=50,
@@ -464,6 +468,125 @@ def test_execute_handles_non_completed_terminal_status(tmp_path, terminal_status
     assert row["metrics"]["terminal_status"] == terminal_status
     assert row["metrics"]["completion"] is False
     assert row["det_checks"]["oracle"]["detail"] == f"terminal_status={terminal_status}"
+
+
+# --- Wave 1a: token/step budget enforcement + the scoring contract -----------
+
+
+def test_execute_steps_over_budget_forces_completion_false(tmp_path):
+    """Wave 1a (B8 measurement-validity): steps/tokens budgets are now
+    ENFORCED, not just recorded -- a run that stumbles past its step budget
+    is a budget failure, credited as a completion NEVER, even when the
+    injected oracle says the task was solved (the exact "stumbled for 200
+    steps and got lucky" case the fix targets)."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    budget_steps = cfg.suite["b8"]["budgets"]["steps"]
+    over_steps = budget_steps + 3
+
+    events = [TraceEvent(kind="turn") for _ in range(over_steps)]
+    adapter = MockHarnessAdapter(scripted_events=events, terminal_status="completed",
+                                 tokens_prompt=100, tokens_completion=50,
+                                 subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter, run_oracle_result=(True, "stub-pass"),
+                    attempt_id="attempt-steps-over")
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert schema.validate_row(row) == []
+    assert row["metrics"]["completion"] is False
+    assert row["metrics"]["terminal_status"] == "budget-exceeded"
+    assert row["metrics"]["budget_exceeded"] is True
+    assert row["metrics"]["steps"] == over_steps
+    assert row["metrics"]["budget_steps"] == budget_steps
+    # The oracle's own verdict is still recorded honestly (det_checks is
+    # the RAW oracle result) -- only the row's own scoring `completion` is
+    # forced False by the budget check.
+    assert row["det_checks"]["oracle"]["pass"] is True
+
+    trace_path = tmp_path / "artifacts" / row["response_meta"]["trace_ref"]
+    restored = Trace.from_dict(json.loads(trace_path.read_text(encoding="utf-8")))
+    assert restored.terminal_status == "budget-exceeded"
+
+
+def test_execute_tokens_completion_over_budget_forces_completion_false(tmp_path):
+    """Same contract, for the COMPLETION-token budget (not tokens_prompt --
+    see suite.yaml's b8.budgets doc comment for why prompt tokens are
+    excluded)."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    budget_tokens = cfg.suite["b8"]["budgets"]["tokens"]
+    over_tokens = budget_tokens + 500
+
+    adapter = _mock_adapter(terminal_status="completed", tokens_prompt=13000,
+                            tokens_completion=over_tokens, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter, run_oracle_result=(True, "stub-pass"),
+                    attempt_id="attempt-tokens-over")
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert schema.validate_row(row) == []
+    assert row["metrics"]["completion"] is False
+    assert row["metrics"]["terminal_status"] == "budget-exceeded"
+    assert row["metrics"]["budget_exceeded"] is True
+    assert row["metrics"]["tokens_completion"] == over_tokens
+    assert row["metrics"]["budget_tokens_completion"] == budget_tokens
+
+    trace_path = tmp_path / "artifacts" / row["response_meta"]["trace_ref"]
+    restored = Trace.from_dict(json.loads(trace_path.read_text(encoding="utf-8")))
+    assert restored.terminal_status == "budget-exceeded"
+
+
+def test_execute_within_budget_completion_unaffected(tmp_path):
+    """A within-budget completed+oracle-pass run is unaffected by the Wave
+    1a enforcement -- completion=True, budget_exceeded=False,
+    terminal_status stays "completed" (never overridden) -- unchanged from
+    pre-Wave-1a behavior."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status="completed", tokens_prompt=120,
+                            tokens_completion=80, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter, run_oracle_result=(True, "stub-pass"),
+                    attempt_id="attempt-within-budget")
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert schema.validate_row(row) == []
+    assert row["metrics"]["completion"] is True
+    assert row["metrics"]["terminal_status"] == "completed"
+    assert row["metrics"]["budget_exceeded"] is False
+
+
+def test_execute_killed_run_over_token_budget_keeps_killed_status(tmp_path):
+    """Interpretive decision, pinned: when a run is ALREADY "killed"
+    (wall-clock timeout) AND it also burned more completion tokens than its
+    budget, metrics.terminal_status stays "killed" rather than being
+    overwritten to "budget-exceeded" -- "killed" is the more specific,
+    directly-observed proximate cause (mirrors the existing "no branching
+    for an already non-completed status" contract, see
+    test_execute_handles_non_completed_terminal_status). `budget_exceeded`
+    is still recorded True (for audit), and `completion` is False either
+    way (a killed run was never going to be credited), so this choice is
+    display-only for this overlap -- but it IS a choice, not an
+    afterthought, hence pinned here explicitly."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    budget_tokens = cfg.suite["b8"]["budgets"]["tokens"]
+    adapter = _mock_adapter(terminal_status="killed", tokens_prompt=50,
+                            tokens_completion=budget_tokens + 500, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter,
+                    run_oracle_result=(False, "killed"), attempt_id="attempt-killed-over-budget")
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert schema.validate_row(row) == []
+    assert row["metrics"]["terminal_status"] == "killed"
+    assert row["metrics"]["budget_exceeded"] is True
+    assert row["metrics"]["completion"] is False
+
+    trace_path = tmp_path / "artifacts" / row["response_meta"]["trace_ref"]
+    restored = Trace.from_dict(json.loads(trace_path.read_text(encoding="utf-8")))
+    assert restored.terminal_status == "killed"
 
 
 def test_execute_different_attempt_ids_never_collide(tmp_path):

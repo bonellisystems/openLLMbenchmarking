@@ -21,26 +21,50 @@ LABEL SCHEMA
 - "d" -- harness-bug: the harness/infra failed, not the model
   (`terminal_status == "infra-error"`, or another harness-error marker in
   the trace). Deterministic wherever it's log-inferable.
+- "e" -- budget/step-exhausted (Wave 1a, B8 measurement-validity): the run
+  was cut off by a RESOURCE budget -- `terminal_status` is `"killed"` (the
+  harness's own wall-clock kill) or `"budget-exceeded"` (the post-hoc
+  completion-token/step budget check `llmtest.batteries.b8_harness.
+  execute()` performs after every run -- see that function's own comment)
+  -- not because the harness itself malfunctioned (still "d", reserved for
+  `infra-error` alone) or because the model produced an unparseable tool
+  call (still "a"). This is a genuinely MODEL-side outcome (the model
+  looped, stumbled, or simply converged too slowly for its budget), so it
+  is deterministic and NEVER reaches the panel -- the panel is calibrated
+  for the ambiguous b/c cases ("was this a tool misuse or a logic bug"),
+  not "the clock/budget ran out", and "e" is not even one of the four
+  labels the panel's own instructions offer a classifier (see
+  `_CLASSIFIER_INSTRUCTIONS`) or one of `VALID_LABELS` below.
 - "unknown" -- the panel tied, or produced no majority (or every
   classifier abstained). Also the panel's own "we couldn't tell" verdict.
 - "not_applicable" -- the run did not FAIL, so there is nothing to
   classify.
 
-DETERMINISTIC PRECEDENCE -- (d) BEFORE (a), documented rationale
-------------------------------------------------------------------
-`_deterministic_failure` checks harness-bug (d) first, schema-never-parsed
-(a) second, and only falls through to the panel if neither fires. This
-order is deliberate, not incidental: if the HARNESS itself broke (d), the
-model never got a fair shot at producing a parseable tool call in the first
-place -- attributing that to the model as a schema failure (a) would be
-mislabeling an infra outage as a model defect. (d) is therefore checked
-first and, if it fires, wins outright regardless of what the rest of the
-trace looks like. Only once the run is confirmed to be an infra-clean
-model failure does (a) get to look for the model's own first unparsed tool
-call. Both are scanned directly off the `Trace` (see `_is_harness_bug` /
-`_first_tool_call_never_parsed`) -- no subprocess, no panel, no model
-identity ever enters this path, which is also why it can run before
-anything blinding-related is even built.
+DETERMINISTIC PRECEDENCE -- (d) BEFORE (e) BEFORE (a), documented rationale
+------------------------------------------------------------------------------
+`_deterministic_failure` checks harness-bug (d) first, budget/step-
+exhausted (e) second, schema-never-parsed (a) third, and only falls
+through to the panel if none of the three fire. This order is deliberate,
+not incidental:
+
+- (d) wins outright over everything else: if the HARNESS itself broke, the
+  model never got a fair shot at producing a parseable tool call OR at
+  finishing within budget in the first place -- attributing either to the
+  model would be mislabeling an infra outage as a model defect.
+- (e) is checked before (a): a budget-killed run's LAST tool call is often
+  incomplete/truncated by the very kill that cut it off -- that
+  incompleteness is a symptom of running out of budget, not evidence the
+  model can't format tool calls at all. Classifying it "e" (specific,
+  actionable -- "ran out of budget") beats misreading a budget-truncated
+  trailing call as "a" (a genuine format/schema failure the model would
+  have made regardless of budget).
+
+Only once a run is confirmed to be an infra-clean, in-budget model failure
+does (a) get to look for the model's own first unparsed tool call. All
+three are scanned directly off the `Trace` (see `_is_harness_bug` /
+`_is_budget_exhausted` / `_first_tool_call_never_parsed`) -- no subprocess,
+no panel, no model identity ever enters this path, which is also why it can
+run before anything blinding-related is even built.
 
 CONTROL FLOW (`classify_first_failure`)
 ----------------------------------------
@@ -55,9 +79,9 @@ CONTROL FLOW (`classify_first_failure`)
    `completed=False` explicitly -- that's precisely the (c) "harness
    thinks it's done, oracle disagrees" case, and it proceeds past this
    check to step 2.
-2. Deterministic detectors, in the precedence above. Either produces a
-   verdict immediately (source="deterministic"), or nothing fires and
-   control falls through.
+2. Deterministic detectors, in the precedence above (d, then e, then a).
+   Either produces a verdict immediately (source="deterministic"), or
+   nothing fires and control falls through.
 3. Unresolved failure -> blinded classifier PANEL (`panel_classify`):
    render the trace+task into a neutral, model-blind presentation (the
    `Trace` itself carries no model identity -- see `render_blinded_trace`
@@ -157,6 +181,14 @@ from typing import Any
 from llmtest.judging.adapters import _extract_first_json_object
 
 VALID_LABELS = {"a", "b", "c", "d"}
+# NOTE: "e" (budget/step-exhausted -- Wave 1a, see module docstring's LABEL
+# SCHEMA) is a valid `classify_first_failure` OUTPUT but deliberately NOT a
+# member of this set (nor of `_VOTE_LABELS` below): it is produced ONLY by
+# the deterministic `_is_budget_exhausted` check, is never one of the
+# labels the panel's own instructions (`_CLASSIFIER_INSTRUCTIONS`) offer a
+# classifier, and `classify_first_failure` never even calls the panel for
+# a killed/budget-exceeded run (see `_deterministic_failure`'s
+# precedence) -- so "e" simply never needs to be a valid PANEL vote.
 
 # A classifier may also explicitly vote "unknown" -- "I looked at the
 # evidence and genuinely cannot tell which of a/b/c/d applies" -- which is a
@@ -203,6 +235,25 @@ def _is_harness_bug(trace) -> bool:
     return any(bool(ev.payload.get("harness_error")) for ev in trace.events)
 
 
+def _is_budget_exhausted(trace) -> bool:
+    """(e) budget/step-exhausted -- Wave 1a, B8 measurement-validity: True
+    when `trace.terminal_status` is `"killed"` (the harness's own
+    wall-clock kill, enforced by the adapter's own subprocess timeout) or
+    `"budget-exceeded"` (the post-hoc completion-token/step budget check
+    `llmtest.batteries.b8_harness.execute()` performs after every run --
+    it stamps this status onto the SAME Trace object persisted to
+    `artifacts/b8_traces/<row_id>.json`, which is exactly what a caller
+    reloads before invoking this classifier, so a real budget overage a
+    run's own harness-reported status didn't catch is still visible here).
+    A resource-budget cutoff is a genuinely MODEL-side outcome (the model
+    looped, stumbled, or converged too slowly) -- never a harness defect
+    (that's "d", `infra-error` only) and never a schema/format failure
+    (that's "a") -- so this is checked deterministically, before either
+    the panel or (a) ever gets a look, and "e" is never offered to or
+    reachable via the panel (see `VALID_LABELS`'s note)."""
+    return trace.terminal_status in ("killed", "budget-exceeded")
+
+
 def _first_tool_call_never_parsed(trace) -> bool:
     """(a) schema-never-parsed: True if any `tool_call` event in the trace
     is marked `payload["parsed"] is False` -- i.e. the harness could never
@@ -219,11 +270,13 @@ def _first_tool_call_never_parsed(trace) -> bool:
 
 
 def _deterministic_failure(trace) -> tuple[str, str] | None:
-    """(d) then (a), in that precedence -- see module docstring. Returns
-    `None` (not a deterministic verdict) if neither fires, so the caller
-    knows to fall through to the panel."""
+    """(d) then (e) then (a), in that precedence -- see module docstring.
+    Returns `None` (not a deterministic verdict) if none of the three
+    fire, so the caller knows to fall through to the panel."""
     if _is_harness_bug(trace):
         return "d", "deterministic"
+    if _is_budget_exhausted(trace):
+        return "e", "deterministic"
     if _first_tool_call_never_parsed(trace):
         return "a", "deterministic"
     return None

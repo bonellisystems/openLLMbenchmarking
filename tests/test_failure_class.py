@@ -225,7 +225,7 @@ def test_adapter_shaped_classifier_drives_panel_via_invoke():
 # presentation the spec requires to carry NONE.
 
 
-def _killed_trace_with_terminal_error(error) -> Trace:
+def _killed_trace_with_terminal_error(error, terminal_status: str = "killed") -> Trace:
     events = [
         TraceEvent(kind="turn", payload={}),
         TraceEvent(kind="tool_call", payload={
@@ -237,18 +237,34 @@ def _killed_trace_with_terminal_error(error) -> Trace:
             "returncode": None, "finish": None, "error": error, "missing_usage": False,
         }),
     ]
-    # "killed" (a timeout), deliberately NOT "infra-error" -- this is
-    # exactly the gap _is_harness_bug doesn't catch, so this trace reaches
-    # the panel (and hence render_blinded_trace) rather than short-
-    # circuiting to deterministic (d) first.
-    return Trace.from_events(events, terminal_status="killed",
+    # Default "killed" (a timeout), deliberately NOT "infra-error" -- this
+    # is exactly the gap _is_harness_bug doesn't catch. Pre-Wave-1a this
+    # meant the trace reached the panel (and hence render_blinded_trace);
+    # post-Wave-1a, "killed" is itself a deterministic verdict (e --
+    # budget/step-exhausted, see _is_budget_exhausted) and classify_
+    # first_failure short-circuits BEFORE ever building a blinded packet
+    # for it -- callers that specifically need a trace which still reaches
+    # the panel (to exercise render_blinded_trace end-to-end) pass a
+    # `terminal_status` outside {"infra-error", "killed", "budget-
+    # exceeded"}, e.g. "failed-task".
+    return Trace.from_events(events, terminal_status=terminal_status,
                               tokens_prompt=30, tokens_completion=0,
                               subagent_spawned="no")
 
 
 def test_blinded_trace_redacts_terminal_error_string_no_model_identity_leak():
+    # terminal_status="failed-task", NOT the helper's "killed" default --
+    # Wave 1a made "killed" itself a deterministic verdict (e), so
+    # classify_first_failure never builds a blinded packet for a killed
+    # trace at all anymore (see test_killed_terminal_is_deterministic_e).
+    # The end-to-end half of THIS test ("the panel actually receives
+    # redacted text") needs a terminal_status that still reaches
+    # panel_classify; the redaction MECHANISM itself
+    # (render_blinded_trace/_redact_error_field) is terminal_status-
+    # agnostic, so this is still exercising the same code.
     trace = _killed_trace_with_terminal_error(
-        "ContextOverflowError: request to local/gpt-oss-20b exceeded context window")
+        "ContextOverflowError: request to local/gpt-oss-20b exceeded context window",
+        terminal_status="failed-task")
 
     blinded = render_blinded_trace(trace, _task(), completed=None)
     assert "gpt-oss-20b" not in blinded
@@ -294,17 +310,72 @@ def test_completed_none_with_clean_completed_terminal_is_not_applicable():
 
 
 def test_completed_none_with_failure_terminal_routes_to_panel():
-    # terminal_status="killed" (a genuine failure) with completed=None (no
-    # oracle verdict supplied) and no deterministic detector firing -- must
-    # NOT be inferred as not_applicable (that inference is only licensed
-    # for terminal_status == "completed"); it must reach the panel.
-    trace = _killed_trace_with_terminal_error(None)
+    # terminal_status="failed-task" (a genuine failure, but NOT one of the
+    # deterministic-only statuses infra-error/killed/budget-exceeded) with
+    # completed=None (no oracle verdict supplied) and no deterministic
+    # detector firing -- must NOT be inferred as not_applicable (that
+    # inference is only licensed for terminal_status == "completed"); it
+    # must reach the panel. (Pre-Wave-1a this test used "killed" as its
+    # non-completed example; "killed" is now ITSELF a deterministic verdict
+    # -- see test_killed_terminal_is_deterministic_e_not_panel below -- so a
+    # status outside both the "completed" and deterministic sets is needed
+    # to still exercise this inference branch.)
+    trace = _killed_trace_with_terminal_error(None, terminal_status="failed-task")
     classifiers = [FakeClassifier("b"), FakeClassifier("b"), FakeClassifier("c")]
 
     label, source = classify_first_failure(
         trace, _task(), completed=None, classifiers=classifiers)
 
     assert (label, source) == ("b", "panel")
+
+
+# -- Wave 1a: killed/budget-exceeded are deterministic MODEL-side outcomes
+# ("e") -- never the panel, never claimed by (d) harness-bug -----------------
+
+
+def test_killed_terminal_is_deterministic_e_not_panel():
+    """A killed (wall-clock timeout) run is a genuinely MODEL-side
+    resource-budget outcome, not an ambiguous b/c case that needs a
+    judgment call -- must be deterministic, and the panel must never be
+    consulted (RaisingClassifier proves it)."""
+    trace = _killed_trace_with_terminal_error(None)  # default terminal_status="killed"
+
+    label, source = classify_first_failure(
+        trace, _task(), completed=False, classifiers=[RaisingClassifier()])
+
+    assert (label, source) == ("e", "deterministic")
+
+
+def test_killed_with_completed_none_is_still_deterministic_e_not_panel():
+    """completed=None must not change the outcome: killed/budget-exceeded
+    short-circuit to (e) before the completed=None not_applicable-inference
+    check (which only ever applies to terminal_status=="completed") even
+    runs."""
+    trace = _killed_trace_with_terminal_error(None)
+
+    label, source = classify_first_failure(
+        trace, _task(), completed=None, classifiers=[RaisingClassifier()])
+
+    assert (label, source) == ("e", "deterministic")
+
+
+def test_budget_exceeded_terminal_is_deterministic_e_not_panel():
+    """The OTHER source of "e" -- llmtest.batteries.b8_harness.execute()'s
+    own post-hoc completion-token/step budget check, which stamps
+    terminal_status="budget-exceeded" onto the persisted Trace even when
+    the harness itself reported a clean "completed" finish."""
+    events = [
+        TraceEvent(kind="turn", payload={}),
+        TraceEvent(kind="terminal", payload={"finish": None}),
+    ]
+    trace = Trace.from_events(events, terminal_status="budget-exceeded",
+                              tokens_prompt=50, tokens_completion=9000,
+                              subagent_spawned="no")
+
+    label, source = classify_first_failure(
+        trace, _task(), completed=False, classifiers=[RaisingClassifier()])
+
+    assert (label, source) == ("e", "deterministic")
 
 
 # -- task-b8classify: I-9a -- the packet actually contains an instruction,

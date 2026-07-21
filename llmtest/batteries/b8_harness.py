@@ -75,6 +75,7 @@ in. This is the ONE place that swap lands later.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import uuid
@@ -88,10 +89,16 @@ from llmtest.harness.tasks import materialize_repo, run_oracle
 
 # harness name -> factory(model_id, budgets) -> HarnessAdapter. Only
 # "opencode" is wired to a real adapter today (Task 4); a test overrides
-# this entirely via ctx.b8_adapters (see _resolve_adapter).
+# this entirely via ctx.b8_adapters (see _resolve_adapter). `max_steps` is
+# threaded from `budgets["steps"]` (Wave 1a) -- OpenCodeAdapter uses it for
+# a NATIVE, best-effort mid-run step cap (see its own docstring); the
+# post-hoc `budget_exceeded` check below in `execute()` is what actually
+# enforces both the step AND completion-token budgets regardless of
+# whether the native cap fired.
 _DEFAULT_HARNESS_FACTORIES = {
     "opencode": lambda model_id, budgets: OpenCodeAdapter(
-        model=model_id, wall_clock_s=budgets.get("wall_clock_s")),
+        model=model_id, wall_clock_s=budgets.get("wall_clock_s"),
+        max_steps=budgets.get("steps")),
 }
 
 
@@ -359,6 +366,62 @@ class B8Harness(Battery):
         completed, oracle_detail = run_oracle_fn(task, workspace, root=root,
                                                  oracle_image=oracle_image)
 
+        # -- Budget enforcement + the scoring contract (Wave 1a, B8 -------
+        # measurement-validity: codex/kimi strategy review) ---------------
+        # `wall_clock_s` was already enforced (the adapter's own subprocess
+        # timeout -> terminal_status=="killed" on expiry); `tokens`/`steps`
+        # were only ever RECORDED before this point -- a model that solved
+        # a task in 5 steps and one that stumbled for 200 steps and got
+        # lucky were scored identically, which is not a valid basis for a
+        # ranking. Both are now enforced post-hoc, here: a run that burned
+        # more COMPLETION tokens or STEPS than its budget is a budget
+        # failure, credited as a completion NEVER -- even when the oracle
+        # would otherwise have passed. See suite.yaml's b8.budgets doc
+        # comment for the completion-vs-total-token distinction and the
+        # OpenCode native-step-cap note (a soft, best-effort nudge, not a
+        # hard stop -- this post-hoc check is the actual backstop for both
+        # dimensions).
+        budget_tokens = budgets.get("tokens")
+        budget_steps = budgets.get("steps")
+        budget_exceeded = bool(
+            (budget_tokens is not None and trace.tokens_completion > budget_tokens)
+            or (budget_steps is not None and trace.steps > budget_steps))
+
+        # The row's `metrics.terminal_status` mirrors the RAW trace status
+        # unchanged whenever that status is already non-"completed" --
+        # "killed"/"infra-error" are already the more specific, accurate
+        # outcome description (no branching there -- see
+        # test_execute_handles_non_completed_terminal_status). "budget-
+        # exceeded" is substituted ONLY when the harness itself thought the
+        # run finished cleanly but this post-hoc check disagrees -- the one
+        # case the harness had no way to have flagged on its own.
+        effective_terminal_status = trace.terminal_status
+        if trace.terminal_status == "completed" and budget_exceeded:
+            effective_terminal_status = "budget-exceeded"
+
+        # A row's `completion` is credited ONLY when all three hold: the
+        # harness itself reported a clean finish, the run stayed within
+        # BOTH budgets, and the anti-gaming oracle passed. This is what
+        # makes every credited completion COMPARABLE across models,
+        # regardless of how many tokens/turns a given model burned getting
+        # there -- the entire point of this wave.
+        completed_final = (trace.terminal_status == "completed"
+                          and not budget_exceeded and completed)
+
+        # The Trace persisted to artifacts/b8_traces/<row_id>.json (reloaded
+        # by scripts/classify_b8_local.py) must show the SAME effective
+        # terminal_status the row's own metrics do -- otherwise
+        # llmtest.harness.failure_class.classify_first_failure's
+        # deterministic budget/step-exhaustion check (label "e") could
+        # never see this outcome for a run the harness itself called
+        # "completed". `trace` itself (used below for steps/tokens/
+        # subagent_spawned) is left untouched; only this copy's
+        # terminal_status differs when it differs at all.
+        persisted_trace = trace
+        if effective_terminal_status != trace.terminal_status:
+            persisted_trace = dataclasses.replace(
+                trace, terminal_status=effective_terminal_status)
+
         attempt_id = _resolve_attempt_id(ctx)
         harness_version = adapter.version()
         litellm_version = getattr(adapter, "litellm_version", "") or ""
@@ -396,15 +459,39 @@ class B8Harness(Battery):
             # completed bool in metrics below.
             det_checks={"oracle": {"pass": completed, "detail": oracle_detail}},
             metrics={
-                "completion": completed,
+                "completion": completed_final,
                 "steps": trace.steps,
                 "tokens_prompt": trace.tokens_prompt,
                 "tokens_completion": trace.tokens_completion,
-                "terminal_status": trace.terminal_status,
+                "terminal_status": effective_terminal_status,
                 "subagent_spawned": trace.subagent_spawned,
+                # Wave 1a auditability: the caveat behind a budget-forced
+                # completion=False must be reconstructable from the row
+                # alone, not just inferable from terminal_status=="budget-
+                # exceeded" -- `budget_exceeded` is recorded regardless of
+                # whether it was the DECIDING factor (e.g. still True here
+                # even on an already-killed/infra-error row, for audit),
+                # alongside the configured budgets it was checked against
+                # (the observed values are `steps`/`tokens_completion`
+                # above -- compare directly against these two).
+                "budget_exceeded": budget_exceeded,
+                "budget_tokens_completion": budget_tokens,
+                "budget_steps": budget_steps,
             },
             timing_authoritative=False,
             status="ok", tags=[])
+
+        # SCORE-INDEPENDENCE (Wave 1a item 4): `metrics.completion` above is
+        # derived ONLY from run_oracle's verdict + trace.terminal_status +
+        # the budget check -- this module never imports
+        # llmtest.harness.failure_class and classify_first_failure is never
+        # called here, so a row's completion can never be influenced by a
+        # classifier verdict/label (that pass runs separately and later,
+        # via scripts/classify_b8_local.py, into a SIBLING store -- see its
+        # own module docstring). This assertion is a live regression guard,
+        # not a no-op: it fails the moment a future edit starts stuffing a
+        # classifier label into this same metrics dict instead.
+        assert "first_failure_class" not in row.metrics
 
         # Trace persistence (task-b8classify): the full `Trace` (every
         # event, not just the summary counts already in `metrics` above) is
@@ -425,7 +512,7 @@ class B8Harness(Battery):
         trace_relpath = f"b8_traces/{row.row_id}.json"
         trace_path = root / "artifacts" / trace_relpath
         trace_path.parent.mkdir(parents=True, exist_ok=True)
-        trace_path.write_text(json.dumps(trace.to_dict(), sort_keys=True), encoding="utf-8")
+        trace_path.write_text(json.dumps(persisted_trace.to_dict(), sort_keys=True), encoding="utf-8")
         row.response_meta["trace_ref"] = trace_relpath
 
         return [row.to_dict()]

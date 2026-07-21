@@ -139,6 +139,7 @@ class OpenCodeAdapter(HarnessAdapter):
     def __init__(self, *, model: str = DEFAULT_MODEL,
                  db_path: str | Path = DEFAULT_DB_PATH,
                  wall_clock_s: float | None = None,
+                 max_steps: int | None = None,
                  opencode_bin: str = "opencode"):
         self.model = model
         self.db_path = Path(db_path)
@@ -147,6 +148,22 @@ class OpenCodeAdapter(HarnessAdapter):
         # if the task has none either. An explicit value here (e.g. the live
         # smoke's ~180s) always wins.
         self.wall_clock_s = wall_clock_s
+        # Native step-limit config (Wave 1a, B8 measurement-validity --
+        # confirmed via Context7 against the real anomalyco/opencode
+        # source): when set, threaded into `_write_opencode_config` as
+        # `{"agent": {"build": {"steps": max_steps}}}` -- `opencode run`
+        # with no `--agent` flag uses the built-in "build" agent, and
+        # OpenCode's config layer lets you override a BUILT-IN agent's
+        # fields by reusing its name as the config key (same mechanism a
+        # custom agent uses). This is a SOFT, best-effort cap: on hitting
+        # it, OpenCode's own agent loop is told to summarize its work and
+        # stop, not hard-killed -- so `llmtest.batteries.b8_harness.
+        # execute()`'s own post-hoc `trace.steps > budget_steps` check
+        # remains the actual (and only, for a completion-token budget --
+        # OpenCode has no native equivalent of that at all) backstop.
+        # `None` (the default) omits the `agent` config key entirely,
+        # byte-for-byte the pre-Wave-1a config shape.
+        self.max_steps = max_steps
         self.opencode_bin = opencode_bin
 
         self.task = None
@@ -312,6 +329,13 @@ class OpenCodeAdapter(HarnessAdapter):
                 }
             },
         }
+        # Native step-limit override (Wave 1a -- see `self.max_steps`'s own
+        # docstring in `__init__`): only added when a caller actually asked
+        # for one (`b8.budgets.steps` via `_DEFAULT_HARNESS_FACTORIES` in
+        # `llmtest.batteries.b8_harness`) -- absent here, the config shape
+        # is byte-for-byte what it was before this key existed.
+        if self.max_steps is not None:
+            cfg["agent"] = {"build": {"steps": self.max_steps}}
         self._config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     # -- seam: subprocess launch (host today; Sandbox.run_in later) --------

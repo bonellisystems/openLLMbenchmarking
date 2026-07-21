@@ -550,6 +550,31 @@ def test_opencode_config_written_as_sibling_and_passed_via_env(monkeypatch, tmp_
     assert captured["env"].get("OPENCODE_CONFIG") == str(adapter._config_path)
 
 
+# -- Wave 1a: native OpenCode step-limit config (agent.build.steps) --------
+
+
+def test_write_opencode_config_sets_agent_build_steps_when_max_steps_given(tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path, max_steps=20)
+
+    cfg = json.loads(adapter._config_path.read_text(encoding="utf-8"))
+    # "build" -- the built-in agent `opencode run` uses when no --agent
+    # flag is passed (confirmed against the real anomalyco/opencode
+    # source); OpenCode's config layer overrides a built-in agent's fields
+    # by reusing its name as the config key.
+    assert cfg["agent"]["build"]["steps"] == 20
+
+
+def test_write_opencode_config_omits_agent_key_when_max_steps_not_given(tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path)  # no max_steps kwarg -> None
+
+    cfg = json.loads(adapter._config_path.read_text(encoding="utf-8"))
+    assert "agent" not in cfg
+
+
 # -- #2 (Important, post-review): session correlation must not misclassify -
 # -- a genuinely completed run as infra-error -------------------------------
 

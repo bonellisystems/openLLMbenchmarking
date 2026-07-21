@@ -240,17 +240,48 @@ b8:
   # schemas -- b1's 32768 doesn't leave enough room (task-b8local).
   ctx: 40960
   kv: q8_0
-  # Per-run budgets an execute() call enforces. wall_clock_s is plumbed
-  # straight into the adapter's own timeout (OpenCodeAdapter's
-  # `wall_clock_s` constructor arg overrides its per-task budgets.
-  # wall_clock_s fallback). tokens/steps are recorded here for provenance
-  # and future enforcement -- the OpenCode adapter interface (Task 4) does
-  # not yet accept a token/step cutoff of its own; each task manifest's own
-  # `budgets.steps`/`budgets.tokens` (llmtest.harness.tasks.B8Task) are the
-  # authoritative per-task figures today.
+  # Per-run budgets `b8_harness.execute()` ENFORCES (Wave 1a, B8
+  # measurement-validity -- codex/kimi strategy review: completion scoring
+  # is only COMPARABLE across models if every credited completion stayed
+  # within the same resource budget; a model that solves in 5 steps and one
+  # that stumbles for 200 steps and gets lucky must not score the same).
+  # wall_clock_s is plumbed straight into the adapter's own subprocess
+  # timeout (OpenCodeAdapter's `wall_clock_s` constructor arg overrides its
+  # per-task budgets.wall_clock_s fallback) -- unchanged, already enforced
+  # pre-Wave-1a.
+  #
+  # `tokens` is a COMPLETION-token budget -- compared against
+  # `Trace.tokens_completion` (the model's own generated work: answer text
+  # + tool-call args + reasoning), NEVER against `tokens_prompt` and never
+  # prompt+completion combined. This is deliberate, not an oversight:
+  # OpenCode's own fixed system prompt + tool schemas alone push
+  # `tokens_prompt` to roughly 13k on EVERY run, regardless of task or
+  # model -- a TOTAL-token budget of 4000 (the old value) would fail every
+  # single run before the model ever got a chance to do anything. 8000
+  # completion tokens gives real headroom for a full multi-step solve while
+  # still being a hard ceiling a model that loops or rambles can blow
+  # through. `steps` (agent turns) stays 20 -- real gpt-oss-20b runs on the
+  # original 6 easy tasks used 2-7 steps, so 20 is generous headroom, not a
+  # tight cap.
+  #
+  # NATIVE step-limit config (investigated via Context7 against the real
+  # anomalyco/opencode source, packages/web/src/content/docs/agents.mdx +
+  # packages/opencode/src/agent/agent.ts): OpenCode DOES support a native
+  # per-agent `steps` cap in opencode.json (`{"agent": {"<name>": {"steps":
+  # N}}}`), overridable even for a BUILT-IN agent by reusing its name as
+  # the key -- `opencode run` with no `--agent` flag uses the built-in
+  # "build" agent, so `{"agent": {"build": {"steps": N}}}` targets it.
+  # `OpenCodeAdapter` now ALSO sets this from this same `steps` value
+  # (`max_steps` ctor arg, wired from `_DEFAULT_HARNESS_FACTORIES` below)
+  # for real mid-run enforcement, on top of (not instead of) the post-hoc
+  # check in `b8_harness.execute()` -- the native cap is a SOFT nudge (on
+  # hitting it, the agent is asked to summarize its work and stop, not
+  # hard-killed), and OpenCode has no native equivalent at all for a
+  # completion-token budget, so the post-hoc check remains the real
+  # backstop for both dimensions.
   budgets:
     wall_clock_s: 180
-    tokens: 4000
+    tokens: 8000
     steps: 20
   # In-Sandbox execution seam (see b8_harness.py module docstring's SANDBOX
   # SEAM note + llmtest.harness.sandbox): OpenCode runs on the HOST today

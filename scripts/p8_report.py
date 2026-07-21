@@ -827,8 +827,11 @@ def build_b5_section(rows: list[dict]) -> str:
 
 # Labels `classify_first_failure` (llmtest/harness/failure_class.py, Task 8)
 # can emit for a FAILED run; a value outside this set (including the field
-# being entirely absent) is display-bucketed as _UNCLASSIFIED below.
-_B8_FAILURE_CLASS_LABELS = ("a", "b", "c", "d", "unknown")
+# being entirely absent) is display-bucketed as _UNCLASSIFIED below. "e"
+# (budget/step-exhausted, Wave 1a) is deterministic-only -- see that
+# module's docstring -- but still a real label a failed row can carry, so
+# it belongs in this display set same as a/b/c/d.
+_B8_FAILURE_CLASS_LABELS = ("a", "b", "c", "d", "e", "unknown")
 _B8_UNCLASSIFIED = "(unclassified)"
 
 
