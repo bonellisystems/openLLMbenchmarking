@@ -7,9 +7,13 @@
      docker-argv-capturing proof of the same threading also lives in
      tests/test_harness_tasks.py, mirroring test_harness_sandbox.py's
      container-hardening test pattern).
-  3. The 3 new real Python task manifests (task-06..08.yaml) load via
+  3. The 3 new real Python task manifests (task-06..08.yaml, task-b8local)
+     PLUS the 3 more added by task-b8expand (task-09..11.yaml) load via
      `load_b8_tasks` with every required key, and their hidden oracles are
-     never written into the agent-visible workspace.
+     never written into the agent-visible workspace. (The task-b8expand
+     Python-oracle subprocess-isolation hardening itself is exercised in
+     tests/test_harness_tasks.py, both hermetically and -- since Docker is
+     reachable here -- against the real python:3.11-slim container.)
   4. A dry-run-safe smoke test of `scripts/run_b8_local.py` -- importing it
      and parsing `--help` (or a --task filter that matches nothing) must
      never launch a subprocess, hit the network, or touch Docker.
@@ -38,7 +42,16 @@ from llmtest.registry import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# The first 3 real Python task manifests (task-b8local, task-06..08.yaml).
 _NEW_PY_TASK_IDS = ("py-bugfix-01", "py-fromscratch-01", "py-edit-01")
+# The 3 more real Python task manifests added by task-b8expand
+# (task-09..11.yaml) -- multi-file/tool-heavy in Python for the first
+# time, plus a harder from-scratch task.
+_B8EXPAND_NEW_PY_TASK_IDS = ("py-multifile-01", "py-toolheavy-01", "py-fromscratch-02")
+# All 6 real Python task manifests -- also exactly suite.yaml's b8.tasks
+# allowlist (see test_suite_yaml_b8_tasks_allowlist_is_the_six_python_ids
+# in test_b8.py).
+_ALL_PY_TASK_IDS = _NEW_PY_TASK_IDS + _B8EXPAND_NEW_PY_TASK_IDS
 
 
 class FakeStore:
@@ -194,7 +207,7 @@ def test_execute_passes_none_oracle_image_when_suite_yaml_key_absent(tmp_path, m
 
 
 # ---------------------------------------------------------------------------
-# 3. The 3 new Python task manifests
+# 3. The Python task manifests (task-b8local's 3 + task-b8expand's 3 more)
 # ---------------------------------------------------------------------------
 
 
@@ -206,18 +219,25 @@ def test_all_three_new_python_task_ids_are_discovered():
             f"mismatch? (loader matches 'task-*.yaml', not 'pytask-*.yaml')")
 
 
-@pytest.mark.parametrize("task_id", _NEW_PY_TASK_IDS)
+def test_all_three_b8expand_new_python_task_ids_are_discovered():
+    all_ids = {task.id for task in b8f.load_tasks(ROOT)}
+    for task_id in _B8EXPAND_NEW_PY_TASK_IDS:
+        assert task_id in all_ids, (
+            f"{task_id} not discovered by load_b8_tasks -- filename glob "
+            f"mismatch? (loader matches 'task-*.yaml', not 'pytask-*.yaml')")
+
+
+@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS)
 def test_new_python_manifest_has_required_fields(task_id):
     all_tasks = {task.id: task for task in b8f.load_tasks(ROOT)}
     task = all_tasks[task_id]
 
-    assert task.shape in {"bugfix", "from-scratch", "edit"}
+    assert task.shape in {"bugfix", "from-scratch", "edit", "multi-file", "tool-heavy"}
     assert task.setup_repo_sha and len(task.setup_repo_sha) == 64
     assert isinstance(task.allowed_tools, list) and task.allowed_tools
     for key in ("wall_clock_s", "tokens", "steps"):
         assert key in task.budgets
-    assert task.protected_shas, "protected_paths must be non-empty (e.g. NOTES.md)"
-    assert "NOTES.md" in task.protected_shas
+    assert task.protected_shas, "protected_paths must be non-empty"
     assert task.oracle and task.oracle[0] == "bash"
     # oracle argv mirrors the bash manifests' exact convention, swapping
     # "bash oracle_test.sh" for "python3 oracle_test.py"
@@ -228,12 +248,12 @@ def test_new_python_manifest_has_required_fields(task_id):
     assert "oracle_test.sh" not in task.oracle_files
 
 
-@pytest.mark.parametrize("task_id", _NEW_PY_TASK_IDS)
+@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS)
 def test_new_python_manifest_oracle_withheld_from_agent_workspace(tmp_path, task_id):
     """Mirrors test_harness_tasks.py's
-    test_materialize_repo_never_writes_oracle_files, scoped to just the 3
-    new manifests: materialize_repo must never write any oracle_files path
-    into the agent-visible workspace."""
+    test_materialize_repo_never_writes_oracle_files, scoped to just the 6
+    real Python manifests: materialize_repo must never write any
+    oracle_files path into the agent-visible workspace."""
     all_tasks = {task.id: task for task in b8f.load_tasks(ROOT)}
     task = all_tasks[task_id]
 
@@ -244,8 +264,6 @@ def test_new_python_manifest_oracle_withheld_from_agent_workspace(tmp_path, task
         assert not (ws / oracle_path).exists(), (
             f"{task_id}: oracle file {oracle_path!r} leaked into the "
             f"agent-visible workspace")
-    # sanity: the visible workspace DOES contain the protected fixture
-    assert (ws / "NOTES.md").exists()
 
 
 def test_new_python_manifests_use_stdlib_only_no_pytest():
@@ -253,10 +271,29 @@ def test_new_python_manifests_use_stdlib_only_no_pytest():
     pytest installed) -- guards against a future edit accidentally adding
     a pytest dependency to one of these oracle scripts."""
     all_tasks = {task.id: task for task in b8f.load_tasks(ROOT)}
-    for task_id in _NEW_PY_TASK_IDS:
+    for task_id in _ALL_PY_TASK_IDS:
         oracle_src = all_tasks[task_id].oracle_files["oracle_test.py"]
         assert "pytest" not in oracle_src
         assert "import sys" in oracle_src
+
+
+def test_new_python_manifests_use_subprocess_isolation_not_bare_import():
+    """task-b8expand hardening (codex review Important #1's Python
+    analog): every Python oracle_test.py must run the candidate solution
+    in a SUBPROCESS (`subprocess.run([sys.executable, ...])`), never a
+    bare top-level `import <solution module>` straight into the
+    checker's own process -- the latter lets a module-level
+    `sys.exit(0)` in the solution kill the whole checker with exit code
+    0 before any check runs (`SystemExit` is not caught by `except
+    Exception`), which `Sandbox.hidden_validate` (exit-code-only) would
+    wrongly register as a pass."""
+    all_tasks = {task.id: task for task in b8f.load_tasks(ROOT)}
+    for task_id in _ALL_PY_TASK_IDS:
+        oracle_src = all_tasks[task_id].oracle_files["oracle_test.py"]
+        assert "import subprocess" in oracle_src, (
+            f"{task_id}: oracle_test.py does not import subprocess -- "
+            f"not hardened against in-process import short-circuiting")
+        assert "subprocess.run" in oracle_src
 
 
 # ---------------------------------------------------------------------------

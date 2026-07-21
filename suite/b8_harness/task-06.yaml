@@ -1,6 +1,6 @@
 id: py-bugfix-01
 shape: bugfix
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The following Python file is supposed to compute and print a summary of a
   list of numbers, but it is broken. Symptom: importing/running it
@@ -37,28 +37,36 @@ setup_repo:
     This file is part of the task fixture. Do not edit it.
 oracle_files:
   oracle_test.py: |
+    import subprocess
     import sys
+
+    CASES = [
+        ([2, 4, 6], "summary: avg=4.00"),
+        ([10, 20], "summary: avg=15.00"),
+    ]
+
+
+    def _run(nums):
+        """Run `stats.summarize(nums)` in a FRESH subprocess and return the
+        completed process -- never `import stats` into THIS process. A
+        solution containing a module-level `sys.exit(0)` (or one that
+        monkeypatches this checker) can only affect the throwaway
+        subprocess, whose observable stdout is then compared against the
+        exact expected text; it cannot short-circuit this oracle's own
+        exit code the way an in-process `import` could (task-b8expand
+        hardening -- see llmtest/harness/tasks.py module docstring)."""
+        code = f"import stats\nprint(stats.summarize({nums!r}))\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
 
 
     def main():
-        try:
-            import stats
-        except Exception as e:
-            print(f"FAIL: import stats raised {e!r}")
-            sys.exit(1)
-
-        cases = [
-            ([2, 4, 6], "summary: avg=4.00"),
-            ([10, 20], "summary: avg=15.00"),
-        ]
-        for nums, want in cases:
-            try:
-                got = stats.summarize(nums)
-            except Exception as e:
-                print(f"FAIL: summarize({nums}) raised {e!r}")
-                sys.exit(1)
+        for nums, want in CASES:
+            r = _run(nums)
+            got = r.stdout.strip()
             if got != want:
-                print(f"FAIL: summarize({nums}) -> {got!r} (want {want!r})")
+                print(f"FAIL: summarize({nums}) -> {got!r} (want {want!r}); "
+                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
                 sys.exit(1)
         print("PASS")
 
@@ -89,12 +97,29 @@ notes: |
   copy only at validation time, then runs it via
   `python3 oracle_test.py` (the Python analog of the bash manifests'
   `bash oracle_test.sh`, same `cp -r /oracle /tmp/work && cd /tmp/work &&
-  ...` convention). It actually IMPORTS the fixed module and calls
-  `summarize` with two different inputs, checking the real computed
-  average -- not just a compile-only/syntax check -- so a "fix" that makes
-  the file import cleanly by deleting/no-op-ing `summarize` still fails
-  here. Stdlib only (`sys.exit`, plain `assert`-shaped checks) -- no
-  pytest, since `python:3.11-slim` doesn't have it installed.
+  ...` convention). It calls `summarize` with two different inputs,
+  checking the real computed average -- not just a compile-only/syntax
+  check -- so a "fix" that makes the file import cleanly by
+  deleting/no-op-ing `summarize` still fails here. Stdlib only
+  (`subprocess`, `sys.exit`, plain `assert`-shaped checks) -- no pytest,
+  since `python:3.11-slim` doesn't have it installed.
+
+  SUBPROCESS-ISOLATED (task-b8expand hardening, task_version 1.0.0 ->
+  1.1.0 -- codex review Important #1, "the hidden oracle can be read and
+  short-circuited by agent code"): the ORIGINAL 1.0.0 oracle did
+  `import stats` directly into this checker's own process, which means a
+  `stats.py` containing a module-level `sys.exit(0)` (the Python analog
+  of the review's bash `source is_prime.sh` / `exit 0` finding) would
+  raise `SystemExit(0)` -- NOT caught by the `except Exception` guard --
+  and terminate the ENTIRE oracle process with exit code 0 before any
+  check ran, at which point `hidden_validate` (which only inspects the
+  process's exit code) would wrongly report a pass. The 1.1.0 oracle
+  never imports the candidate solution into itself: each case launches a
+  brand-new `python3 -c "import stats; print(stats.summarize(...))"`
+  subprocess and asserts on ITS stdout from the outside. A `sys.exit(0)`
+  planted in `stats.py` now only kills that one throwaway subprocess,
+  which then has no output to match the expected text -- so the
+  comparison still correctly fails.
 
   `NOTES.md` is the agent-VISIBLE protected file exercising the hash-cap
   (Design Decision #1a) -- a real, hash-capped fixture, not a placeholder.

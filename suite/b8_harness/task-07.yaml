@@ -1,6 +1,6 @@
 id: py-fromscratch-01
 shape: from-scratch
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   Write a NEW Python file `textutils.py` (the repo has no such file yet)
   that defines a function `is_palindrome(s)`. Given a string, it must
@@ -26,34 +26,40 @@ setup_repo:
     See the task prompt for the exact contract `textutils.py` must satisfy.
 oracle_files:
   oracle_test.py: |
+    import subprocess
     import sys
+
+    CASES = [
+        ("A man, a plan, a canal: Panama", True),
+        ("hello", False),
+        ("", True),
+        ("Was it a car or a cat I saw?", True),
+        ("Python", False),
+        ("No lemon, no melon", True),
+        ("12321", True),
+        ("12345", False),
+    ]
+
+
+    def _run(s):
+        """Run `textutils.is_palindrome(s)` in a FRESH subprocess and
+        return the completed process -- never `import textutils` into
+        THIS process (task-b8expand hardening: a module-level
+        `sys.exit(0)` in the candidate solution can only kill the
+        throwaway subprocess, not this checker -- see
+        llmtest/harness/tasks.py module docstring)."""
+        code = f"import textutils\nprint(bool(textutils.is_palindrome({s!r})))\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
 
 
     def main():
-        try:
-            import textutils
-        except Exception as e:
-            print(f"FAIL: import textutils raised {e!r}")
-            sys.exit(1)
-
-        cases = [
-            ("A man, a plan, a canal: Panama", True),
-            ("hello", False),
-            ("", True),
-            ("Was it a car or a cat I saw?", True),
-            ("Python", False),
-            ("No lemon, no melon", True),
-            ("12321", True),
-            ("12345", False),
-        ]
-        for s, want in cases:
-            try:
-                got = textutils.is_palindrome(s)
-            except Exception as e:
-                print(f"FAIL: is_palindrome({s!r}) raised {e!r}")
-                sys.exit(1)
-            if bool(got) != want:
-                print(f"FAIL: is_palindrome({s!r}) -> {got!r} (want {want!r})")
+        for s, want in CASES:
+            r = _run(s)
+            got = r.stdout.strip()
+            if got != str(want):
+                print(f"FAIL: is_palindrome({s!r}) -> {got!r} (want {want!r}); "
+                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
                 sys.exit(1)
         print("PASS")
 
@@ -79,13 +85,26 @@ notes: |
   into the agent's workspace -- the exact probe strings (including the two
   boundary/negative cases, "hello" and "Python") can't be read and
   special-cased. `run_oracle` re-injects it into a private copy only at
-  validation time, then IMPORTS the produced `textutils.py` and calls
-  `is_palindrome` across palindromes, non-palindromes, an empty string, and
-  a numeric-string case -- a genuinely behavioral pass/fail. `textutils.py`
-  does not exist in `setup_repo` at all; it is only listed in
-  `allowed_diff_paths`, which the diff-constraint (run_oracle Design
-  Decision #1b) treats as "this exact new path may be created." Stdlib
-  only -- no pytest.
+  validation time, then calls `is_palindrome` across palindromes,
+  non-palindromes, an empty string, and a numeric-string case -- a
+  genuinely behavioral pass/fail. `textutils.py` does not exist in
+  `setup_repo` at all; it is only listed in `allowed_diff_paths`, which
+  the diff-constraint (run_oracle Design Decision #1b) treats as "this
+  exact new path may be created." Stdlib only (`subprocess`, `sys`) -- no
+  pytest.
+
+  SUBPROCESS-ISOLATED (task-b8expand hardening, task_version 1.0.0 ->
+  1.1.0 -- codex review Important #1, same finding/fix as
+  py-bugfix-01/task-06.yaml): the 1.0.0 oracle `import`ed `textutils`
+  straight into this checker's own process, so a module-level
+  `sys.exit(0)` in the candidate `textutils.py` would kill the whole
+  oracle with exit code 0 before any case ran, and `hidden_validate`
+  (exit-code-only) would wrongly report a pass. The 1.1.0 oracle instead
+  launches a brand-new `python3 -c "import textutils; print(...)"`
+  subprocess PER CASE and asserts on ITS stdout from the outside -- a
+  `sys.exit(0)` in `textutils.py` now only kills that one throwaway
+  subprocess, leaving no output to match, so the comparison still
+  correctly fails.
 
   `NOTES.md` is the agent-VISIBLE protected file exercising the hash-cap
   (Design Decision #1a).

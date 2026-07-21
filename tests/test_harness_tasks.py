@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -44,11 +45,14 @@ def _load(task_id: str) -> t.B8Task:
 
 
 def test_load_b8_tasks_returns_all_manifests_with_required_fields():
-    """8 manifests total (task-b8local, was 5): the original 5 bash
-    placeholders (task-01..05.yaml) plus 3 real Python task manifests
-    (task-06..08.yaml) added for the real local-run enablement pass."""
+    """11 manifests total (task-b8expand, was 8): the original 5 bash
+    placeholders (task-01..05.yaml), the first 3 real Python task
+    manifests (task-06..08.yaml, task-b8local), plus 3 more real Python
+    task manifests (task-09..11.yaml, task-b8expand) covering the
+    multi-file/tool-heavy shapes in Python for the first time and a
+    harder from-scratch task."""
     all_tasks = t.load_b8_tasks(ROOT)
-    assert len(all_tasks) == 8
+    assert len(all_tasks) == 11
     assert [x.id for x in all_tasks] == sorted(x.id for x in all_tasks)
     for task in all_tasks:
         assert task.id
@@ -66,9 +70,10 @@ def test_load_b8_tasks_returns_all_manifests_with_required_fields():
 
 def test_load_b8_tasks_covers_all_shapes():
     """Every valid shape appears at least once -- no longer EXACTLY once
-    (task-b8local): the 3 new Python manifests reuse the bugfix/from-scratch/
-    edit shapes (their bash counterparts already cover multi-file/tool-heavy),
-    so those three shapes now appear twice. Coverage, not cardinality."""
+    (task-b8local/task-b8expand): with the task-b8expand additions, all 5
+    shapes now have BOTH a bash and a Python manifest (from-scratch has
+    two Python manifests too, py-fromscratch-01 and -02). Coverage, not
+    cardinality."""
     all_tasks = t.load_b8_tasks(ROOT)
     shapes = {x.shape for x in all_tasks}
     assert shapes == t._VALID_SHAPES
@@ -218,6 +223,159 @@ def test_toolheavy_overfit_attack_has_no_oracle_file_to_read(tmp_path):
     all_text = "\n".join(p.read_text(encoding="utf-8") for p in ws.rglob("*") if p.is_file())
     assert "f_extra" not in all_text
     assert "200" not in all_text
+
+
+# -- Python oracle subprocess isolation (task-b8expand hardening) ----------
+# Hermetic, NO Docker: each Python oracle_test.py is run directly against
+# the HOST python (mirrors the `python3 oracle_test.py` step the bash
+# oracle wrapper runs inside the python:3.11-slim sandbox container, minus
+# the container -- subprocess isolation is a property of the oracle_test.py
+# SOURCE itself, testable directly). Proves the hardening (_schema.md's
+# task-b8expand update; codex review Important #1's Python analog) holds
+# for all 6 Python task manifests: a solution with a module-level
+# `sys.exit(0)` must NOT be marked complete, and a genuinely correct
+# solution must still pass.
+
+_ALL_PY_TASK_IDS = ("py-bugfix-01", "py-fromscratch-01", "py-edit-01",
+                    "py-multifile-01", "py-toolheavy-01", "py-fromscratch-02")
+
+# task id -> {relative path: correct file content}. A REFERENCE solution
+# for each task, mirroring its own `notes:`/prompt contract -- used only by
+# this test file, never shipped to an agent.
+_CORRECT_SOLUTIONS = {
+    "py-bugfix-01": {
+        "stats.py": (
+            "def average(nums):\n"
+            "    total = sum(nums)\n"
+            "    return total / len(nums)\n\n"
+            "def summarize(nums):\n"
+            "    avg = average(nums)\n"
+            "    return f\"summary: avg={avg:.2f}\"\n"
+        ),
+    },
+    "py-fromscratch-01": {
+        "textutils.py": (
+            "def is_palindrome(s):\n"
+            "    cleaned = [c.lower() for c in s if c.isalnum()]\n"
+            "    return cleaned == cleaned[::-1]\n"
+        ),
+    },
+    "py-edit-01": {
+        "greet.py": "def greet(name):\n    return f\"Hello, {name}!\"\n",
+    },
+    "py-multifile-01": {
+        "calc.py": (
+            "def add(a, b):\n    return a + b\n\n"
+            "def multiply(a, b):\n    return a * b\n"
+        ),
+        "formatter.py": "def fmt_result(x):\n    return f\"Result: {x}\"\n",
+    },
+    "py-toolheavy-01": {
+        "handler_charlie.py": "def transform(x):\n    return x * 2 + 1\n",
+    },
+    "py-fromscratch-02": {
+        "exprcalc.py": (
+            "def evaluate_expression(expr):\n"
+            "    tokens = _tokenize(expr)\n"
+            "    pos = [0]\n\n"
+            "    def parse_expr():\n"
+            "        value = parse_term()\n"
+            "        while pos[0] < len(tokens) and tokens[pos[0]] in ('+', '-'):\n"
+            "            op = tokens[pos[0]]\n"
+            "            pos[0] += 1\n"
+            "            rhs = parse_term()\n"
+            "            value = value + rhs if op == '+' else value - rhs\n"
+            "        return value\n\n"
+            "    def parse_term():\n"
+            "        value = parse_factor()\n"
+            "        while pos[0] < len(tokens) and tokens[pos[0]] == '*':\n"
+            "            pos[0] += 1\n"
+            "            rhs = parse_factor()\n"
+            "            value = value * rhs\n"
+            "        return value\n\n"
+            "    def parse_factor():\n"
+            "        tok = tokens[pos[0]]\n"
+            "        if tok == '(':\n"
+            "            pos[0] += 1\n"
+            "            value = parse_expr()\n"
+            "            pos[0] += 1\n"
+            "            return value\n"
+            "        pos[0] += 1\n"
+            "        return int(tok)\n\n"
+            "    return parse_expr()\n\n\n"
+            "def _tokenize(expr):\n"
+            "    tokens = []\n"
+            "    i = 0\n"
+            "    while i < len(expr):\n"
+            "        c = expr[i]\n"
+            "        if c.isspace():\n"
+            "            i += 1\n"
+            "            continue\n"
+            "        if c in '+-*()':\n"
+            "            tokens.append(c)\n"
+            "            i += 1\n"
+            "            continue\n"
+            "        if c.isdigit():\n"
+            "            j = i\n"
+            "            while j < len(expr) and expr[j].isdigit():\n"
+            "                j += 1\n"
+            "            tokens.append(expr[i:j])\n"
+            "            i = j\n"
+            "            continue\n"
+            "        raise ValueError(f'unexpected character: {c!r}')\n"
+            "    return tokens\n"
+        ),
+    },
+}
+
+
+def _run_oracle_locally(task_id: str, extra_files: dict, tmp_path: Path):
+    """Materialize `task_id`'s setup_repo into a fresh workspace, overlay
+    `extra_files` (the candidate solution) on top, write the task's own
+    (normally-hidden) oracle_test.py into that SAME workspace, and run it
+    with the HOST python -- exactly the `python3 oracle_test.py` step the
+    bash oracle wrapper runs inside the sandbox container, minus the
+    container."""
+    task = _load(task_id)
+    ws = tmp_path / task_id
+    t.materialize_repo(task, ws)
+    for rel, content in extra_files.items():
+        (ws / rel).write_text(content, encoding="utf-8")
+    (ws / "oracle_test.py").write_text(task.oracle_files["oracle_test.py"], encoding="utf-8")
+    return subprocess.run([sys.executable, "oracle_test.py"], cwd=ws,
+                          capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS)
+def test_python_oracle_passes_for_a_genuinely_correct_solution(task_id, tmp_path):
+    """Regression: the subprocess-isolation hardening must not break a
+    real pass -- a genuinely correct solution still gets PASS/exit 0."""
+    r = _run_oracle_locally(task_id, _CORRECT_SOLUTIONS[task_id], tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "PASS" in r.stdout
+
+
+@pytest.mark.parametrize("task_id", _ALL_PY_TASK_IDS)
+def test_python_oracle_rejects_sys_exit_zero_at_import_solution(task_id, tmp_path):
+    """The gaming vector task-b8expand closes (codex review Important #1's
+    Python analog of the bash `source is_prime.sh; exit 0` finding): a
+    solution whose module-level code calls `sys.exit(0)` before its real
+    logic must NOT be marked complete. Built by prepending `import sys;
+    sys.exit(0)` to each of the task's correct solution file(s) -- the
+    real, working logic is still there AFTER the exit call, so this
+    isolates the effect of the early exit itself, not a missing
+    implementation. Under the pre-hardening (import-into-self) oracle
+    design this would have raised SystemExit(0) -- uncaught by `except
+    Exception` -- and exited the whole checker with code 0 before any
+    check ran, which `Sandbox.hidden_validate` (exit-code-only) would have
+    wrongly registered as a pass."""
+    malicious = {rel: "import sys\nsys.exit(0)\n\n" + content
+                for rel, content in _CORRECT_SOLUTIONS[task_id].items()}
+    r = _run_oracle_locally(task_id, malicious, tmp_path)
+    assert r.returncode != 0, (
+        f"{task_id}: a sys.exit(0)-at-import solution was WRONGLY marked "
+        f"complete -- stdout={r.stdout!r}")
+    assert "PASS" not in r.stdout
 
 
 # -- run_oracle: precedence / anti-gaming (the brief's Step-1 scenario) -----
@@ -656,4 +814,71 @@ def test_run_oracle_false_for_hardcoded_toolheavy_solution(tmp_path):
     t.materialize_repo(task, ws)
     (ws / "sum_all.sh").write_bytes(b'#!/bin/bash\necho 150\n')
     completed, detail = t.run_oracle(task, ws)
+    assert completed is False, detail
+
+
+# -- run_oracle: task-b8expand Python subprocess-isolation, REAL container -
+# The strongest possible proof of the hardening: the FULL run_oracle path
+# (real Docker container via oracle_image="python:3.11-slim", real
+# Sandbox.hidden_validate) -- not just the local-host-subprocess execution
+# the tests above this section use -- against a candidate solution that
+# tries to short-circuit the checker with a module-level `sys.exit(0)`.
+
+
+@requires_docker
+def test_run_oracle_true_for_correct_py_multifile_workspace(tmp_path):
+    """Real, end-to-end proof (via the actual python:3.11-slim container)
+    that a genuinely correct Python multi-file solution passes through the
+    REAL run_oracle path -- mirrors the bash multifile-01 pair above."""
+    task = _load("py-multifile-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "calc.py").write_bytes(b"""\
+def add(a, b):
+    return a + b
+
+
+def multiply(a, b):
+    return a * b
+""")
+    (ws / "formatter.py").write_bytes(b"""\
+def fmt_result(x):
+    return f"Result: {x}"
+""")
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+
+@requires_docker
+def test_run_oracle_false_for_py_multifile_sys_exit_zero_gaming_attempt(tmp_path):
+    """The task-3-brief.md-style Step-1 scenario, for the task-b8expand
+    Python-oracle-hardening finding: run the REAL run_oracle (real Docker
+    container, real Sandbox.hidden_validate) against a `calc.py` that
+    tries to short-circuit the checker with a module-level `sys.exit(0)`
+    placed BEFORE its otherwise-correct `multiply()` -- must NOT be marked
+    complete. Under the pre-hardening (import-into-self) oracle design,
+    this exact `sys.exit(0)` would have killed the whole oracle_test.py
+    process with exit code 0 before any check ran, and `hidden_validate`
+    (which only inspects the process exit code) would have wrongly
+    reported a pass."""
+    task = _load("py-multifile-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "calc.py").write_bytes(b"""\
+import sys
+sys.exit(0)
+
+
+def add(a, b):
+    return a + b
+
+
+def multiply(a, b):
+    return a * b
+""")
+    (ws / "formatter.py").write_bytes(b"""\
+def fmt_result(x):
+    return f"Result: {x}"
+""")
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
     assert completed is False, detail

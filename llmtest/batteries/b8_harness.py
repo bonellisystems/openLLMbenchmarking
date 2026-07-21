@@ -196,12 +196,22 @@ class B8Harness(Battery):
     def plan(self, cfg, store, model_filter=None, force=False) -> list[WorkItem]:
         """One WorkItem per (model, harness, task, replicate_n), crossed
         from `cfg.suite["b8"]["models"]` x `["harnesses"]` x
-        `load_tasks(cfg.root)` x `range(1, replicates+1)`.
+        `load_tasks(cfg.root)` x `range(1, replicates+1)` -- `load_tasks`
+        further narrowed by the optional `b8.tasks` allowlist (task-
+        b8expand, see below) before the cross.
 
         `models`/`harnesses` are read from the b8: config block itself
         (NOT the full non-quant-arm registry roster B1/B6/B7 use) -- B8 is
         deliberately a small subset (each replicate is a real, possibly
         slow, external-process harness run against a live endpoint).
+
+        `b8.tasks` (additive, task-b8expand): when `cfg.suite["b8"]` has a
+        non-empty `tasks` list, only `B8Task.id` values in that list are
+        crossed -- e.g. suite.yaml sets this to the 6 real Python task ids
+        so a live run doesn't cross the 5 bash placeholder manifests
+        (task-01..05.yaml) that were never meant to be exercised for real.
+        Absent or empty: every loaded task is crossed, unchanged from
+        before this key existed.
 
         Resume/dedup happens HERE (see module docstring's RESUME section,
         not via `run_cmd.py`'s row_id-membership check, which is a
@@ -218,6 +228,18 @@ class B8Harness(Battery):
         replicates = b8cfg["replicates"]
 
         tasks = load_tasks(cfg.root)
+        # `b8.tasks` allowlist (additive, task-b8expand): a non-empty list
+        # restricts plan() to exactly those B8Task.id values (e.g. the 6
+        # real Python tasks in suite.yaml), so a live run can target only
+        # tasks that are actually agent-solvable/executable, leaving the
+        # bash placeholder manifests (task-01..05.yaml) loaded but unused.
+        # Absent or empty (falsy) -- every existing caller/test predating
+        # this key -- falls straight through to every loaded task,
+        # byte-for-byte the pre-task-b8expand behavior.
+        task_allowlist = b8cfg.get("tasks")
+        if task_allowlist:
+            allowed_ids = set(task_allowlist)
+            tasks = [task for task in tasks if task.id in allowed_ids]
         rows = list(store.iter_rows())
 
         items = []

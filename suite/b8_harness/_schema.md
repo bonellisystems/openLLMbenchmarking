@@ -35,6 +35,29 @@ Their `oracle.argv` follows the exact same `cp -r /oracle /tmp/work && cd
 are stdlib-only (`sys.exit`, plain `assert`-shaped checks) — no pytest,
 since `python:3.11-slim` doesn't have it installed.
 
+**Update (task-b8expand):** 3 more real Python manifests were added
+(task-09..11.yaml, ids `py-multifile-01`/`py-toolheavy-01`/
+`py-fromscratch-02`), covering the `multi-file`/`tool-heavy` shapes in
+Python for the first time plus a harder `from-scratch` task, so all 5 B8
+shapes now have a Python counterpart. All 6 Python oracles (the original
+3 plus these 3) were also HARDENED against a gaming vector the codex
+review flagged (Important #1, "the hidden oracle can be read and
+short-circuited by agent code" — the bash `source is_prime.sh; exit 0`
+finding, which has an exact Python analog): the pre-hardening oracles
+`import`ed the candidate solution directly into the oracle's own
+process, so a solution with a module-level `sys.exit(0)` would raise
+`SystemExit` (not caught by `except Exception`) and kill the whole
+checker with exit code 0 before any check ran — `Sandbox.hidden_validate`
+only looks at the process exit code, so this would wrongly register as a
+pass. Every Python oracle now runs the candidate solution in a FRESH
+`subprocess.run([sys.executable, ...])` per check and asserts on that
+subprocess's stdout from the outside — a `sys.exit(0)` can only kill its
+own throwaway subprocess, leaving no output to match, so the check still
+correctly fails. `config/suite.yaml`'s `b8.tasks` allowlist (additive)
+restricts a live `plan()` to exactly these 6 real Python task ids,
+excluding the 5 bash placeholders (task-01..05.yaml, left in place, not
+deleted) from the run.
+
 ## Two distinct anti-gaming mechanisms, both required
 
 The global constraints list TWO SEPARATE properties a B8 task must have,

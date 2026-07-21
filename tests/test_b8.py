@@ -32,6 +32,22 @@ class FakeStore:
         return []
 
 
+def _tasks_for_plan(cfg):
+    """The exact set of B8Task objects `B8Harness.plan()` will cross for
+    `cfg` -- `b8f.load_tasks(ROOT)` narrowed by the optional `b8.tasks`
+    allowlist (task-b8expand), mirroring `plan()`'s own filter. Tests that
+    pick "the first task" or count expected WorkItems must go through this
+    (not a bare `b8f.load_tasks(ROOT)[0]`) now that suite.yaml's real
+    `b8.tasks` allowlist excludes the 5 bash placeholder manifests from
+    what plan() actually produces."""
+    tasks = b8f.load_tasks(ROOT)
+    allowlist = cfg.suite["b8"].get("tasks")
+    if allowlist:
+        allowed = set(allowlist)
+        tasks = [t for t in tasks if t.id in allowed]
+    return tasks
+
+
 def _stub_ctx(tmp_path, cfg, *, adapter=None, run_oracle_result=(True, "stub-pass"),
              attempt_id=None):
     """ctx with every B8 execute() seam wired to a controllable stand-in:
@@ -95,11 +111,11 @@ def test_battery_8_registers():
 def test_suite_yaml_has_b8_block_and_condition_additions():
     cfg = load_config(ROOT)
     assert "b8" in cfg.suite
-    # Target is >=5 (task-3-brief.md), TEMPORARILY lowered to 3 for the
-    # first real local validation run (task-b8local) -- see suite.yaml's
-    # b8.replicates comment. This floor must be raised back to >=5 once
-    # that run is confirmed stable.
-    assert cfg.suite["b8"]["replicates"] >= 3
+    # Target is >=5 (task-3-brief.md / spec ss2.8, real Wilson intervals)
+    # -- was TEMPORARILY lowered to 3 for the first real local validation
+    # run (task-b8local), raised back to >=5 (task-b8expand) now that the
+    # OpenCode/gpt-oss-20b pipeline is confirmed stable.
+    assert cfg.suite["b8"]["replicates"] >= 5
     assert cfg.suite["b8"]["models"]
     assert cfg.suite["b8"]["harnesses"]
     for k in ("harness", "task", "attempt_id", "execution_provenance_sha"):
@@ -107,16 +123,36 @@ def test_suite_yaml_has_b8_block_and_condition_additions():
     assert "B8" in cfg.suite["condition_vocab"]["cond"]
 
 
+def test_suite_yaml_b8_tasks_allowlist_is_the_six_real_python_task_ids():
+    """The real suite.yaml (task-b8expand) restricts a live run to exactly
+    the 6 real Python task ids -- the 5 bash placeholder manifests
+    (task-01..05.yaml) are loaded (load_b8_tasks still returns them) but
+    never crossed by plan()."""
+    cfg = load_config(ROOT)
+    allowlist = cfg.suite["b8"].get("tasks")
+    assert allowlist, "suite.yaml b8.tasks allowlist must be set (task-b8expand)"
+    assert set(allowlist) == {
+        "py-bugfix-01", "py-fromscratch-01", "py-edit-01",
+        "py-multifile-01", "py-toolheavy-01", "py-fromscratch-02",
+    }
+    all_task_ids = {task.id for task in b8f.load_tasks(ROOT)}
+    for task_id in allowlist:
+        assert task_id in all_task_ids, f"{task_id} not found by load_tasks"
+
+
 # --- Battery.plan() -----------------------------------------------------------
 
 
 def test_plan_item_count_matches_models_x_harnesses_x_tasks_x_replicates():
     """Step-1 assertion #1: plan() item count == len(models) x len(harnesses)
-    x len(tasks) x replicates."""
+    x len(tasks) x replicates -- `tasks` here is `_tasks_for_plan(cfg)`
+    (the b8.tasks-allowlist-narrowed set), not every loaded manifest,
+    since suite.yaml's real b8.tasks allowlist (task-b8expand) excludes
+    the 5 bash placeholders from what plan() actually crosses."""
     cfg = load_config(ROOT)
     b8cfg = cfg.suite["b8"]
-    tasks = b8f.load_tasks(ROOT)
-    assert tasks, "no suite/b8_harness/task-*.yaml fixtures found"
+    tasks = _tasks_for_plan(cfg)
+    assert tasks, "no suite/b8_harness/task-*.yaml fixtures found (post-allowlist)"
 
     items = B8Harness().plan(cfg, FakeStore())
     expected = len(b8cfg["models"]) * len(b8cfg["harnesses"]) * len(tasks) * b8cfg["replicates"]
@@ -137,6 +173,64 @@ def test_plan_model_filter():
     assert {i.model_id for i in items} == {model_id}
 
 
+# --- Battery.plan(): b8.tasks allowlist (task-b8expand) -----------------------
+
+
+def test_plan_tasks_allowlist_restricts_to_listed_ids():
+    """A non-empty b8.tasks allowlist restricts plan() to exactly those
+    task ids -- proven against a SUBSET distinct from the real suite.yaml
+    default, so this doesn't just coincidentally pass because of what
+    suite.yaml already has configured."""
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    model_id = b8cfg["models"][0]
+    harness_name = b8cfg["harnesses"][0]
+    subset = ["py-bugfix-01", "py-edit-01"]
+    cfg.suite["b8"]["tasks"] = subset
+
+    items = B8Harness().plan(cfg, FakeStore(), model_filter=model_id)
+    assert items
+    seen_task_ids = {i.task_id for i in items}
+    assert seen_task_ids == {f"b8.{tid}" for tid in subset}
+    assert len(items) == len(subset) * b8cfg["replicates"]
+    for item in items:
+        parts = dict(p.split("=", 1) for p in item.condition.split(";"))
+        assert parts["harness"] == harness_name
+        assert parts["task"] in subset
+
+
+def test_plan_tasks_allowlist_single_id_excludes_everything_else():
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    model_id = b8cfg["models"][0]
+    cfg.suite["b8"]["tasks"] = ["py-toolheavy-01"]
+
+    items = B8Harness().plan(cfg, FakeStore(), model_filter=model_id)
+    assert items
+    assert {i.task_id for i in items} == {"b8.py-toolheavy-01"}
+    assert len(items) == b8cfg["replicates"]
+
+
+@pytest.mark.parametrize("allowlist_value", [[], None])
+def test_plan_tasks_allowlist_empty_or_absent_falls_back_to_all_tasks(allowlist_value):
+    """Additivity: an empty list (or the key removed entirely) must
+    reproduce byte-for-byte the pre-task-b8expand behavior -- every
+    loaded manifest crossed, unchanged."""
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    model_id = b8cfg["models"][0]
+    if allowlist_value is None:
+        cfg.suite["b8"].pop("tasks", None)
+    else:
+        cfg.suite["b8"]["tasks"] = allowlist_value
+
+    items = B8Harness().plan(cfg, FakeStore(), model_filter=model_id)
+    all_tasks = b8f.load_tasks(ROOT)
+    expected_task_ids = {f"b8.{task.id}" for task in all_tasks}
+    assert {i.task_id for i in items} == expected_task_ids
+    assert len(items) == len(all_tasks) * b8cfg["replicates"]
+
+
 def _seed_full_condition(order, harness_name, task_id):
     return schema.canonical_condition(
         {"cond": "B8", "harness": harness_name, "task": task_id,
@@ -155,7 +249,7 @@ def test_plan_resume_skips_already_recorded_replicates():
     order = cfg.suite["condition_order"]
     model_id = b8cfg["models"][0]
     harness_name = b8cfg["harnesses"][0]
-    task = b8f.load_tasks(ROOT)[0]
+    task = _tasks_for_plan(cfg)[0]
     task_id = f"b8.{task.id}"
 
     full_condition = _seed_full_condition(order, harness_name, task.id)
@@ -180,7 +274,7 @@ def test_plan_force_bumps_one_run_n_beyond_existing():
     order = cfg.suite["condition_order"]
     model_id = b8cfg["models"][0]
     harness_name = b8cfg["harnesses"][0]
-    task = b8f.load_tasks(ROOT)[0]
+    task = _tasks_for_plan(cfg)[0]
     task_id = f"b8.{task.id}"
 
     full_condition = _seed_full_condition(order, harness_name, task.id)

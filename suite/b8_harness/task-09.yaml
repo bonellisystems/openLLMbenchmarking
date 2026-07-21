@@ -1,0 +1,105 @@
+id: py-multifile-01
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo has three files:
+
+  - `calc.py` -- defines `add(a, b)`, which works, but is MISSING a
+    `multiply(a, b)` function. Add it (integer multiplication of its two
+    arguments, RETURNED -- not printed).
+  - `formatter.py` -- defines `fmt_result(x)`, but it returns the wrong
+    prefix (`"Answer: "` instead of `"Result: "`). Fix the prefix.
+  - `main.py` -- already correct; imports both modules and prints the
+    formatted product of 3 and 4. Do NOT edit `main.py`.
+
+  When done, `python3 main.py` must print exactly `Result: 12`. You need
+  to edit BOTH `calc.py` and `formatter.py` to get there -- neither file
+  alone is enough. Do not create any new files.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 200, tokens: 3500, steps: 10}
+setup_repo:
+  calc.py: |
+    def add(a, b):
+        return a + b
+
+    # multiply() is missing -- add it here (integer multiply; RETURN the
+    # result, do not print it).
+  formatter.py: |
+    def fmt_result(x):
+        return f"Answer: {x}"
+  main.py: |
+    from calc import multiply
+    from formatter import fmt_result
+
+    print(fmt_result(multiply(3, 4)))
+oracle_files:
+  oracle_test.py: |
+    import subprocess
+    import sys
+
+
+    def _run(argv):
+        """Run `argv` (extra args after the interpreter) in a FRESH
+        subprocess and return the completed process -- never `import` the
+        candidate solution into THIS process. A solution with a
+        module-level `sys.exit(0)` (or one that monkeypatches this
+        checker) can only affect the throwaway subprocess it runs in; its
+        observable stdout is what gets compared against the exact
+        expected text below, so it cannot short-circuit this oracle's own
+        exit code the way an in-process `import`/`exec` could."""
+        return subprocess.run([sys.executable] + argv, capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        r = _run(["main.py"])
+        got = r.stdout.strip()
+        if got != "Result: 12":
+            print(f"FAIL: main.py -> {got!r} (want 'Result: 12'); "
+                  f"exit={r.returncode} stderr={r.stderr.strip()!r}")
+            sys.exit(1)
+
+        r2 = _run(["-c", "import calc\nprint(calc.multiply(6, 7))\n"])
+        got2 = r2.stdout.strip()
+        if got2 != "42":
+            print(f"FAIL: calc.multiply(6, 7) -> {got2!r} (want '42'); "
+                  f"exit={r2.returncode} stderr={r2.stderr.strip()!r}")
+            sys.exit(1)
+
+        print("PASS")
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [main.py]
+allowed_diff_paths: [calc.py, formatter.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (task-b8expand) -- Python counterpart of
+  suite/b8_harness/task-02.yaml (multifile-01): completion genuinely
+  requires coordinated edits across TWO files (`calc.py` and
+  `formatter.py`); neither alone produces `main.py`'s expected output.
+  `main.py` is the agent-VISIBLE, protected entrypoint (both hash-checked
+  AND excluded from allowed_diff_paths, mirroring the bash manifest's
+  `main.sh`) so a gamed "fix" can't just hardcode the entrypoint's own
+  output.
+
+  Hidden oracle, SUBPROCESS-ISOLATED (task-b8expand hardening -- see
+  llmtest/harness/tasks.py's module docstring and the codex review's
+  Important #1 finding, "the hidden oracle can be read and
+  short-circuited by agent code"): `oracle_test.py` never `import`s
+  `calc`/`main` into ITS OWN process. Each check launches a FRESH `python3`
+  subprocess (`subprocess.run([sys.executable, ...])`) and asserts on that
+  subprocess's stdout/exit code from the outside -- a solution containing
+  a module-level `sys.exit(0)` (the exact Python analog of the bash
+  review's `source is_prime.sh` / `exit 0` short-circuit) can only kill
+  the throwaway subprocess early, leaving it with no matching stdout, so
+  the comparison against the exact expected text still correctly fails.
+  The oracle also calls `multiply` directly with different inputs (6, 7)
+  than `main.py`'s own call (3, 4), catching a `multiply` that only
+  special-cases the exact numbers `main.py` uses. `oracle_test.py` itself
+  lives in `oracle_files`, never written into the agent's workspace by
+  `materialize_repo` -- nothing for the agent to read and overfit against.
+  Stdlib only (`subprocess`, `sys`) -- no pytest.

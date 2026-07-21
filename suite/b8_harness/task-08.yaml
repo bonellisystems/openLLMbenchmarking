@@ -1,6 +1,6 @@
 id: py-edit-01
 shape: edit
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The repo has one file, `greet.py`, containing a `greet(name)` function
   that always returns the same hardcoded greeting no matter what name is
@@ -26,25 +26,30 @@ setup_repo:
     This file is part of the task fixture. Do not edit it.
 oracle_files:
   oracle_test.py: |
+    import subprocess
     import sys
+
+    CASES = [("Ada", "Hello, Ada!"), ("Grace", "Hello, Grace!")]
+
+
+    def _run(name):
+        """Run `greet.greet(name)` in a FRESH subprocess and return the
+        completed process -- never `import greet` into THIS process
+        (task-b8expand hardening: a module-level `sys.exit(0)` in the
+        candidate solution can only kill the throwaway subprocess, not
+        this checker -- see llmtest/harness/tasks.py module docstring)."""
+        code = f"import greet\nprint(greet.greet({name!r}))\n"
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
 
 
     def main():
-        try:
-            import greet
-        except Exception as e:
-            print(f"FAIL: import greet raised {e!r}")
-            sys.exit(1)
-
-        cases = [("Ada", "Hello, Ada!"), ("Grace", "Hello, Grace!")]
-        for name, want in cases:
-            try:
-                got = greet.greet(name)
-            except Exception as e:
-                print(f"FAIL: greet({name!r}) raised {e!r}")
-                sys.exit(1)
+        for name, want in CASES:
+            r = _run(name)
+            got = r.stdout.strip()
             if got != want:
-                print(f"FAIL: greet({name!r}) -> {got!r} (want {want!r})")
+                print(f"FAIL: greet({name!r}) -> {got!r} (want {want!r}); "
+                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
                 sys.exit(1)
         print("PASS")
 
@@ -65,10 +70,22 @@ notes: |
 
   Hidden oracle: `oracle_test.py` lives in `oracle_files`, never written
   into the agent's workspace by `materialize_repo`. `run_oracle`
-  re-injects it into a private copy only at validation time, then IMPORTS
-  the edited `greet.py` and calls `greet` with two different names,
-  checking real return values -- a model that special-cases "Ada" alone
-  still fails the "Grace" check. Stdlib only -- no pytest.
+  re-injects it into a private copy only at validation time, then calls
+  `greet` with two different names, checking real return values -- a
+  model that special-cases "Ada" alone still fails the "Grace" check.
+  Stdlib only (`subprocess`, `sys`) -- no pytest.
+
+  SUBPROCESS-ISOLATED (task-b8expand hardening, task_version 1.0.0 ->
+  1.1.0 -- codex review Important #1, same finding/fix as
+  py-bugfix-01/task-06.yaml): the 1.0.0 oracle `import`ed `greet` straight
+  into this checker's own process, so a module-level `sys.exit(0)` in the
+  candidate `greet.py` would kill the whole oracle with exit code 0
+  before either case ran, and `hidden_validate` (exit-code-only) would
+  wrongly report a pass. The 1.1.0 oracle instead launches a brand-new
+  `python3 -c "import greet; print(greet.greet(...))"` subprocess PER
+  CASE and asserts on ITS stdout from the outside -- a `sys.exit(0)` in
+  `greet.py` now only kills that one throwaway subprocess, leaving no
+  output to match, so the comparison still correctly fails.
 
   `NOTES.md` is the agent-VISIBLE protected file exercising the hash-cap
   (Design Decision #1a) -- a distinct mechanism from withholding: NOTES.md
