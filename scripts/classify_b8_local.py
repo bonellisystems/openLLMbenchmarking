@@ -17,7 +17,10 @@ WHAT THIS DOES, end to end, per suite_version:
      its `B8Task` manifest via `llmtest.harness.tasks.load_b8_tasks`
      (matched on `task_id`, stripping the `"b8."` prefix), then run
      `classify_first_failure(trace, task, completed=False,
-     classifiers=<panel>)`.
+     classifiers=<panel>, oracle_detail=row["det_checks"]["oracle"]
+     ["detail"])` -- Wave 1b: the row's own oracle rejection reason is
+     threaded through as TRUSTED evidence so the panel can tell (b) from
+     (c) instead of guessing from the bare completion boolean alone.
   4. Append `{row_id, task_id, model_id, suite_version, label, source, ts}`
      to `results/b8_classifications-<suite_version>.jsonl` -- a SIBLING,
      append-only store, never a mutation of `rows-<suite_version>.jsonl`
@@ -210,8 +213,19 @@ def classify_pending_rows(root: Path, cfg, suite_version: str, *, fake: bool,
             summary["skipped_no_task"] += 1
             continue
 
+        # Wave 1b: thread the row's own oracle rejection reason through as
+        # TRUSTED evidence (`det_checks.oracle.detail` -- the same string
+        # `b8_harness.execute()` computed from `run_oracle` and stored on
+        # this row) -- see `classify_first_failure`'s docstring and
+        # `llmtest.harness.failure_class`'s "ORACLE DETAIL" module-doc
+        # section. Guarded against a missing/malformed `det_checks`/
+        # `oracle` key (older rows, or a hand-seeded test fixture) rather
+        # than assuming the nested shape is always present.
+        oracle_detail = ((row.get("det_checks") or {}).get("oracle") or {}).get("detail")
+
         label, source = classify_first_failure(
-            trace, task, completed=False, classifiers=classifiers, packet_dir=packet_dir)
+            trace, task, completed=False, classifiers=classifiers, packet_dir=packet_dir,
+            oracle_detail=oracle_detail)
 
         record = {
             "row_id": row["row_id"], "task_id": row.get("task_id"),

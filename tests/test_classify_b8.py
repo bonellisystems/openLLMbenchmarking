@@ -87,7 +87,9 @@ def _unparsed_tool_call_trace() -> Trace:
 
 def _seed_failed_row(tmp_path: Path, *, trace: Trace, task_suffix: str = TASK_SUFFIX,
                       model_id: str = "model-a", run_n: int = 1,
-                      with_trace_ref: bool = True) -> dict:
+                      with_trace_ref: bool = True,
+                      oracle_detail: str | None = "solution logic wrong",
+                      include_oracle_key: bool = True) -> dict:
     """Writes one schema-valid, completion=False B8 row via the real Store
     (so append()'s own schema validation -- including the row_id/hash
     invariant -- is exercised too, not bypassed), plus -- unless
@@ -97,7 +99,14 @@ def _seed_failed_row(tmp_path: Path, *, trace: Trace, task_suffix: str = TASK_SU
     response_meta.trace_ref to match. row_id is computed via
     schema.compute_row_id (the SAME preimage b8_harness.py's execute()
     builds), not a hand-picked string -- Store.append() rejects a row_id
-    that doesn't hash-match its own fields."""
+    that doesn't hash-match its own fields.
+
+    `oracle_detail`/`include_oracle_key` (Wave 1b): control the shape of
+    `det_checks.oracle` -- the default (`"solution logic wrong"`,
+    `include_oracle_key=True`) matches every real `b8_harness.execute()`
+    row; `include_oracle_key=False` seeds a `det_checks` with NO `oracle`
+    key at all (an older/malformed row), for
+    `classify_b8_local`'s oracle_detail-threading robustness guard."""
     condition = (f"cond=B8;harness=opencode;task={task_suffix};"
                  f"attempt_id=att-{run_n};execution_provenance_sha=" + "0" * 64)
     row_id = schema.compute_row_id(
@@ -120,7 +129,8 @@ def _seed_failed_row(tmp_path: Path, *, trace: Trace, task_suffix: str = TASK_SU
         "quant_sha256": "qsha", "tier": "T1", "session_id": "s",
         "sampling": {"harness": "opencode"}, "ts": "2026-07-20T00:00:00+00:00",
         "request": {}, "response_meta": response_meta,
-        "det_checks": {"oracle": {"pass": False, "detail": "solution logic wrong"}},
+        "det_checks": ({"oracle": {"pass": False, "detail": oracle_detail}}
+                        if include_oracle_key else {}),
         "needs_judging": False,
         "metrics": {
             "completion": False, "steps": trace.steps,
@@ -198,6 +208,65 @@ def test_fake_mode_classifies_a_failed_row_and_writes_sibling_store(tmp_path):
     assert rec["label"] == "c"          # FakeClassifier("c"), routed to the panel
     assert rec["source"] == "panel"
     assert rec["suite_version"] == SUITE
+
+
+def test_classify_pending_rows_passes_oracle_detail_through(tmp_path, monkeypatch):
+    """Wave 1b: classify_pending_rows must read the row's own
+    det_checks.oracle.detail and pass it through to classify_first_failure
+    as its `oracle_detail` kwarg -- TRUSTED evidence the panel needs to
+    tell (b) from (c) (see llmtest.harness.failure_class's "ORACLE DETAIL"
+    module-doc section). --fake mode's FakeClassifier ignores packet
+    content entirely, so this asserts on the actual CALL (via a spy
+    replacing classify_first_failure), not on the recorded label."""
+    _seed_repo(tmp_path)
+    trace = _completed_but_wrong_logic_trace()
+    row = _seed_failed_row(tmp_path, trace=trace, oracle_detail="FAIL: letter_grade(90) -> 'B' (want 'A')")
+    cfg = _cfg(tmp_path)
+
+    captured: dict = {}
+
+    def _spy_classify_first_failure(trace_arg, task_arg, *, completed=None,
+                                     classifiers=None, packet_dir=None,
+                                     oracle_detail=None):
+        captured["oracle_detail"] = oracle_detail
+        captured["completed"] = completed
+        return "c", "panel"
+
+    monkeypatch.setattr(classify_b8_local, "classify_first_failure", _spy_classify_first_failure)
+
+    classify_b8_local.classify_pending_rows(tmp_path, cfg, SUITE, fake=True,
+                                             log=lambda *a, **k: None)
+
+    assert captured["oracle_detail"] == row["det_checks"]["oracle"]["detail"]
+    assert captured["oracle_detail"] == "FAIL: letter_grade(90) -> 'B' (want 'A')"
+    assert captured["completed"] is False
+
+
+def test_classify_pending_rows_oracle_detail_missing_key_does_not_crash(tmp_path, monkeypatch):
+    """A row with no `det_checks.oracle` key at all (an older/malformed
+    row -- `include_oracle_key=False`) must still classify cleanly,
+    threading `oracle_detail=None` rather than raising on the missing
+    nested key."""
+    _seed_repo(tmp_path)
+    trace = _completed_but_wrong_logic_trace()
+    _seed_failed_row(tmp_path, trace=trace, include_oracle_key=False)
+    cfg = _cfg(tmp_path)
+
+    captured: dict = {}
+
+    def _spy_classify_first_failure(trace_arg, task_arg, *, completed=None,
+                                     classifiers=None, packet_dir=None,
+                                     oracle_detail=None):
+        captured["oracle_detail"] = oracle_detail
+        return "c", "panel"
+
+    monkeypatch.setattr(classify_b8_local, "classify_first_failure", _spy_classify_first_failure)
+
+    summary = classify_b8_local.classify_pending_rows(tmp_path, cfg, SUITE, fake=True,
+                                                        log=lambda *a, **k: None)
+
+    assert summary["classified"] == 1
+    assert captured["oracle_detail"] is None
 
 
 def test_fake_mode_deterministic_failure_never_reaches_fake_panel(tmp_path):
