@@ -2,6 +2,8 @@
 schema, HarnessAdapter ABC, and MockHarnessAdapter (TESTPLAN Part 2 Phase 1)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from llmtest.harness.base import MockHarnessAdapter
@@ -78,3 +80,49 @@ def test_direct_construction_with_correct_steps_succeeds():
     trace = Trace(events=events, terminal_status="completed", steps=2,
                    tokens_prompt=0, tokens_completion=0, subagent_spawned="no")
     assert trace.steps == 2
+
+
+# --- Trace <-> dict round-trip (task-b8classify: B8 trace persistence) ------
+
+
+def test_trace_to_dict_from_dict_round_trip():
+    trace = Trace.from_events(_scripted_events(), terminal_status="completed",
+                               tokens_prompt=42, tokens_completion=17,
+                               subagent_spawned="yes")
+
+    restored = Trace.from_dict(trace.to_dict())
+
+    assert restored == trace
+    assert all(isinstance(e, TraceEvent) for e in restored.events)
+    assert restored.steps == trace.steps
+
+
+def test_trace_to_dict_round_trips_through_json_text():
+    """The actual persistence path (b8_harness.execute() writes
+    json.dumps(trace.to_dict()) to a file; the classify pass reads it back
+    with json.loads(...) then Trace.from_dict(...)) -- proves to_dict()'s
+    output survives a real JSON encode/decode cycle, not just a Python
+    dict round-trip."""
+    trace = Trace.from_events(_scripted_events(), terminal_status="failed-task",
+                               tokens_prompt=1, tokens_completion=2,
+                               subagent_spawned="no")
+
+    blob = json.dumps(trace.to_dict())
+    restored = Trace.from_dict(json.loads(blob))
+
+    assert restored == trace
+
+
+def test_trace_from_dict_rejects_mismatched_steps():
+    """A corrupted/hand-edited trace file with a steps count that doesn't
+    match its own events must fail loud via __post_init__, same as direct
+    Trace(...) construction -- from_dict must not silently re-derive a
+    different steps value."""
+    trace = Trace.from_events(_scripted_events(), terminal_status="completed",
+                               tokens_prompt=0, tokens_completion=0,
+                               subagent_spawned="no")
+    d = trace.to_dict()
+    d["steps"] = 999
+
+    with pytest.raises(ValueError):
+        Trace.from_dict(d)

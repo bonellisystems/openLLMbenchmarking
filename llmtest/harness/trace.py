@@ -35,6 +35,13 @@ class TraceEvent:
                 f"invalid TraceEvent.kind: {self.kind!r} (must be one of "
                 f"{sorted(VALID_EVENT_KINDS)})")
 
+    def to_dict(self) -> dict:
+        return {"kind": self.kind, "payload": self.payload}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TraceEvent":
+        return cls(kind=d["kind"], payload=d.get("payload", {}))
+
 
 @dataclass
 class Trace:
@@ -78,3 +85,32 @@ class Trace:
         return cls(events=events, terminal_status=terminal_status, steps=steps,
                     tokens_prompt=tokens_prompt, tokens_completion=tokens_completion,
                     subagent_spawned=subagent_spawned)
+
+    def to_dict(self) -> dict:
+        """Serialize this `Trace` (events included) to a plain JSON-safe
+        dict -- the persistence format `llmtest.batteries.b8_harness.
+        execute()` writes to `artifacts/b8_traces/<row_id>.json` so a later
+        classify pass (`scripts/classify_b8_local.py`) can reload the full
+        `Trace` a stored row's own summary `metrics` don't carry."""
+        return {
+            "events": [e.to_dict() for e in self.events],
+            "terminal_status": self.terminal_status,
+            "steps": self.steps,
+            "tokens_prompt": self.tokens_prompt,
+            "tokens_completion": self.tokens_completion,
+            "subagent_spawned": self.subagent_spawned,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Trace":
+        """Inverse of `to_dict()`. Goes through the dataclass constructor
+        directly (not `from_events`) so a serialized `steps` is validated
+        against its own `events` by `__post_init__`, exactly like any other
+        direct-construction call -- a corrupted/hand-edited trace file with
+        a mismatched `steps` fails loud here rather than silently
+        re-deriving a different value."""
+        events = [TraceEvent.from_dict(e) for e in d.get("events", [])]
+        return cls(events=events, terminal_status=d["terminal_status"],
+                    steps=d["steps"], tokens_prompt=d["tokens_prompt"],
+                    tokens_completion=d["tokens_completion"],
+                    subagent_spawned=d["subagent_spawned"])

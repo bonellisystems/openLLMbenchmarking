@@ -9,6 +9,7 @@ b8_harness.py` defines for exactly this purpose.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +21,7 @@ from llmtest.batteries.b8_harness import (
     B8Harness, _base_condition, _execution_provenance_sha, _full_condition,
 )
 from llmtest.harness.base import MockHarnessAdapter
-from llmtest.harness.trace import TraceEvent
+from llmtest.harness.trace import Trace, TraceEvent
 from llmtest.registry import load_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -332,6 +333,74 @@ def test_execute_produces_schema_valid_row(tmp_path):
     assert parts["attempt_id"] == "attempt-fixed"
     assert len(parts["execution_provenance_sha"]) == 64
     assert parts["harness"] == "opencode"
+
+
+def test_execute_persists_trace_and_stamps_trace_ref_on_the_row(tmp_path):
+    """task-b8classify: execute() must persist the FULL Trace (not just the
+    summary counts already in metrics) to artifacts/b8_traces/<row_id>.json
+    and reference it additively via response_meta.trace_ref -- row_id and
+    schema-validity must be unaffected."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status="completed", tokens_prompt=120,
+                            tokens_completion=80, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter, run_oracle_result=(True, "stub-pass"),
+                    attempt_id="attempt-fixed")
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert schema.validate_row(row) == []
+
+    trace_ref = row["response_meta"].get("trace_ref")
+    assert trace_ref, "execute() must stamp response_meta.trace_ref"
+    assert row["row_id"] in trace_ref
+
+    trace_path = tmp_path / "artifacts" / trace_ref
+    assert trace_path.exists()
+
+    restored = Trace.from_dict(json.loads(trace_path.read_text(encoding="utf-8")))
+    assert restored.terminal_status == "completed"
+    assert restored.tokens_prompt == 120
+    assert restored.tokens_completion == 80
+    assert restored.subagent_spawned == "no"
+    assert restored.steps == row["metrics"]["steps"]
+
+
+def test_execute_persisted_trace_reflects_failing_run(tmp_path):
+    """Same trace-persistence path, but for a FAILED (oracle-rejected) run
+    -- the exact case scripts/classify_b8_local.py will actually read."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+    adapter = _mock_adapter(terminal_status="killed", tokens_prompt=30,
+                            tokens_completion=5, subagent_spawned="no")
+    ctx = _stub_ctx(tmp_path, cfg, adapter=adapter,
+                    run_oracle_result=(False, "timed out"), attempt_id="attempt-fixed")
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    trace_path = tmp_path / "artifacts" / row["response_meta"]["trace_ref"]
+    restored = Trace.from_dict(json.loads(trace_path.read_text(encoding="utf-8")))
+    assert restored.terminal_status == "killed"
+    assert row["metrics"]["completion"] is False
+
+
+def test_execute_different_rows_get_distinct_trace_files(tmp_path):
+    """Two different physical attempts (different attempt_id -> different
+    row_id) must never collide on the same trace file."""
+    cfg = load_config(ROOT)
+    item = _first_item(cfg)
+
+    ctx_a = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-A")
+    ctx_b = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-B")
+
+    row_a = B8Harness().execute(item, ctx_a)[0]
+    row_b = B8Harness().execute(item, ctx_b)[0]
+
+    ref_a = row_a["response_meta"]["trace_ref"]
+    ref_b = row_b["response_meta"]["trace_ref"]
+    assert ref_a != ref_b
+    assert (tmp_path / "artifacts" / ref_a).exists()
+    assert (tmp_path / "artifacts" / ref_b).exists()
 
 
 def test_execute_completion_false_when_oracle_fails(tmp_path):

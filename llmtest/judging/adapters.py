@@ -231,11 +231,28 @@ class BaseAdapter:
         and send nothing on stdin."""
         return self.argv, packet_text
 
+    def _reply_text(self, stdout: str) -> str:
+        """Envelope-unwrap hook, symmetric to `_parse_stdout` but reusable
+        by a caller that needs the raw reply TEXT rather than a parsed
+        {scores,reasons,ranking} dict -- `llmtest.harness.failure_class.
+        _invoke_classifier` (the B8 first-failure-classification panel,
+        task-b8classify) is exactly that caller: it runs a classifier's
+        reply through `parse_categorical_reply` (a different schema, `
+        {"label": ...}`), not `parse_reply`, so it cannot go through
+        `_parse_stdout` -- it needs the UNWRAPPED text this method returns.
+        Default: stdout IS the reply text (no envelope to unwrap).
+        Overridden by `ClaudeAdapter`, whose CLI wraps the reply in an
+        outer `{"result": "..."}` envelope -- both `_parse_stdout` (numeric
+        judge path) and `_invoke_classifier` (categorical path) call this
+        one method, so the envelope-unwrap logic lives in exactly one
+        place."""
+        return stdout
+
     def _parse_stdout(self, stdout: str,
                        expected_letters: list[str]) -> tuple[dict | None, str | None]:
         """Hook for CLI-specific envelope unwrapping. Default: stdout IS the
-        reply text."""
-        return parse_reply(stdout, expected_letters)
+        reply text (via `_reply_text`)."""
+        return parse_reply(self._reply_text(stdout), expected_letters)
 
 
 class FileDeliveryAdapter(BaseAdapter):
@@ -298,8 +315,13 @@ class ClaudeAdapter(BaseAdapter):
         super().__init__(judge_id, model_pin, cli_version,
                           _substitute_argv(argv_template, model_pin, cli=cli))
 
-    def _parse_stdout(self, stdout: str,
-                       expected_letters: list[str]) -> tuple[dict | None, str | None]:
+    def _reply_text(self, stdout: str) -> str:
+        """Unwrap the CLI's outer `{"result": "..."}` envelope, returning
+        the nested reply text -- falls back to `stdout` unchanged if it
+        doesn't parse as the expected envelope shape (e.g. an older CLI
+        version, or a test's stdout that's already unwrapped). See
+        `BaseAdapter._reply_text`'s docstring for why this is a separate
+        method from `_parse_stdout` rather than inlined into it."""
         try:
             envelope = json.loads(stdout)
             result = envelope["result"]
@@ -309,8 +331,8 @@ class ClaudeAdapter(BaseAdapter):
             # Defensive fallback: envelope didn't load as expected -- maybe
             # stdout IS the raw reply already (e.g. CLI flag changed, or a
             # test/older CLI version without the envelope wrapper).
-            return parse_reply(stdout, expected_letters)
-        return parse_reply(result, expected_letters)
+            return stdout
+        return result
 
 
 class CodexAdapter(BaseAdapter):

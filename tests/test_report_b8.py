@@ -248,6 +248,67 @@ def test_build_b8_section_honors_not_applicable_canary_never_false_zero_percent(
     assert "0%" not in canary_cell
 
 
+# ---------------------------------------------------------------------------
+# 2b. build_b8_section -- sibling classification store pickup (task-b8classify)
+# ---------------------------------------------------------------------------
+
+
+def _write_classification(root: Path, suite_version: str, row_id: str, label: str,
+                           source: str = "panel") -> None:
+    path = root / "results" / f"b8_classifications-{suite_version}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps({"row_id": row_id, "label": label, "source": source}) + "\n")
+
+
+def test_build_b8_section_reads_sibling_classification_store(tmp_path):
+    """A row with NO metrics.first_failure_class of its own, but a verdict
+    recorded in the sibling results/b8_classifications-<suite>.jsonl store,
+    must show up under the real label -- not '(unclassified)'."""
+    caveats: list[str] = []
+    for run_n, ok in zip(range(1, 6), [True, True, True, False, False]):
+        _write_b8_row(tmp_path, "suite-v2.1.0", model_id="model-a", harness="opencode",
+                       run_n=run_n, completion=ok)  # note: NO first_failure_class on the row
+    rows = p8_report.load_rows(tmp_path, "suite-v2.1.0", caveats)
+
+    row_id_for_run4 = next(r["row_id"] for r in rows if r["run_n"] == 4)
+    _write_classification(tmp_path, "suite-v2.1.0", row_id_for_run4, "c")
+
+    section = p8_report.build_b8_section(tmp_path, _cfg(), rows)
+
+    # Isolate the first-failure-class TABLE specifically (not the completion
+    # table above it, which also mentions model-a/opencode) so the class-c
+    # cell we assert on can't accidentally match the wrong table.
+    fc_block = section.split("**First-failure-class distribution", 1)[1]
+    fc_row = next(ln for ln in fc_block.splitlines() if "model-a" in ln and "opencode" in ln)
+    cells = [c.strip() for c in fc_row.strip().strip("|").split("|")]
+    # headers: Model, Harness, class a, class b, class c, class d, class unknown, (unclassified)
+    assert cells[0:2] == ["model-a", "opencode"]
+    assert cells[4] == "1"          # class c: the run_n=4 row, classified via the sibling store
+    assert cells[-1] == "1"         # (unclassified): run_n=5 still has no verdict anywhere
+
+
+def test_build_b8_section_row_own_metrics_class_wins_over_sibling_store():
+    """If a row somehow carries metrics.first_failure_class directly AND has
+    a sibling-store entry, the row's own value wins (the sibling store only
+    fills in what's MISSING) -- proven as a pure unit test against
+    _apply_b8_classifications, independent of the filesystem."""
+    rows = [{"row_id": "r1", "metrics": {"first_failure_class": "a"}}]
+    out = p8_report._apply_b8_classifications(rows, {"r1": "d"})
+    assert out[0]["metrics"]["first_failure_class"] == "a"
+
+
+def test_apply_b8_classifications_does_not_mutate_input_rows():
+    original = {"row_id": "r1", "metrics": {"completion": False}}
+    rows = [original]
+    p8_report._apply_b8_classifications(rows, {"r1": "b"})
+    assert "first_failure_class" not in original["metrics"]
+
+
+def test_load_b8_classifications_missing_file_returns_empty(tmp_path):
+    assert p8_report._load_b8_classifications(tmp_path, "suite-vX") == {}
+
+
 def test_build_b8_section_labels_source_suite(tmp_path):
     caveats: list[str] = []
     _write_b8_row(tmp_path, "suite-v2.1.0", model_id="model-a", harness="opencode", run_n=1)

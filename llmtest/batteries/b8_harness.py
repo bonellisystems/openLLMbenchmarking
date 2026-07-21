@@ -406,4 +406,26 @@ class B8Harness(Battery):
             timing_authoritative=False,
             status="ok", tags=[])
 
+        # Trace persistence (task-b8classify): the full `Trace` (every
+        # event, not just the summary counts already in `metrics` above) is
+        # written to artifacts/b8_traces/<row_id>.json -- `row.row_id` is
+        # already final at this point (schema.ResultRow.new computed it
+        # from the row's own fields, the same inputs `_full_condition`
+        # above just fed into `condition`), so the trace file and the row
+        # that references it can never disagree on which row_id they
+        # belong to. `response_meta.trace_ref` is set AFTER `ResultRow.new`
+        # returns -- purely additive (response_meta plays no part in
+        # row_id's preimage; schema.validate_row only requires it be a
+        # dict) -- so this cannot change row_id or break the schema/
+        # validator. `scripts/classify_b8_local.py` (the classify pass)
+        # reads this back via `Trace.from_dict(json.loads(...))` to
+        # reconstruct the exact Trace `classify_first_failure` needs; a
+        # stored row's own `metrics` never carried enough (no per-event
+        # detail, only aggregate counts).
+        trace_relpath = f"b8_traces/{row.row_id}.json"
+        trace_path = root / "artifacts" / trace_relpath
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text(json.dumps(trace.to_dict(), sort_keys=True), encoding="utf-8")
+        row.response_meta["trace_ref"] = trace_relpath
+
         return [row.to_dict()]

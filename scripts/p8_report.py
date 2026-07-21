@@ -957,16 +957,73 @@ def _render_b8_groups(group_rows_by_key: dict[tuple[str, str], list[dict]]) -> s
 
     note = (
         "\n\n_First-failure-class distribution is DISPLAY ONLY -- actually running "
-        "`llmtest.harness.failure_class.classify_first_failure` to POPULATE "
-        "`metrics['first_failure_class']` on B8 rows is a documented FOLLOW-UP (a "
-        "stored row carries summary metrics, not the full `Trace` the classifier "
-        "needs); every column here reads 0, with every failed row falling into "
-        f"`{_B8_UNCLASSIFIED}`, until that classifier job exists and is wired in. "
-        "Wilson 95% CI uses `llmtest.harness.stats.wilson` (z=1.96); k/N and the "
-        "ordered per-replicate outcome list are always shown alongside it -- never "
-        "a single blended probability at these small (N>=5) replicate counts._"
+        "`llmtest.harness.failure_class.classify_first_failure` -- run via "
+        "`scripts/classify_b8_local.py` (task-b8classify) -- POPULATES this "
+        "distribution: since B8's row schema has no room for the full `Trace` a "
+        "classifier needs (only summary `metrics`), the classify pass reads each "
+        "failed row's persisted Trace (`response_meta.trace_ref`, written by "
+        "`llmtest.batteries.b8_harness.execute()`) and appends its verdict to the "
+        f"sibling, append-only store `results/b8_classifications-<suite_version>.jsonl` "
+        "(row_id keyed) rather than mutating the row itself (row_id is "
+        "content-derived and `Store.append()` is a structural no-op on an "
+        "existing row_id -- see that module's docstring). This function reads that "
+        "sibling store (`_load_b8_classifications`) and fills in "
+        "`metrics['first_failure_class']` wherever a row's own metrics don't "
+        "already carry it; a failed row falls into `" + _B8_UNCLASSIFIED + "` only "
+        "when neither source has a verdict for it yet (classify pass not run, or "
+        "still in progress). Wilson 95% CI uses `llmtest.harness.stats.wilson` "
+        "(z=1.96); k/N and the ordered per-replicate outcome list are always shown "
+        "alongside it -- never a single blended probability at these small "
+        "(N>=5) replicate counts._"
     )
     return f"{table}\n\n**First-failure-class distribution (failed rows only)**\n\n{fc_table}{note}"
+
+
+def _load_b8_classifications(root, suite_version: str) -> dict[str, str]:
+    """{row_id: label} from the sibling classification store
+    (`results/b8_classifications-<suite_version>.jsonl`, appended by
+    `scripts/classify_b8_local.py`). Absent file (classify pass never run
+    for this suite) degrades to `{}`, same discipline as every other
+    optional-file reader in this script -- `build_b8_section` must never
+    crash just because nobody has classified failures yet. A row_id
+    classified more than once (a re-run without `--redo` skips already-
+    classified rows, but this stays robust either way) keeps the LAST
+    recorded verdict -- append-only, never mutated in place, same
+    convention as `results/rows-*.jsonl` itself."""
+    path = Path(root) / "results" / f"b8_classifications-{suite_version}.jsonl"
+    if not path.exists():
+        return {}
+    out: dict[str, str] = {}
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            row_id, label = rec.get("row_id"), rec.get("label")
+            if row_id and label:
+                out[row_id] = label
+    return out
+
+
+def _apply_b8_classifications(rows: list[dict], classifications: dict[str, str]) -> list[dict]:
+    """Return a COPY of `rows` with `metrics['first_failure_class']` filled
+    in from `classifications` wherever present and not already set on the
+    row itself -- never mutates the caller's row dicts (this script also
+    hands `rows` to other section builders; a shared in-place mutation
+    here would be a silent cross-section side effect)."""
+    if not classifications:
+        return rows
+    out = []
+    for row in rows:
+        label = classifications.get(row.get("row_id"))
+        existing = row.get("metrics", {}).get("first_failure_class")
+        if label and not existing:
+            row = dict(row)
+            row["metrics"] = dict(row.get("metrics", {}))
+            row["metrics"]["first_failure_class"] = label
+        out.append(row)
+    return out
 
 
 def build_b8_section(root, cfg, rows: list[dict]) -> str:
@@ -992,8 +1049,10 @@ def build_b8_section(root, cfg, rows: list[dict]) -> str:
              "smoothed point-probability claim at small N (spec 2.8) -- plus median "
              "steps/tokens, the subagent-spawn canary (spec 2.7: `not_applicable` "
              "honored for harnesses with no delegation primitive, never a false 0%), "
-             "and a first-failure-class distribution (DISPLAY ONLY -- see the note "
-             "below the table for the classifier-wiring follow-up).", ""]
+             "and a first-failure-class distribution (populated from "
+             "`results/b8_classifications-<suite_version>.jsonl` when "
+             "`scripts/classify_b8_local.py` has been run for this suite -- see the "
+             "note below the table).", ""]
 
     by_suite = _split_by_source_suite(rows, 8)
     if not by_suite:
@@ -1002,6 +1061,8 @@ def build_b8_section(root, cfg, rows: list[dict]) -> str:
 
     for suite_ver in sorted(by_suite):
         suite_rows = by_suite[suite_ver]
+        classifications = _load_b8_classifications(root, suite_ver)
+        suite_rows = _apply_b8_classifications(suite_rows, classifications)
         groups = _b8_groups(suite_rows)
         lines.append(f"_source_suite: `{suite_ver}` ({len(suite_rows)} rows, "
                       f"{len(groups)} (model,harness) group(s))_")
