@@ -17,6 +17,7 @@ import pytest
 
 from llmtest import batteries, schema
 from llmtest.batteries import b8_fixtures as b8f
+from llmtest.batteries import b8_harness
 from llmtest.batteries.b8_harness import (
     B8Harness, _base_condition, _execution_provenance_sha, _full_condition,
 )
@@ -666,17 +667,90 @@ def test_execution_provenance_sha_deterministic_for_same_inputs():
     assert _execution_provenance_sha(**kwargs) == _execution_provenance_sha(**kwargs)
 
 
-def test_execute_raises_notimplementederror_when_sandbox_enabled(tmp_path):
-    """Sandbox seam: flipping suite.yaml b8.sandbox.enabled to true before a
-    Node-capable Sandbox image exists must fail loudly, not silently keep
-    running on the host."""
+def test_execute_with_sandbox_enabled_and_injected_adapter_bypasses_container_path(tmp_path):
+    """Wave 2 CONTAINMENT: `ctx.b8_adapters` injection (the seam every
+    execute() test in this file uses) short-circuits `_resolve_adapter`
+    BEFORE `sandbox_cfg` is ever consulted -- so a mock-adapter test stays
+    green and Docker-free no matter what `b8.sandbox.enabled` is set to.
+    This replaces the old NotImplementedError guard test (pre-Wave-2, the
+    container path didn't exist yet): now that it does, sandbox.enabled +
+    an injected adapter must just produce a normal, valid row."""
     cfg = load_config(ROOT)
     item = _first_item(cfg)
     cfg.suite["b8"]["sandbox"]["enabled"] = True
     ctx = _stub_ctx(tmp_path, cfg, adapter=_mock_adapter(), attempt_id="attempt-fixed")
 
-    with pytest.raises(NotImplementedError):
-        B8Harness().execute(item, ctx)
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert row["metrics"]["completion"] is True
+    schema.validate_row(row)
+
+
+def test_default_factory_wires_sandbox_config_into_opencode_adapter(monkeypatch, tmp_path):
+    """The REAL (uninjected) adapter-resolution path -- what a live run
+    without `ctx.b8_adapters` actually takes -- must construct
+    `OpenCodeAdapter` with `sandbox_image`/`cpus`/`mem_limit`/`pids_limit`
+    from `b8.sandbox` when `enabled` is true. `llmtest.batteries.
+    b8_harness.OpenCodeAdapter` (the module attribute `_DEFAULT_HARNESS_
+    FACTORIES["opencode"]` closes over) is swapped for a spy that records
+    its constructor kwargs and behaves like `MockHarnessAdapter` -- no
+    Docker, no real subprocess, ever touched by this test."""
+    cfg = load_config(ROOT)
+    b8cfg = cfg.suite["b8"]
+    b8cfg["sandbox"]["enabled"] = True
+    b8cfg["sandbox"]["image"] = "b8-sandbox:1"
+    b8cfg["sandbox"]["cpus"] = 3.0
+    b8cfg["sandbox"]["memory"] = "6g"
+    b8cfg["sandbox"]["pids_limit"] = 256
+    item = _first_item(cfg)
+    ctx = _stub_ctx(tmp_path, cfg, attempt_id="attempt-fixed")  # no adapter= -> real factory path
+
+    captured = {}
+
+    class SpyAdapter(MockHarnessAdapter):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            super().__init__(scripted_events=[TraceEvent(kind="turn")],
+                             terminal_status="completed",
+                             tokens_prompt=1, tokens_completion=1,
+                             subagent_spawned="no")
+
+    monkeypatch.setattr(b8_harness, "OpenCodeAdapter", SpyAdapter)
+
+    row = B8Harness().execute(item, ctx)[0]
+
+    assert captured["sandbox_image"] == "b8-sandbox:1"
+    assert captured["cpus"] == 3.0
+    assert captured["mem_limit"] == "6g"
+    assert captured["pids_limit"] == "256"
+    assert row["metrics"]["completion"] is True
+
+
+def test_default_factory_leaves_sandbox_image_none_when_disabled(monkeypatch, tmp_path):
+    """The host-mode fallback: `b8.sandbox.enabled: false` must construct
+    `OpenCodeAdapter` with `sandbox_image=None` -- the pre-Wave-2 host-
+    subprocess path -- even though the rest of the `sandbox` block (e.g.
+    `oracle_image`) is still present in config."""
+    cfg = load_config(ROOT)
+    cfg.suite["b8"]["sandbox"]["enabled"] = False
+    item = _first_item(cfg)
+    ctx = _stub_ctx(tmp_path, cfg, attempt_id="attempt-fixed")
+
+    captured = {}
+
+    class SpyAdapter(MockHarnessAdapter):
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            super().__init__(scripted_events=[TraceEvent(kind="turn")],
+                             terminal_status="completed",
+                             tokens_prompt=1, tokens_completion=1,
+                             subagent_spawned="no")
+
+    monkeypatch.setattr(b8_harness, "OpenCodeAdapter", SpyAdapter)
+
+    B8Harness().execute(item, ctx)
+
+    assert captured["sandbox_image"] is None
 
 
 # --- condition helpers --------------------------------------------------------

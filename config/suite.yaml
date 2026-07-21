@@ -283,16 +283,39 @@ b8:
     wall_clock_s: 180
     tokens: 8000
     steps: 20
-  # In-Sandbox execution seam (see b8_harness.py module docstring's SANDBOX
-  # SEAM note + llmtest.harness.sandbox): OpenCode runs on the HOST today
-  # because the pinned sandbox image has no Node runtime. Flipping this to
-  # true before that image exists makes execute() raise NotImplementedError
-  # loudly rather than silently keep running on the host.
+  # CONTAINMENT seam (Wave 2, B8 validity program -- see b8_harness.py
+  # module docstring's CONTAINMENT note + llmtest.harness.opencode's own
+  # module docstring for the full container design). `enabled: true`
+  # (the default as of Wave 2): OpenCode runs INSIDE a disposable
+  # `image` container (non-root, read-only rootfs, resource-capped, no
+  # host env/creds, endpoint reached only via host.docker.internal,
+  # webfetch denied) instead of a HOST subprocess -- `_DEFAULT_HARNESS_
+  # FACTORIES["opencode"]` (b8_harness.py) threads this whole block into
+  # `OpenCodeAdapter`'s constructor. `enabled: false` keeps the ORIGINAL
+  # host-subprocess path (pre-Wave-2 behavior, byte-for-byte) -- flip
+  # back to this only if `image` is ever unavailable on a given box.
   sandbox:
-    enabled: false
+    enabled: true
+    # b8-sandbox:1 (local-only, no pull): node v20.20.2 + python3 3.11.2
+    # + opencode 1.2.15 on PATH, non-root user "node" (uid 1000) -- the
+    # Node-capable image the OLD SANDBOX SEAM note (host-execution
+    # deferral) was waiting on. Distinct from config/runtime_pins.yaml's
+    # `sandbox:` block (nvidia/cuda:...-base) -- that pin is for
+    # `llmtest.harness.sandbox.Sandbox`'s anti-gaming oracle container
+    # (`run_oracle`'s hidden_validate), a completely different concern
+    # from the agent's own OpenCode execution environment here.
+    image: "b8-sandbox:1"
     # b8_harness.py execute() threads this into llmtest.harness.tasks.
     # run_oracle's oracle_image param -- overrides the pinned
     # nvidia/cuda:...-base image (no Python) for the OWN oracle container
     # only, so a Python-shaped B8 manifest's oracle_test.py can actually run
     # (python3 + bash both present in python:3.11-slim; task-b8local).
     oracle_image: "python:3.11-slim"
+    # Resource caps for the OpenCode container itself (mirrors
+    # llmtest.harness.sandbox.Sandbox's own --cpus/--memory/--pids-limit
+    # conventions) -- 4g (not Sandbox's 2g default) because a real
+    # multi-step opencode+bun agent loop is heavier than the oracle's
+    # one-shot command.
+    cpus: 2.0
+    memory: "4g"
+    pids_limit: 512

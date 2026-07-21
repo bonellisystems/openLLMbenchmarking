@@ -668,3 +668,364 @@ def test_launch_resets_process_handle_after_kill_so_teardown_is_a_true_noop(monk
 
     adapter.teardown()  # must be a genuine no-op now -- no second taskkill
     assert len(killed) == 1
+
+
+# ============================================================================
+# Wave 2 CONTAINMENT -- containerized launch (`sandbox_image` set). No real
+# Docker anywhere in this file: `oc.subprocess.run` (the ONE seam
+# `_launch_container` uses -- there is no `Popen` in the container path,
+# `docker run` is invoked and waited on synchronously) is monkeypatched, and
+# `_read_trace` is exercised the same way host-mode tests already do, against
+# real fixture dbs built by `_make_db`. The live smoke (real Docker, real
+# `b8-sandbox:1`, real endpoint) is separate, manual -- not part of this file.
+# ============================================================================
+
+
+def _new_container_adapter(tmp_path: Path, **kwargs) -> oc.OpenCodeAdapter:
+    adapter = oc.OpenCodeAdapter(model="gpt-oss-20b", sandbox_image="b8-sandbox:1", **kwargs)
+    ws = tmp_path / "ws"
+    adapter.setup(_make_task(), endpoint="http://127.0.0.1:8080", workspace=ws)
+    return adapter
+
+
+def _stub_docker_run_ok(calls=None):
+    def fake_run(argv, **kwargs):
+        if calls is not None:
+            calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+    return fake_run
+
+
+# -- setup(): endpoint rewrite, config shape, fresh per-run home -----------
+
+
+def test_container_endpoint_rewritten_to_host_docker_internal(tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    assert adapter.endpoint == "http://host.docker.internal:8080"
+    cfg = json.loads(adapter._config_path.read_text(encoding="utf-8"))
+    assert cfg["provider"]["local"]["options"]["baseURL"] == "http://host.docker.internal:8080/v1"
+
+
+def test_container_config_denies_webfetch_host_mode_still_allows(tmp_path):
+    container_adapter = _new_container_adapter(tmp_path)
+    cfg = json.loads(container_adapter._config_path.read_text(encoding="utf-8"))
+    assert cfg["permission"] == {"edit": "allow", "bash": "allow", "webfetch": "deny"}
+
+    db_path = tmp_path / "host-opencode.db"
+    _make_empty_db(db_path)
+    host_adapter = _new_adapter(tmp_path, db_path)
+    host_cfg = json.loads(host_adapter._config_path.read_text(encoding="utf-8"))
+    assert host_cfg["permission"]["webfetch"] == "allow"
+
+
+def test_container_config_not_written_into_agent_workspace(tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    workspace_files = {p.name for p in adapter.workspace.iterdir()}
+    # only the task's own materialized file -- no opencode-config.json
+    # anywhere under /workspace (would trip run_oracle's out-of-bounds-edit
+    # check exactly like the host-mode landmine this module already fixed).
+    assert workspace_files == {"greet.sh"}
+    assert adapter._config_path.parent == adapter._opencode_home_dir
+
+
+def test_container_db_path_points_into_fresh_opencode_home_and_does_not_exist_yet(tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    assert adapter._opencode_home_dir is not None
+    assert adapter.db_path == adapter._opencode_home_dir / "opencode.db"
+    assert not adapter.db_path.exists()  # fresh -- no cross-run state
+
+
+def test_container_two_setup_calls_get_two_different_fresh_homes(tmp_path):
+    adapter = oc.OpenCodeAdapter(model="gpt-oss-20b", sandbox_image="b8-sandbox:1")
+    adapter.setup(_make_task(), endpoint="http://127.0.0.1:8080", workspace=tmp_path / "ws1")
+    home1 = adapter._opencode_home_dir
+    adapter.setup(_make_task(), endpoint="http://127.0.0.1:8080", workspace=tmp_path / "ws2")
+    home2 = adapter._opencode_home_dir
+    assert home1 != home2
+    assert home1.exists() and home2.exists()  # setup() never deletes a prior home itself
+
+
+# -- run(): dispatches to _launch_container, never _launch, when sandbox_image set
+
+
+def test_container_mode_dispatches_to_launch_container_not_launch(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    _make_empty_db(adapter.db_path)
+    calls = {"launch": 0, "launch_container": 0}
+    monkeypatch.setattr(adapter, "_launch",
+                        lambda *a, **k: calls.__setitem__("launch", calls["launch"] + 1) or (0, False, None))
+    monkeypatch.setattr(adapter, "_launch_container",
+                        lambda *a, **k: calls.__setitem__("launch_container", calls["launch_container"] + 1) or (0, False, None))
+
+    adapter.run()
+
+    assert calls == {"launch": 0, "launch_container": 1}
+
+
+def test_host_mode_dispatches_to_launch_not_launch_container(monkeypatch, tmp_path):
+    db_path = tmp_path / "opencode.db"
+    _make_empty_db(db_path)
+    adapter = _new_adapter(tmp_path, db_path)
+    calls = {"launch": 0, "launch_container": 0}
+    monkeypatch.setattr(adapter, "_launch",
+                        lambda *a, **k: calls.__setitem__("launch", calls["launch"] + 1) or (0, False, None))
+    monkeypatch.setattr(adapter, "_launch_container",
+                        lambda *a, **k: calls.__setitem__("launch_container", calls["launch_container"] + 1) or (0, False, None))
+
+    adapter.run()
+
+    assert calls == {"launch": 1, "launch_container": 0}
+
+
+# -- _launch_container(): the isolation contract (fault-injection) ---------
+
+
+def test_container_launch_argv_has_required_isolation_flags(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path, wall_clock_s=45)
+    _make_empty_db(adapter.db_path)
+    calls = []
+    monkeypatch.setattr(oc.subprocess, "run", _stub_docker_run_ok(calls))
+
+    adapter.run()
+
+    assert len(calls) == 1
+    argv = calls[0]
+
+    assert argv[0] == "docker" and argv[1] == "run"
+    assert "--rm" in argv
+    assert argv[argv.index("--user") + 1] == "node"
+    assert "--read-only" in argv
+    # 3 tmpfs mounts: /tmp, HOME (writable), and HOME/.local (the live-
+    # confirmed EACCES fix -- see _launch_container's own docstring).
+    tmpfs_indices = [i for i, a in enumerate(argv) if a == "--tmpfs"]
+    tmpfs_values = [argv[i + 1] for i in tmpfs_indices]
+    assert "/tmp" in tmpfs_values
+    assert any(v.startswith("/home/node:uid=1000,gid=1000") for v in tmpfs_values)
+    assert any(v.startswith("/home/node/.local:uid=1000,gid=1000") for v in tmpfs_values)
+
+    v_indices = [i for i, a in enumerate(argv) if a == "-v"]
+    mounts = [argv[i + 1] for i in v_indices]
+    assert len(mounts) == 2, f"expected exactly 2 mounts (workspace + opencode-home), got {mounts}"
+    assert f"{adapter.workspace.resolve()}:/workspace:rw" in mounts
+    assert f"{adapter._opencode_home_dir.resolve()}:/home/node/.local/share/opencode:rw" in mounts
+    # canonically no host-credential mount / no docker.sock
+    assert not any("docker.sock" in m for m in mounts)
+
+    assert argv[argv.index("--add-host") + 1] == "host.docker.internal:host-gateway"
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert "--pids-limit" in argv
+    assert "--cpus" in argv
+    assert "--memory" in argv
+    assert argv[argv.index("--workdir") + 1] == "/workspace"
+
+    e_indices = [i for i, a in enumerate(argv) if a == "-e"]
+    envs = [argv[i + 1] for i in e_indices]
+    assert len(envs) == 2, f"expected exactly 2 -e flags (no host env), got {envs}"
+    assert any(e.startswith("OPENCODE_CONFIG=/home/node/.local/share/opencode/") for e in envs)
+    assert "HOME=/home/node" in envs
+    # canonically no host env/credentials leaked through -e
+    assert not any("USERPROFILE" in e or "APPDATA" in e or "PATH=" in e for e in envs)
+
+    image_idx = argv.index("b8-sandbox:1")
+    tail = argv[image_idx + 1:]
+    assert tail[:3] == ["timeout", "-s", "KILL"]
+    assert "opencode" in tail and "run" in tail
+    assert adapter.task.prompt in tail
+    assert tail[tail.index("-m") + 1] == "local/gpt-oss-20b"
+    assert "--print-logs" in tail
+    assert tail[tail.index("--log-level") + 1] == "INFO"
+
+
+def test_container_launch_decodes_docker_output_as_utf8_not_platform_default(monkeypatch, tmp_path):
+    # Live-smoke-surfaced bug (Wave 2): `text=True` alone decodes with the
+    # PLATFORM default (cp1252 on Windows), which crashed a subprocess.run
+    # background reader thread the moment the container's log output (the
+    # container is Linux/Node, always UTF-8) contained a non-cp1252 byte
+    # sequence -- confirmed live against OpenCode's own "checkmark" log
+    # line. Must always pass encoding="utf-8" + errors="replace" so this
+    # can never crash regardless of what the container prints.
+    adapter = _new_container_adapter(tmp_path)
+    _make_empty_db(adapter.db_path)
+    captured_kwargs = {}
+
+    def fake_run(argv, **kwargs):
+        captured_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(oc.subprocess, "run", fake_run)
+
+    adapter.run()
+
+    assert captured_kwargs.get("encoding") == "utf-8"
+    assert captured_kwargs.get("errors") == "replace"
+
+
+def test_container_launch_argv_uses_configured_resource_caps(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path, cpus=1.5, mem_limit="3g", pids_limit="256")
+    _make_empty_db(adapter.db_path)
+    calls = []
+    monkeypatch.setattr(oc.subprocess, "run", _stub_docker_run_ok(calls))
+
+    adapter.run()
+
+    argv = calls[0]
+    assert argv[argv.index("--cpus") + 1] == "1.5"
+    assert argv[argv.index("--memory") + 1] == "3g"
+    assert argv[argv.index("--pids-limit") + 1] == "256"
+
+
+# -- _launch_container(): hang -> docker kill + rm -f, no leaked container -
+
+
+def test_container_hang_triggers_docker_kill_and_rm_and_terminal_status_killed(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path, wall_clock_s=1)
+    _make_empty_db(adapter.db_path)
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout"))
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(oc.subprocess, "run", fake_run)
+
+    trace = adapter.run()
+
+    assert trace.terminal_status == "killed"
+    kill_calls = [c for c in calls if c[:2] == ["docker", "kill"]]
+    rm_calls = [c for c in calls if c[:3] == ["docker", "rm", "-f"]]
+    assert len(kill_calls) == 1
+    assert len(rm_calls) == 1
+    container_name = kill_calls[0][2]
+    assert container_name.startswith("llmtest-b8-opencode-")
+    assert rm_calls[0][3] == container_name
+    assert adapter._container_name is None  # no leaked handle after run()
+
+    # teardown() afterward must be a genuine no-op -- no second kill/rm
+    n_calls_before = len(calls)
+    adapter.teardown()
+    assert len(calls) == n_calls_before
+
+
+def test_container_in_container_timeout_kill_exit_code_also_yields_killed(monkeypatch, tmp_path):
+    # The in-container `timeout -s KILL` firing (opencode itself hung, not
+    # the docker daemon/CLI) -- `docker run` exits normally (`--rm` already
+    # auto-removed the container) with the wrapped command's own kill exit
+    # code. Must ALSO map to "killed", the same as the daemon-hang path.
+    adapter = _new_container_adapter(tmp_path, wall_clock_s=5)
+    _make_empty_db(adapter.db_path)
+    calls = []
+    monkeypatch.setattr(
+        oc.subprocess, "run",
+        lambda argv, **k: calls.append(argv) or subprocess.CompletedProcess(argv, 137, stdout="", stderr=""))
+
+    trace = adapter.run()
+
+    assert trace.terminal_status == "killed"
+    # no explicit kill/rm needed -- --rm already cleaned it up on its own exit
+    assert not any(c[:2] == ["docker", "kill"] for c in calls)
+
+
+# -- teardown(): force-removes a lingering container + the fresh home dir --
+
+
+def test_container_teardown_force_removes_lingering_container(tmp_path, monkeypatch):
+    adapter = _new_container_adapter(tmp_path)
+    adapter._container_name = "llmtest-b8-opencode-deadbeef"
+    calls = []
+    monkeypatch.setattr(oc.subprocess, "run", _stub_docker_run_ok(calls))
+
+    adapter.teardown()
+
+    assert any(c[:2] == ["docker", "kill"] and c[2] == "llmtest-b8-opencode-deadbeef" for c in calls)
+    assert any(c[:3] == ["docker", "rm", "-f"] and c[3] == "llmtest-b8-opencode-deadbeef" for c in calls)
+    assert adapter._container_name is None
+
+
+def test_container_teardown_with_no_lingering_container_is_a_safe_no_op(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    calls = []
+    monkeypatch.setattr(oc.subprocess, "run", _stub_docker_run_ok(calls))
+
+    adapter.teardown()  # never ran anything -- _container_name is None
+
+    assert calls == []
+
+
+def test_container_teardown_removes_fresh_opencode_home_dir(tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    home = adapter._opencode_home_dir
+    assert home.exists()
+
+    adapter.teardown()
+
+    assert not home.exists()
+    assert adapter._opencode_home_dir is None
+
+
+# -- trace is read from the MOUNTED opencode-home db path ------------------
+
+
+def test_container_trace_read_from_mounted_opencode_home_db(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+    # container cwd is literally "/workspace" (confirmed live -- see module
+    # docstring's CONTAINMENT finding #2), never the host workspace path.
+    _make_db(adapter.db_path, session_id="ses_container_happy", directory="/workspace",
+              session_time=50,
+              messages=[("m1", 100, {"role": "user"}),
+                       ("m2", 200, {"role": "assistant", "finish": "stop",
+                                    "tokens": {"input": 10, "output": 5, "reasoning": 0}})],
+              parts=[("p1", "m2", 150, {"type": "step-start"})])
+    adapter._since_ts = 0
+    monkeypatch.setattr(oc.subprocess, "run", _stub_docker_run_ok())
+
+    trace = adapter.run()
+
+    assert trace.terminal_status == "completed"
+    assert trace.steps == 1
+    assert trace.tokens_prompt == 10
+    assert trace.tokens_completion == 5
+
+
+# -- version(): probes the CONTAINER's opencode, not the host's ------------
+
+
+def test_container_version_probes_the_image(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+
+    def fake_run(argv, **kwargs):
+        assert argv[:3] == ["docker", "run", "--rm"]
+        assert "b8-sandbox:1" in argv
+        assert argv[-2:] == [adapter.opencode_bin, "--version"] or argv[-1] == "--version"
+        return subprocess.CompletedProcess(argv, 0, stdout="1.2.15\n", stderr="")
+
+    monkeypatch.setattr(oc.subprocess, "run", fake_run)
+    assert adapter.version() == "1.2.15"
+
+
+def test_container_version_falls_back_to_unknown_when_docker_probe_fails(monkeypatch, tmp_path):
+    adapter = _new_container_adapter(tmp_path)
+
+    def fake_run(argv, **kwargs):
+        raise FileNotFoundError("docker not found")
+
+    monkeypatch.setattr(oc.subprocess, "run", fake_run)
+    assert adapter.version() == "unknown"
+
+
+# -- endpoint rewrite helper (unit) -----------------------------------------
+
+
+def test_rewrite_endpoint_for_container_preserves_port_no_double_slash():
+    assert oc._rewrite_endpoint_for_container("http://127.0.0.1:8080") == "http://host.docker.internal:8080"
+
+
+def test_rewrite_endpoint_for_container_preserves_trailing_slash():
+    assert oc._rewrite_endpoint_for_container("http://127.0.0.1:9/") == "http://host.docker.internal:9/"
+
+
+def test_rewrite_endpoint_for_container_preserves_path():
+    assert (oc._rewrite_endpoint_for_container("http://127.0.0.1:8080/v1")
+            == "http://host.docker.internal:8080/v1")

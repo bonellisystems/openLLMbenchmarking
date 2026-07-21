@@ -62,16 +62,23 @@ vary per physical attempt and are not part of the logical cell). Default
 one replicate_n beyond whatever's already recorded (an explicit "run one
 more attempt" request, not a full re-cross).
 
-SANDBOX SEAM: the OpenCode adapter runs as a HOST subprocess today (Task 4
-scope note: the pinned sandbox image has no Node runtime, so in-Sandbox
-execution needs a Node-capable image that doesn't exist yet -- deferred to
-the Blackwell run). `cfg.suite["b8"]["sandbox"]["enabled"]` is the seam:
-`False` (today's default) takes the host-execution path below; flipping it
-to `True` before a Node-capable Sandbox image exists raises
-`NotImplementedError` LOUDLY at the top of `execute()` rather than silently
-still running on the host -- see `llmtest.harness.sandbox.Sandbox` for the
-container primitive this will eventually wrap `adapter.setup/run/teardown`
-in. This is the ONE place that swap lands later.
+CONTAINMENT (Wave 2, B8 validity program): `cfg.suite["b8"]["sandbox"]`
+is the seam. `enabled: true` (suite.yaml's default as of Wave 2) threads
+`sandbox.image` (a Node-capable image, `b8-sandbox:1` -- has `opencode` on
+PATH, unlike the unrelated `nvidia/cuda:...-base` `Sandbox` pin, which is
+for `run_oracle`'s anti-gaming validation container, a completely
+different concern) plus `sandbox.cpus`/`memory`/`pids_limit` into the
+`OpenCodeAdapter` the default factory (`_DEFAULT_HARNESS_FACTORIES`)
+constructs -- from there, `OpenCodeAdapter.run()` itself drives `opencode`
+inside a disposable, hardened container instead of a host subprocess (see
+`llmtest.harness.opencode`'s own module docstring, CONTAINMENT section,
+for the container design + two live findings). `enabled: false` is the
+ORIGINAL host-execution path, kept as a fallback specifically so
+`ctx.b8_adapters`-injected unit tests (every `execute()` test in
+`test_b8.py`/`test_b8_local.py`) stay green with no Docker involved at
+all -- that seam bypasses `_resolve_adapter`'s factory entirely regardless
+of `sandbox.enabled`, so the flag only matters for the REAL, uninjected
+factory path a live run actually takes.
 """
 from __future__ import annotations
 
@@ -87,18 +94,31 @@ from llmtest.batteries.b8_fixtures import load_tasks
 from llmtest.harness.opencode import OpenCodeAdapter
 from llmtest.harness.tasks import materialize_repo, run_oracle
 
-# harness name -> factory(model_id, budgets) -> HarnessAdapter. Only
-# "opencode" is wired to a real adapter today (Task 4); a test overrides
-# this entirely via ctx.b8_adapters (see _resolve_adapter). `max_steps` is
-# threaded from `budgets["steps"]` (Wave 1a) -- OpenCodeAdapter uses it for
-# a NATIVE, best-effort mid-run step cap (see its own docstring); the
-# post-hoc `budget_exceeded` check below in `execute()` is what actually
-# enforces both the step AND completion-token budgets regardless of
-# whether the native cap fired.
+# harness name -> factory(model_id, budgets, sandbox_cfg) -> HarnessAdapter.
+# Only "opencode" is wired to a real adapter today (Task 4); a test
+# overrides this entirely via ctx.b8_adapters (see _resolve_adapter).
+# `max_steps` is threaded from `budgets["steps"]` (Wave 1a) --
+# OpenCodeAdapter uses it for a NATIVE, best-effort mid-run step cap (see
+# its own docstring); the post-hoc `budget_exceeded` check below in
+# `execute()` is what actually enforces both the step AND completion-token
+# budgets regardless of whether the native cap fired.
+#
+# `sandbox_cfg` (Wave 2 CONTAINMENT, `b8.sandbox` from suite.yaml) threads
+# straight into `OpenCodeAdapter`'s own container-mode constructor args --
+# `sandbox_image` is `None` (host-subprocess path, byte-for-byte the
+# pre-Wave-2 behavior) unless `sandbox_cfg["enabled"]` is true, in which
+# case it's `sandbox_cfg["image"]`. `cpus`/`memory`/`pids_limit` are only
+# ever READ by the adapter when `sandbox_image` is set, so they're passed
+# through with sane defaults regardless.
 _DEFAULT_HARNESS_FACTORIES = {
-    "opencode": lambda model_id, budgets: OpenCodeAdapter(
+    "opencode": lambda model_id, budgets, sandbox_cfg: OpenCodeAdapter(
         model=model_id, wall_clock_s=budgets.get("wall_clock_s"),
-        max_steps=budgets.get("steps")),
+        max_steps=budgets.get("steps"),
+        sandbox_image=((sandbox_cfg or {}).get("image")
+                       if (sandbox_cfg or {}).get("enabled") else None),
+        cpus=(sandbox_cfg or {}).get("cpus", 2.0),
+        mem_limit=(sandbox_cfg or {}).get("memory", "4g"),
+        pids_limit=str((sandbox_cfg or {}).get("pids_limit", "512"))),
 }
 
 
@@ -144,12 +164,16 @@ def _execution_provenance_sha(*, harness_version: str, litellm_version: str,
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _resolve_adapter(ctx, harness_name: str, model_id: str, budgets: dict):
+def _resolve_adapter(ctx, harness_name: str, model_id: str, budgets: dict,
+                     sandbox_cfg: dict | None):
     """The real adapter for `harness_name`, unless `ctx.b8_adapters` (a
     {harness_name: HarnessAdapter instance} dict) is present -- the
     no-Docker/no-live-harness test seam: a test sets this to
     {"opencode": MockHarnessAdapter(...)} and execute() never touches a
-    real subprocess."""
+    real subprocess (or, for `sandbox_cfg["enabled"]`, real Docker) at
+    all -- `sandbox_cfg` is simply unused on the injected-adapter path,
+    which is exactly what keeps every existing `ctx.b8_adapters` test
+    green regardless of `b8.sandbox.enabled`'s value."""
     injected = getattr(ctx, "b8_adapters", None)
     if injected is not None:
         if harness_name not in injected:
@@ -158,7 +182,7 @@ def _resolve_adapter(ctx, harness_name: str, model_id: str, budgets: dict):
     factory = _DEFAULT_HARNESS_FACTORIES.get(harness_name)
     if factory is None:
         raise KeyError(f"unknown harness {harness_name!r} (no default adapter factory)")
-    return factory(model_id, budgets)
+    return factory(model_id, budgets, sandbox_cfg)
 
 
 def _resolve_run_oracle(ctx):
@@ -307,16 +331,7 @@ class B8Harness(Battery):
         order = cfg.suite["condition_order"]
         b8cfg = cfg.suite["b8"]
         budgets = b8cfg["budgets"]
-
-        if b8cfg.get("sandbox", {}).get("enabled", False):
-            raise NotImplementedError(
-                "B8 in-Sandbox execution is deferred to the Blackwell run "
-                "(the pinned sandbox image has no Node runtime yet for the "
-                "OpenCode adapter) -- see llmtest.harness.sandbox and "
-                "llmtest.harness.opencode module docstrings. Set "
-                "suite.yaml b8.sandbox.enabled back to false, or implement "
-                "the Sandbox-wrapped execution path here, before enabling "
-                "this flag.")
+        sandbox_cfg = b8cfg.get("sandbox")
 
         model = item.payload["model"]
         task = item.payload["task"]
@@ -347,7 +362,7 @@ class B8Harness(Battery):
                 item.model_id, ctx=b8cfg.get("ctx", 32768), kv=b8cfg.get("kv", "q8_0"),
                 flags_overlay={"spec": "ngram32"}, timing_authoritative=False)
 
-        adapter = _resolve_adapter(ctx, harness_name, item.model_id, budgets)
+        adapter = _resolve_adapter(ctx, harness_name, item.model_id, budgets, sandbox_cfg)
         adapter.setup(task, endpoint, workspace)
         try:
             trace = adapter.run()
