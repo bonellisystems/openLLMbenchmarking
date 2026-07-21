@@ -263,7 +263,8 @@ def materialize_repo(task: B8Task, dest: str | Path) -> Path:
     return dest
 
 
-def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -> tuple[bool, str]:
+def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".",
+                oracle_image: str | None = None) -> tuple[bool, str]:
     """Decide whether `task` was actually completed in the post-run
     `workspace`. See the module docstring for the full precedence
     rationale; in short: protected-file tamper and out-of-bounds edits are
@@ -279,6 +280,23 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
     hang indefinitely. Falls back to a sane 60s if `wall_clock_s` is ever
     absent (the loader requires it, so this only matters for a `B8Task`
     built outside `load_b8_tasks`, e.g. in a test).
+
+    `oracle_image` (additive, default `None`): overrides the pinned
+    `config/runtime_pins.yaml` sandbox image (`nvidia/cuda:...-base`, which
+    has no Python -- see the module docstring's LANGUAGE NOTE) for the
+    oracle container ONLY -- e.g. `python:3.11-slim` for a Python-shaped B8
+    task's oracle, which needs `python3` to import/execute the agent's
+    solution. `None` (the default) preserves the exact prior behavior: no
+    `image`/`digest` kwargs reach `Sandbox`, which falls back to the pin as
+    it always has. When set, `digest` is passed as `""` (falsy), NOT left
+    as `None` -- `Sandbox.__init__` reads the pin file whenever `image is
+    None or digest is None` and falls back to `pin.get("digest")` for any
+    falsy digest; a bare `image=oracle_image` with no digest override would
+    therefore still resolve `self.digest` to the CUDA pin's OWN digest,
+    pairing an unrelated image with the wrong digest into an unpullable
+    `image@digest` ref (`Sandbox._image_ref`). `digest=""` short-circuits
+    both: `_image_ref` returns the bare tag (no `@digest` suffix at all),
+    and the pin file is never even read for this call.
     """
     ws = Path(workspace)
 
@@ -364,7 +382,12 @@ def run_oracle(task: B8Task, workspace: str | Path, *, root: str | Path = ".") -
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_bytes(content.encode("utf-8"))
             wall_clock_s = task.budgets.get("wall_clock_s", 60)
-            sbx = Sandbox(workspace=inject_root, root=root)
+            sbx_kwargs = {"workspace": inject_root, "root": root}
+            if oracle_image is not None:
+                sbx_kwargs["image"] = oracle_image
+                sbx_kwargs["digest"] = ""   # see docstring: avoids pairing
+                                            # oracle_image with the CUDA pin's digest
+            sbx = Sandbox(**sbx_kwargs)
             return sbx.hidden_validate(task.oracle, inject_root, timeout=wall_clock_s)
     except Exception as e:  # noqa: BLE001 - a setup failure before the oracle
         # even runs is a validation result, not a crash -- mirrors

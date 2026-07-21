@@ -95,7 +95,11 @@ def test_battery_8_registers():
 def test_suite_yaml_has_b8_block_and_condition_additions():
     cfg = load_config(ROOT)
     assert "b8" in cfg.suite
-    assert cfg.suite["b8"]["replicates"] >= 5
+    # Target is >=5 (task-3-brief.md), TEMPORARILY lowered to 3 for the
+    # first real local validation run (task-b8local) -- see suite.yaml's
+    # b8.replicates comment. This floor must be raised back to >=5 once
+    # that run is confirmed stable.
+    assert cfg.suite["b8"]["replicates"] >= 3
     assert cfg.suite["b8"]["models"]
     assert cfg.suite["b8"]["harnesses"]
     for k in ("harness", "task", "attempt_id", "execution_provenance_sha"):

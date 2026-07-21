@@ -15,11 +15,25 @@ graded by an **anti-gaming completion oracle** (`llmtest.harness.tasks.
 run_oracle`) that actually diffs and executes the post-run workspace —
 see "Anti-gaming semantics" below.
 
-**Language note:** manifest content is bash, not Python. The pinned sandbox
-image (`nvidia/cuda:12.6.2-base-ubuntu24.04`, Task 2) has no Python/gcc/
-node interpreter — only bash/sh/perl/coreutils — and the behavioral oracle
-must execute inside that same container (it runs agent-produced code, per
-Design Decision #3). See `llmtest/harness/tasks.py`'s module docstring.
+**Language note:** the original 5 manifests (task-01..05.yaml) are bash, not
+Python. The pinned sandbox image (`nvidia/cuda:12.6.2-base-ubuntu24.04`,
+Task 2) has no Python/gcc/node interpreter — only bash/sh/perl/coreutils —
+and the behavioral oracle must execute inside that same container (it runs
+agent-produced code, per Design Decision #3). See `llmtest/harness/
+tasks.py`'s module docstring.
+
+**Update (task-b8local):** 3 real Python manifests (task-06..08.yaml,
+ids `py-bugfix-01`/`py-fromscratch-01`/`py-edit-01`) were added for the
+real local run. Their `oracle_files` run under `python3`, not `bash` --
+`run_oracle`'s additive `oracle_image` param (threaded from suite.yaml's
+`b8.sandbox.oracle_image`) overrides the pinned CUDA image with
+`python:3.11-slim` (which has both `python3` AND `bash`, so it runs the
+original bash oracles unchanged too) for these manifests' validation runs.
+Their `oracle.argv` follows the exact same `cp -r /oracle /tmp/work && cd
+/tmp/work && ...` convention as the bash manifests, just invoking
+`python3 oracle_test.py` instead of `bash oracle_test.sh`. Oracle scripts
+are stdlib-only (`sys.exit`, plain `assert`-shaped checks) — no pytest,
+since `python:3.11-slim` doesn't have it installed.
 
 ## Two distinct anti-gaming mechanisms, both required
 

@@ -158,8 +158,22 @@ def _resolve_run_oracle(ctx):
     """The real `run_oracle` (needs Docker -- see `llmtest.harness.tasks`),
     unless `ctx.b8_run_oracle` (a `(task, workspace, root=...) -> (bool,
     str)` callable) is present -- the test seam that lets `execute()` be
-    exercised with a controllable completion outcome and no Docker."""
-    return getattr(ctx, "b8_run_oracle", None) or run_oracle
+    exercised with a controllable completion outcome and no Docker.
+
+    Always returns something callable as `(task, workspace, root=...,
+    oracle_image=...)` -- `execute()` passes `oracle_image` unconditionally
+    (the b8.sandbox.oracle_image seam, task-b8local). An injected
+    `ctx.b8_run_oracle` keeps its ORIGINAL, oracle_image-agnostic signature
+    (every existing test injects `lambda task, workspace, root=".": ...`)
+    by being wrapped in a thin adapter that accepts and discards
+    `oracle_image` before delegating -- so no existing seam consumer needs
+    to change. Only the real `run_oracle` (`llmtest.harness.tasks`) actually
+    receives `oracle_image`."""
+    injected = getattr(ctx, "b8_run_oracle", None)
+    if injected is not None:
+        return lambda task, workspace, root=".", oracle_image=None: injected(
+            task, workspace, root=root)
+    return run_oracle
 
 
 def _resolve_attempt_id(ctx) -> str:
@@ -286,9 +300,23 @@ class B8Harness(Battery):
                     / f"{item.task_id}-run{item.run_n}-{uuid.uuid4().hex[:8]}")
         materialize_repo(task, workspace)
 
-        endpoint = ctx.server_manager().request_endpoint(
-            item.model_id, ctx=b8cfg.get("ctx", 32768), kv=b8cfg.get("kv", "q8_0"),
-            flags_overlay={"spec": "ngram32"}, timing_authoritative=False)
+        # Endpoint-injection seam (task-b8local): `ctx.b8_endpoint`, when
+        # present, is used AS-IS and `ctx.server_manager()` is never
+        # touched -- this is what lets a coordinator serve the model
+        # MANUALLY (outside ServerManager, e.g. because the standard
+        # Windows ServerManager path needs adaptation for a given box) and
+        # simply hand execute() the already-live endpoint. Mirrors the
+        # existing `ctx.b8_adapters` / `ctx.b8_run_oracle` / `ctx.
+        # b8_attempt_id` seams: `getattr` with a `None` default, so a
+        # `ctx` that has no `b8_endpoint` attribute at all (every existing
+        # caller, including run_cmd.py's real `RunContext`) falls straight
+        # through to the original `server_manager().request_endpoint(...)`
+        # path, byte-for-byte unchanged.
+        endpoint = getattr(ctx, "b8_endpoint", None)
+        if endpoint is None:
+            endpoint = ctx.server_manager().request_endpoint(
+                item.model_id, ctx=b8cfg.get("ctx", 32768), kv=b8cfg.get("kv", "q8_0"),
+                flags_overlay={"spec": "ngram32"}, timing_authoritative=False)
 
         adapter = _resolve_adapter(ctx, harness_name, item.model_id, budgets)
         adapter.setup(task, endpoint, workspace)
@@ -297,8 +325,17 @@ class B8Harness(Battery):
         finally:
             adapter.teardown()
 
+        # Configurable oracle image (task-b8local): b8.sandbox.oracle_image
+        # in suite.yaml (e.g. "python:3.11-slim" for the Python-shaped
+        # manifests, which need python3 to import/execute the agent's
+        # solution -- the pinned nvidia/cuda:...-base image has none). Absent
+        # from suite.yaml (or ctx.b8_run_oracle injected) -> None, which
+        # _resolve_run_oracle/run_oracle both treat as "use the pin", so this
+        # is inert for every caller that predates this key.
+        oracle_image = (b8cfg.get("sandbox") or {}).get("oracle_image")
         run_oracle_fn = _resolve_run_oracle(ctx)
-        completed, oracle_detail = run_oracle_fn(task, workspace, root=root)
+        completed, oracle_detail = run_oracle_fn(task, workspace, root=root,
+                                                 oracle_image=oracle_image)
 
         attempt_id = _resolve_attempt_id(ctx)
         harness_version = adapter.version()

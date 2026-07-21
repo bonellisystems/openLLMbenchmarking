@@ -1,0 +1,100 @@
+id: py-bugfix-01
+shape: bugfix
+task_version: "1.0.0"
+prompt: |
+  The following Python file is supposed to compute and print a summary of a
+  list of numbers, but it is broken. Symptom: importing/running it
+  immediately raises `SyntaxError: expected ':'` before any output is
+  produced -- the program never even starts.
+
+  ```python
+  def average(nums):
+      total = sum(nums)
+      return total / len(nums)
+
+  def summarize(nums)
+      avg = average(nums)
+      return f"summary: avg={avg:.2f}"
+  ```
+
+  Fix `stats.py` so it is valid Python and `summarize(nums)` returns the
+  correctly formatted summary string. Only modify `stats.py` -- do not
+  create or edit any other file (including `NOTES.md`).
+allowed_tools: [read_file, write_file, bash_exec]
+budgets: {wall_clock_s: 180, tokens: 3000, steps: 8}
+setup_repo:
+  stats.py: |
+    def average(nums):
+        total = sum(nums)
+        return total / len(nums)
+
+    def summarize(nums)
+        avg = average(nums)
+        return f"summary: avg={avg:.2f}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import sys
+
+
+    def main():
+        try:
+            import stats
+        except Exception as e:
+            print(f"FAIL: import stats raised {e!r}")
+            sys.exit(1)
+
+        cases = [
+            ([2, 4, 6], "summary: avg=4.00"),
+            ([10, 20], "summary: avg=15.00"),
+        ]
+        for nums, want in cases:
+            try:
+                got = stats.summarize(nums)
+            except Exception as e:
+                print(f"FAIL: summarize({nums}) raised {e!r}")
+                sys.exit(1)
+            if got != want:
+                print(f"FAIL: summarize({nums}) -> {got!r} (want {want!r})")
+                sys.exit(1)
+        print("PASS")
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [NOTES.md]
+allowed_diff_paths: [stats.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: bugfix -- Python counterpart of suite/b8_harness/task-03.yaml
+  (bugfix-01) and its ultimate source, suite/b6_agenticcoding/task-06.yaml
+  (B6 bugfix-01): the exact same planted bug (a missing trailing `:` on the
+  `summarize` function signature, causing an immediate parse-time failure
+  before any output), reused verbatim in its native language rather than
+  re-ported to bash. Added (task-b8local) so B8 has a REAL Python task
+  runnable against `python:3.11-slim` (the pinned nvidia/cuda sandbox image
+  has no Python interpreter at all -- see llmtest/harness/tasks.py's module
+  docstring LANGUAGE NOTE; `python:3.11-slim` is threaded in via
+  suite.yaml's `b8.sandbox.oracle_image` -> `run_oracle`'s `oracle_image`
+  param -> `Sandbox`, additive over the CUDA pin).
+
+  Hidden oracle: `oracle_test.py` lives in `oracle_files`, never written
+  into the agent's workspace by `materialize_repo` -- nothing for the agent
+  to read and overfit against. `run_oracle` re-injects it into a private
+  copy only at validation time, then runs it via
+  `python3 oracle_test.py` (the Python analog of the bash manifests'
+  `bash oracle_test.sh`, same `cp -r /oracle /tmp/work && cd /tmp/work &&
+  ...` convention). It actually IMPORTS the fixed module and calls
+  `summarize` with two different inputs, checking the real computed
+  average -- not just a compile-only/syntax check -- so a "fix" that makes
+  the file import cleanly by deleting/no-op-ing `summarize` still fails
+  here. Stdlib only (`sys.exit`, plain `assert`-shaped checks) -- no
+  pytest, since `python:3.11-slim` doesn't have it installed.
+
+  `NOTES.md` is the agent-VISIBLE protected file exercising the hash-cap
+  (Design Decision #1a) -- a real, hash-capped fixture, not a placeholder.

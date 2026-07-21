@@ -43,9 +43,12 @@ def _load(task_id: str) -> t.B8Task:
 # -- manifest loading --------------------------------------------------------
 
 
-def test_load_b8_tasks_returns_five_tasks_with_required_fields():
+def test_load_b8_tasks_returns_all_manifests_with_required_fields():
+    """8 manifests total (task-b8local, was 5): the original 5 bash
+    placeholders (task-01..05.yaml) plus 3 real Python task manifests
+    (task-06..08.yaml) added for the real local-run enablement pass."""
     all_tasks = t.load_b8_tasks(ROOT)
-    assert len(all_tasks) == 5
+    assert len(all_tasks) == 8
     assert [x.id for x in all_tasks] == sorted(x.id for x in all_tasks)
     for task in all_tasks:
         assert task.id
@@ -61,10 +64,14 @@ def test_load_b8_tasks_returns_five_tasks_with_required_fields():
         assert task.fixture_sha and len(task.fixture_sha) == 64
 
 
-def test_load_b8_tasks_covers_all_five_shapes_exactly_once():
+def test_load_b8_tasks_covers_all_shapes():
+    """Every valid shape appears at least once -- no longer EXACTLY once
+    (task-b8local): the 3 new Python manifests reuse the bugfix/from-scratch/
+    edit shapes (their bash counterparts already cover multi-file/tool-heavy),
+    so those three shapes now appear twice. Coverage, not cardinality."""
     all_tasks = t.load_b8_tasks(ROOT)
-    shapes = sorted(x.shape for x in all_tasks)
-    assert shapes == sorted(t._VALID_SHAPES)
+    shapes = {x.shape for x in all_tasks}
+    assert shapes == t._VALID_SHAPES
 
 
 def test_fixture_sha_is_sha256_of_manifest_bytes():
@@ -306,6 +313,89 @@ def test_run_oracle_no_docker_needed_for_hard_cap_paths(tmp_path, monkeypatch):
     (ws / "NOTES.md").write_bytes(b"tampered\n")
     completed, _ = t.run_oracle(task, ws)
     assert completed is False
+
+
+# -- run_oracle: oracle_image threading (task-b8local) -----------------------
+# No Docker needed for either test below -- subprocess.run is fully
+# monkeypatched (every "docker ..." call, not just "docker run") so these
+# stay hermetic regardless of whether a Docker daemon is reachable.
+
+
+def _fake_docker_run(captured: dict, real_run):
+    def fake_run(argv, **kwargs):
+        if argv and argv[0] == "docker":
+            if argv[:2] == ["docker", "run"]:
+                captured["argv"] = argv
+                return subprocess.CompletedProcess(argv, 0, stdout="PASS", stderr="")
+            # docker rm -f / docker ps -a -q --filter ... (cleanup +
+            # cleanup-verification) -- succeed with empty output so
+            # hidden_validate's own post-cleanup verification doesn't
+            # think a container leaked.
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return real_run(argv, **kwargs)
+    return fake_run
+
+
+def _correctly_fixed_bugfix01_workspace(ws: Path, task: "t.B8Task") -> None:
+    t.materialize_repo(task, ws)
+    fixed = task.setup_repo["stats.sh"].replace(
+        "    echo $((sum / $#))\n\nsummarize",
+        "    echo $((sum / $#))\n}\n\nsummarize",
+    )
+    (ws / "stats.sh").write_bytes(fixed.encode("utf-8"))
+
+
+def test_run_oracle_threads_configured_oracle_image_into_sandbox(tmp_path, monkeypatch):
+    """task-b8local: b8_harness.py's execute() threads suite.yaml's
+    b8.sandbox.oracle_image through run_oracle -> Sandbox, so a
+    Python-shaped B8 manifest's oracle (needs python3) doesn't run inside
+    the pinned, Python-less nvidia/cuda image. Monkeypatches subprocess.run
+    (mirrors test_harness_sandbox.py's container-hardening test) to capture
+    the `docker run` argv without needing a real container."""
+    import llmtest.harness.sandbox as sandbox_mod
+
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    _correctly_fixed_bugfix01_workspace(ws, task)
+
+    captured: dict = {}
+    monkeypatch.setattr(sandbox_mod.subprocess, "run",
+                        _fake_docker_run(captured, subprocess.run))
+
+    completed, detail = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert completed is True, detail
+
+    argv = captured.get("argv")
+    assert argv is not None, "docker run was never invoked"
+    # Bare tag, no "@sha256:..." digest -- run_oracle's oracle_image
+    # docstring: digest="" avoids pairing the override image with the CUDA
+    # pin's unrelated digest.
+    assert "python:3.11-slim" in argv
+    assert not any(a.startswith("python:3.11-slim@") for a in argv)
+    assert not any("nvidia/cuda" in a for a in argv)
+
+
+def test_run_oracle_default_oracle_image_still_uses_pinned_cuda_image(tmp_path, monkeypatch):
+    """Additivity regression: oracle_image=None (the default -- every
+    caller that predates task-b8local, including every OTHER test in this
+    file) must reach Sandbox with no image/digest override at all, so it
+    still resolves to the pinned CUDA image+digest, unchanged."""
+    import llmtest.harness.sandbox as sandbox_mod
+
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    _correctly_fixed_bugfix01_workspace(ws, task)
+
+    captured: dict = {}
+    monkeypatch.setattr(sandbox_mod.subprocess, "run",
+                        _fake_docker_run(captured, subprocess.run))
+
+    completed, detail = t.run_oracle(task, ws)   # oracle_image not passed
+    assert completed is True, detail
+
+    argv = captured.get("argv")
+    assert argv is not None, "docker run was never invoked"
+    assert any(a.startswith("nvidia/cuda:12.6.2-base-ubuntu24.04@sha256:") for a in argv)
 
 
 # -- run_oracle: the real behavioral pass path (needs Docker) ---------------
