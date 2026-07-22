@@ -371,3 +371,146 @@ def test_runner_main_returns_early_when_task_filter_matches_nothing(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "0 planned" in out
+
+
+# ---------------------------------------------------------------------------
+# 4b. main() loop -- infra-error retry (Codex review): an infra-error is a
+# transient HARNESS/serving-layer failure, so the SAME item is re-executed
+# up to 3 attempts total and only the LAST attempt's rows are appended. All
+# fakes (no live endpoint / Docker / opencode) via module-level monkeypatch,
+# same discipline as the rest of this file.
+# ---------------------------------------------------------------------------
+
+
+class _FakeItem:
+    model_id = "model-a"
+    task_id = "b8.py-bugfix-01"
+    run_n = 1
+
+
+def _fake_metrics_row(terminal_status, completion):
+    infra = terminal_status == "infra-error"
+    return {"row_id": f"rid-{terminal_status}-{completion}",
+            "metrics": {"completion": completion, "terminal_status": terminal_status,
+                        "steps": 1 if infra else 4,
+                        "tokens_prompt": 0 if infra else 100,
+                        "tokens_completion": 0 if infra else 50}}
+
+
+class _FakeBattery:
+    """plan() yields one WorkItem; execute() returns whatever the scripted
+    `terminal_statuses` sequence says (one row per call), recording how many
+    times it was called."""
+    def __init__(self, terminal_statuses):
+        self._scripted = list(terminal_statuses)
+        self.calls = 0
+
+    def plan(self, cfg, store, model_filter=None, force=False):
+        return [_FakeItem()]
+
+    def execute(self, item, ctx):
+        ts = self._scripted[self.calls]
+        self.calls += 1
+        return [_fake_metrics_row(ts, completion=(ts == "completed"))]
+
+
+class _FakeCfg:
+    suite = {"b8": {"ctx": 40960, "kv": "q8_0"}}
+
+
+def _install_runner_fakes(mod, monkeypatch, terminal_statuses):
+    """Swap the runner module's B8Harness/Store/RunContext/load_config for
+    fakes, returning (fake_battery, appended_rows). Nothing live is touched:
+    battery.execute() is scripted, Store.append() just records."""
+    appended: list = []
+
+    class _FakeStore:
+        def __init__(self, *a, **k):
+            pass
+
+        def append(self, row):
+            appended.append(row)
+            return True
+
+    class _FakeCtx:
+        def __init__(self, **k):
+            pass
+
+    battery = _FakeBattery(terminal_statuses)
+    monkeypatch.setattr(mod, "load_config", lambda root: _FakeCfg())
+    monkeypatch.setattr(mod, "Store", _FakeStore)
+    monkeypatch.setattr(mod, "RunContext", _FakeCtx)
+    monkeypatch.setattr(mod, "B8Harness", lambda: battery)
+    return battery, appended
+
+
+def test_runner_retries_infra_error_then_appends_only_the_completed_row(monkeypatch, capsys):
+    """Two infra-errors then a `completed` row: execute() is called 3 times
+    and EXACTLY ONE row -- the final `completed` one -- is appended (the two
+    discarded infra-error attempts are never stored)."""
+    mod = _load_runner_module()
+    battery, appended = _install_runner_fakes(
+        mod, monkeypatch, ["infra-error", "infra-error", "completed"])
+
+    rc = mod.main(["--endpoint-url", "http://127.0.0.1:8080"])
+
+    assert battery.calls == 3                       # 1 initial + 2 retries
+    assert len(appended) == 1                        # only the LAST attempt
+    assert appended[0]["metrics"]["terminal_status"] == "completed"
+    out = capsys.readouterr().out
+    assert "RETRY infra-error attempt 1/3" in out
+    assert "RETRY infra-error attempt 2/3" in out
+    assert rc == 0
+
+
+def test_runner_recovers_on_first_retry_without_exhausting_attempts(monkeypatch, capsys):
+    """One infra-error then a `completed` row: the retry recovers on
+    attempt 2, so execute() is called only twice (no needless 3rd attempt)
+    and just the completed row is appended."""
+    mod = _load_runner_module()
+    battery, appended = _install_runner_fakes(
+        mod, monkeypatch, ["infra-error", "completed"])
+
+    rc = mod.main(["--endpoint-url", "http://127.0.0.1:8080"])
+
+    assert battery.calls == 2
+    assert len(appended) == 1
+    assert appended[0]["metrics"]["terminal_status"] == "completed"
+    out = capsys.readouterr().out
+    assert "RETRY infra-error attempt 1/3" in out
+    assert "RETRY infra-error attempt 2/3" not in out
+    assert rc == 0
+
+
+def test_runner_appends_last_infra_error_when_all_attempts_exhausted(monkeypatch, capsys):
+    """All 3 attempts infra-error: execute() is called 3 times and the LAST
+    infra-error row IS appended (kept as excluded provenance -- p8_report's
+    eligibility rule drops it from the k/N denominator, not the run loop)."""
+    mod = _load_runner_module()
+    battery, appended = _install_runner_fakes(
+        mod, monkeypatch, ["infra-error", "infra-error", "infra-error"])
+
+    rc = mod.main(["--endpoint-url", "http://127.0.0.1:8080"])
+
+    assert battery.calls == 3
+    assert len(appended) == 1
+    assert appended[0]["metrics"]["terminal_status"] == "infra-error"
+    out = capsys.readouterr().out
+    assert "RETRY infra-error attempt 1/3" in out
+    assert "RETRY infra-error attempt 2/3" in out
+    assert rc == 0                                    # infra-error is not an EXEC-ERROR
+
+
+def test_runner_does_not_retry_a_completed_row(monkeypatch, capsys):
+    """A first-attempt `completed` row is appended immediately with no
+    retry (guards against retrying non-infra terminal statuses)."""
+    mod = _load_runner_module()
+    battery, appended = _install_runner_fakes(mod, monkeypatch, ["completed"])
+
+    rc = mod.main(["--endpoint-url", "http://127.0.0.1:8080"])
+
+    assert battery.calls == 1
+    assert len(appended) == 1
+    out = capsys.readouterr().out
+    assert "RETRY infra-error" not in out
+    assert rc == 0

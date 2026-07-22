@@ -249,6 +249,105 @@ def test_build_b8_section_honors_not_applicable_canary_never_false_zero_percent(
 
 
 # ---------------------------------------------------------------------------
+# 2a. infra-error eligibility rule (Codex review) -- infra-errors are
+# HARNESS/serving-layer failures, NOT model failures, so they must be
+# EXCLUDED from the completion k/N denominator, the Wilson interval, and
+# every per-replicate signal (never counted against the model).
+# ---------------------------------------------------------------------------
+
+
+def _stat_row(*, completion, terminal_status, steps, toks,
+              subagent_spawned="no", first_failure_class=None):
+    """Minimal row dict carrying only what `_b8_group_stats` reads
+    (`metrics.*`) -- a direct unit-test fixture, not the full on-disk row
+    shape `_write_b8_row` produces (this exercises `_b8_group_stats` in
+    isolation, independent of load_rows / condition parsing)."""
+    metrics = {"completion": completion, "terminal_status": terminal_status,
+               "steps": steps, "tokens_prompt": toks, "tokens_completion": 0,
+               "subagent_spawned": subagent_spawned}
+    if first_failure_class is not None:
+        metrics["first_failure_class"] = first_failure_class
+    return {"metrics": metrics}
+
+
+def test_b8_group_stats_excludes_infra_errors_from_denominator():
+    """A group of 5 rows where 2 are `infra-error` yields n=3 (not 5), the
+    correct k over the eligible rows, infra_excluded=2, and attempted=5 --
+    and the Wilson interval / median step+token stats are over the eligible
+    3, never the full 5 (median values are chosen so including the two
+    infra rows would shift them, pinning the exclusion, not just the count)."""
+    group = [
+        _stat_row(completion=True, terminal_status="completed", steps=10, toks=100),
+        _stat_row(completion=True, terminal_status="completed", steps=20, toks=200),
+        _stat_row(completion=False, terminal_status="killed", steps=30, toks=300),
+        _stat_row(completion=False, terminal_status="infra-error", steps=1, toks=0),
+        _stat_row(completion=False, terminal_status="infra-error", steps=0, toks=0),
+    ]
+    s = p8_report._b8_group_stats(group)
+
+    assert s["n"] == 3            # eligible only, NOT 5
+    assert s["k"] == 2            # 2 completions among the 3 eligible
+    assert s["infra_excluded"] == 2
+    assert s["attempted"] == 5
+    assert s["per_replicate"] == [True, True, False]
+    assert s["wilson"] == wilson(2, 3)           # over eligible n=3, not 5
+    assert s["median_steps"] == 20               # median([10,20,30]); all-5 median would be 10
+    assert s["median_tokens"] == 200             # median([100,200,300]); all-5 median would be 100
+    # The one FAILED-but-eligible row (killed, no class) is the ONLY failure
+    # tallied -- the two infra-error rows (completion=False) must NOT be
+    # bucketed as model failures.
+    assert sum(s["class_counts"].values()) == 1
+    assert s["class_counts"][p8_report._B8_UNCLASSIFIED] == 1
+
+
+def test_b8_group_stats_all_infra_error_group_is_zero_over_zero_not_a_crash():
+    """Degenerate all-infra-error cell: eligible is empty, so k/N is 0/0
+    (Wilson's documented (0.0, 0.0) sentinel), per_replicate is empty, and
+    infra_excluded == attempted -- honest, and crash-free."""
+    group = [_stat_row(completion=False, terminal_status="infra-error", steps=0, toks=0)
+             for _ in range(4)]
+    s = p8_report._b8_group_stats(group)
+    assert (s["k"], s["n"]) == (0, 0)
+    assert s["wilson"] == (0.0, 0.0)
+    assert s["per_replicate"] == []
+    assert s["median_steps"] is None and s["median_tokens"] is None
+    assert s["infra_excluded"] == 4 and s["attempted"] == 4
+
+
+def test_build_b8_section_shows_infra_excluded_count_and_eligible_kn(tmp_path):
+    """End-to-end through build_b8_section: a 5-replicate cell with 2
+    `infra-error` rows must render k/N as the ELIGIBLE 2/3 (never 2/5) and
+    surface the dropped count in the `Infra-excluded` column -- exclusion is
+    transparent, never silent."""
+    caveats: list[str] = []
+    specs = [("completed", True), ("completed", True), ("killed", False),
+             ("infra-error", False), ("infra-error", False)]
+    for run_n, (ts, ok) in enumerate(specs, 1):
+        _write_b8_row(tmp_path, "suite-v2.1.0", model_id="model-a", harness="opencode",
+                       run_n=run_n, completion=ok, terminal_status=ts,
+                       tokens_prompt=(0 if ts == "infra-error" else 100),
+                       steps=(1 if ts == "infra-error" else 4))
+    rows = p8_report.load_rows(tmp_path, "suite-v2.1.0", caveats)
+
+    section = p8_report.build_b8_section(tmp_path, _cfg(), rows)
+
+    assert "2/3" in section        # eligible k/N
+    assert "2/5" not in section    # never the infra-inflated denominator
+
+    # Pin the Infra-excluded CELL in the completion table specifically
+    # (the block before the first-failure-class table, which also names
+    # model-a/opencode).
+    completion_block = section.split("**First-failure-class", 1)[0]
+    comp_row = next(ln for ln in completion_block.splitlines()
+                    if "model-a" in ln and "opencode" in ln and "|" in ln)
+    cells = [c.strip() for c in comp_row.strip().strip("|").split("|")]
+    # headers: Model, Harness, Completion k/N, Infra-excluded, Wilson 95% CI, ...
+    assert cells[0:2] == ["model-a", "opencode"]
+    assert cells[2] == "2/3"
+    assert cells[3] == "2"         # the Infra-excluded column
+
+
+# ---------------------------------------------------------------------------
 # 2b. build_b8_section -- sibling classification store pickup (task-b8classify)
 # ---------------------------------------------------------------------------
 

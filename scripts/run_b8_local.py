@@ -180,15 +180,38 @@ def main(argv=None) -> int:
           f"(model_filter={args.model!r}, task_filter={args.task!r}, "
           f"limit={args.limit}, force={args.force})")
 
+    # An `infra-error` terminal_status is a HARNESS/serving-layer failure
+    # (endpoint unreachable etc.), not a model failure -- on a stable
+    # endpoint it's transient, so re-execute the SAME item up to
+    # MAX_B8_ATTEMPTS total and only append the LAST attempt's rows. Each
+    # battery.execute() stamps a fresh attempt_id (-> fresh row_id), so the
+    # discarded earlier attempts are simply never appended (no dedup
+    # collision); if all attempts infra-error, the last is still appended so
+    # it survives as excluded provenance (p8_report drops it from the k/N
+    # denominator -- see _b8_group_stats' eligibility rule).
+    MAX_B8_ATTEMPTS = 3
+
     failures = 0
     for i, item in enumerate(items, 1):
-        t0 = time.time()
-        try:
-            rows = battery.execute(item, ctx)
-        except Exception as e:                        # row-level containment
-            failures += 1
-            print(f"  [{i}/{len(items)}] EXEC-ERROR model={item.model_id} "
-                  f"task={item.task_id} run_n={item.run_n}: {e!r}")
+        rows = None
+        for attempt in range(1, MAX_B8_ATTEMPTS + 1):
+            t0 = time.time()
+            try:
+                rows = battery.execute(item, ctx)
+            except Exception as e:                    # row-level containment
+                failures += 1
+                print(f"  [{i}/{len(items)}] EXEC-ERROR model={item.model_id} "
+                      f"task={item.task_id} run_n={item.run_n}: {e!r}")
+                rows = None
+                break
+            infra = any(r["metrics"].get("terminal_status") == "infra-error" for r in rows)
+            if infra and attempt < MAX_B8_ATTEMPTS:
+                print(f"  [{i}/{len(items)}] RETRY infra-error attempt "
+                      f"{attempt}/{MAX_B8_ATTEMPTS} model={item.model_id} "
+                      f"task={item.task_id} run_n={item.run_n}")
+                continue
+            break
+        if not rows:
             continue
         for row in rows:
             appended = store.append(row)

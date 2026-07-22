@@ -853,6 +853,16 @@ def _b8_groups(rows: list[dict]) -> dict[tuple[str, str], list[dict]]:
     return {key: sorted(group, key=lambda r: r.get("run_n", 0)) for key, group in out.items()}
 
 
+def _b8_is_infra_error(row: dict) -> bool:
+    """True iff this run's `metrics.terminal_status == "infra-error"` -- a
+    HARNESS/serving-layer failure (endpoint unreachable, container couldn't
+    connect, etc.: `tokens_prompt=0`, `steps<=1`), NOT a model failure. The
+    model never got a fair chance, so such a row is INELIGIBLE for the
+    completion denominator (Codex review: infra-errors must be excluded from
+    the ranking, never counted as model failures) -- see `_b8_group_stats`."""
+    return row.get("metrics", {}).get("terminal_status") == "infra-error"
+
+
 def _b8_group_stats(group_rows: list[dict]) -> dict:
     """Raw, unsmoothed per-(model,harness) stats for one B8 group: k/N +
     Wilson interval on completion (spec 2.8 -- N replicates, never a
@@ -861,6 +871,20 @@ def _b8_group_stats(group_rows: list[dict]) -> dict:
     subagent-spawn canary counts (yes/no/not_applicable counted
     separately -- `not_applicable` is never folded into a 0% yes-rate, spec
     2.7), and a first-failure-class tally over FAILED rows only.
+
+    ELIGIBILITY -- the infra-error rule (Codex review): rows whose
+    `metrics.terminal_status == "infra-error"` are HARNESS/serving-layer
+    failures, NOT model failures (the model never got a fair chance), so
+    they are EXCLUDED from EVERY signal here -- k/N, the Wilson interval,
+    the ordered per-replicate list, the median step/token stats, the
+    subagent canary, AND the first-failure-class tally (an infra-error row
+    has `completion=False`, so leaving it in would wrongly bucket it as a
+    model failure -- the exact thing this rule fixes; and it never gave the
+    model a chance to delegate or emit steps/tokens, so it carries no signal
+    on the other axes either). `infra_excluded` (count of dropped rows) and
+    `attempted` (total rows before exclusion) are returned so the exclusion
+    is surfaced in the rendered table, never silent. All stats below are
+    over `eligible`, which preserves `group_rows`' (run_n-sorted) order.
 
     FOLLOW-UP, NOT A BUG (see task-9-brief.md's self-review): this reads
     `metrics.get("first_failure_class")`, but nothing in this codebase
@@ -872,24 +896,26 @@ def _b8_group_stats(group_rows: list[dict]) -> dict:
     task; every failed row falls through to `_B8_UNCLASSIFIED` below until
     that follow-up job exists, and this function degrades to that
     gracefully rather than crashing on the missing key."""
-    completions = [bool(r.get("metrics", {}).get("completion")) for r in group_rows]
+    eligible = [r for r in group_rows if not _b8_is_infra_error(r)]
+
+    completions = [bool(r.get("metrics", {}).get("completion")) for r in eligible]
     k, n = sum(completions), len(completions)
     lo, hi = wilson(k, n)
 
-    steps = [r.get("metrics", {}).get("steps") for r in group_rows
+    steps = [r.get("metrics", {}).get("steps") for r in eligible
              if isinstance(r.get("metrics", {}).get("steps"), (int, float))]
     tokens = []
-    for r in group_rows:
+    for r in eligible:
         m = r.get("metrics", {})
         tp, tc = m.get("tokens_prompt"), m.get("tokens_completion")
         if isinstance(tp, (int, float)) and isinstance(tc, (int, float)):
             tokens.append(tp + tc)
 
-    spawn_vals = [r.get("metrics", {}).get("subagent_spawned") for r in group_rows]
+    spawn_vals = [r.get("metrics", {}).get("subagent_spawned") for r in eligible]
     spawn_counts = Counter(v for v in spawn_vals if v is not None)
 
     class_counts = Counter()
-    for r, completed in zip(group_rows, completions):
+    for r, completed in zip(eligible, completions):
         if completed:
             continue
         label = r.get("metrics", {}).get("first_failure_class")
@@ -897,6 +923,8 @@ def _b8_group_stats(group_rows: list[dict]) -> dict:
 
     return {
         "k": k, "n": n, "wilson": (lo, hi),
+        "attempted": len(group_rows),
+        "infra_excluded": len(group_rows) - len(eligible),
         "per_replicate": completions,
         "median_steps": statistics.median(steps) if steps else None,
         "median_tokens": statistics.median(tokens) if tokens else None,
@@ -929,9 +957,9 @@ def _b8_canary_line(spawn_counts: Counter) -> str:
 def _render_b8_groups(group_rows_by_key: dict[tuple[str, str], list[dict]]) -> str:
     stats_by_key = {key: _b8_group_stats(rows_) for key, rows_ in group_rows_by_key.items()}
 
-    headers = ["Model", "Harness", "Completion k/N", "Wilson 95% CI",
-               "Per-replicate outcomes", "Median steps", "Median tokens",
-               "Subagent canary"]
+    headers = ["Model", "Harness", "Completion k/N", "Infra-excluded",
+               "Wilson 95% CI", "Per-replicate outcomes", "Median steps",
+               "Median tokens", "Subagent canary"]
     rows_out = []
     for key in sorted(stats_by_key):
         model, harness = key
@@ -940,6 +968,7 @@ def _render_b8_groups(group_rows_by_key: dict[tuple[str, str], list[dict]]) -> s
         outcomes = "[" + ", ".join("P" if c else "F" for c in s["per_replicate"]) + "]"
         rows_out.append([
             model, harness, f"{s['k']}/{s['n']}",
+            str(s["infra_excluded"]),
             f"[{lo * 100:.1f}%, {hi * 100:.1f}%]",
             outcomes,
             fmt1(s["median_steps"]) if s["median_steps"] is not None else "-",
@@ -1055,7 +1084,13 @@ def build_b8_section(root, cfg, rows: list[dict]) -> str:
              "and a first-failure-class distribution (populated from "
              "`results/b8_classifications-<suite_version>.jsonl` when "
              "`scripts/classify_b8_local.py` has been run for this suite -- see the "
-             "note below the table).", ""]
+             "note below the table). `infra-error` runs (HARNESS/serving-layer "
+             "failures -- endpoint unreachable etc.; the model never got a fair "
+             "chance) are EXCLUDED from k/N, the Wilson interval, and every "
+             "per-replicate signal, never counted as model failures; the "
+             "`Infra-excluded` column reports how many such runs were dropped per "
+             "cell (attempted = eligible N + Infra-excluded), so the exclusion is "
+             "transparent rather than silent.", ""]
 
     by_suite = _split_by_source_suite(rows, 8)
     if not by_suite:
