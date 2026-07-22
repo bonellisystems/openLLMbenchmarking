@@ -13,7 +13,7 @@
 set -euo pipefail
 B8_ROOT="${B8_ROOT:-/opt/b8}"
 MODELS="$B8_ROOT/models"
-HF="${HF:-$B8_ROOT/venv/bin/huggingface-cli}"
+HF="${HF:-$B8_ROOT/venv/bin/hf}"   # huggingface_hub 1.x CLI (huggingface-cli download is deprecated -> prints a hint, downloads nothing)
 mkdir -p "$MODELS"
 
 GPT_OSS_REPO="${GPT_OSS_REPO:-ggml-org/gpt-oss-20b-GGUF}"   # GGUF repo (llama.cpp org); openai/gpt-oss-20b is safetensors, NOT gguf
