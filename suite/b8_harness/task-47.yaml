@@ -1,0 +1,352 @@
+id: py-robust-01
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo has two files:
+
+  - `validators.py` -- `validate_username(raw)`, meant to validate a
+    candidate username and return it unchanged (`str`) if valid, or raise
+    `ValueError` (describing why) otherwise. Contract other code relies
+    on -- ALL of the following must hold for `raw` to be accepted:
+    1. `raw` must be a `str` (anything else -- `None`, `int`, `list`,
+       ... -- is invalid).
+    2. Length 3-20 characters, INCLUSIVE on both ends.
+    3. Every character must be an ASCII letter, ASCII digit, or
+       underscore (`_`) -- nothing else (no spaces, quotes, angle
+       brackets, hyphens, periods, semicolons, ...).
+    4. The FIRST character must not be a digit.
+    5. The username, compared CASE-INSENSITIVELY, must not be one of the
+       reserved names `admin`, `root`, `administrator`, `null`,
+       `undefined`, `system` -- e.g. `"Admin"`/`"ADMIN"`/`"aDmIn"` must
+       ALL be rejected exactly like `"admin"` is, since they're the same
+       reserved name, just differently cased. This is an EXACT match
+       against the whole (lowercased) username, not a substring check --
+       `"Administrator2"` is fine (it isn't itself `"administrator"`,
+       even though that word is a prefix of it).
+    A username that violates ANY of these must raise `ValueError`; one
+    that violates none of them is returned completely unchanged.
+  - `signup.py` -- an EXISTING caller elsewhere in this codebase:
+    `register(raw_username, existing_users)` validates then adds to a
+    user set -- relies on `validate_username` rejecting EVERY invalid or
+    reserved name (including a case-varied reserved name like `"Admin"`),
+    never letting one slip through into the user table. Must keep
+    working exactly as written.
+
+  The bug: `validators.py`'s reserved-name check is currently
+  CASE-SENSITIVE (`raw in _BLOCKLIST`) -- `"Admin"`, `"ADMIN"`, `"RoOt"`,
+  etc. all bypass it even though they're the same reserved name as
+  `"admin"`/`"root"`, just differently cased. Every other rule (type,
+  length, character class, leading-digit) is already implemented
+  correctly. Fix the reserved-name check so it's genuinely
+  case-insensitive (matches rule 5 above exactly). Only modify
+  `validators.py` -- do not create or edit any other file (including
+  `signup.py` or `NOTES.md`).
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 340, tokens: 6500, steps: 15}
+setup_repo:
+  validators.py: |
+    import string
+
+    _ALLOWED_CHARS = set(string.ascii_letters + string.digits + "_")
+    _BLOCKLIST = {"admin", "root", "administrator", "null", "undefined", "system"}
+
+
+    def validate_username(raw):
+        """Validate a candidate username. BUG: the reserved-name blocklist
+        check is case-SENSITIVE (`raw in _BLOCKLIST`) -- "Admin"/"ADMIN"/
+        etc all bypass it even though they're the same reserved name,
+        just differently cased."""
+        if not isinstance(raw, str):
+            raise ValueError(f"username must be a string, got {type(raw).__name__}")
+        if not (3 <= len(raw) <= 20):
+            raise ValueError(f"username must be 3-20 characters, got {len(raw)}")
+        if not all(c in _ALLOWED_CHARS for c in raw):
+            raise ValueError(f"username contains disallowed characters: {raw!r}")
+        if raw[0].isdigit():
+            raise ValueError("username must not start with a digit")
+        if raw in _BLOCKLIST:
+            raise ValueError(f"username {raw!r} is reserved")
+        return raw
+  signup.py: |
+    from validators import validate_username
+
+
+    def register(raw_username, existing_users):
+        """Existing integration: validates then registers a new user --
+        relies on validate_username rejecting EVERY invalid/reserved name
+        (including a case-variant reserved name like "Admin"), never
+        letting one slip through into the user table."""
+        username = validate_username(raw_username)
+        if username in existing_users:
+            raise ValueError(f"username {username!r} already taken")
+        return existing_users | {username}
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _snippet(raw):
+        return ("import validators\n"
+                f"raw = {raw!r}\n"
+                "try:\n"
+                "    print('OK:' + validators.validate_username(raw))\n"
+                "except ValueError:\n"
+                "    print('EXC:ValueError')\n"
+                "except Exception as e:\n"
+                "    print('EXC:' + type(e).__name__)\n")
+
+
+    VALID_CASES = [
+        ("min_length", "bob"),
+        ("max_length", "a" * 20),
+        ("mixed_case_and_digits", "alice_99"),
+        ("leading_underscore", "_hidden"),
+        ("mixed_case_not_blocklisted", "User123"),
+        ("blocklist_substring_not_exact_match", "Administrator2"),
+    ]
+
+    INVALID_CASES = [
+        ("none_type", None),
+        ("int_type", 12345),
+        ("list_type", ["a", "b"]),
+        ("too_short", "ab"),
+        ("too_long", "a" * 21),
+        ("disallowed_char_bang", "bob!"),
+        ("disallowed_char_space", "bob smith"),
+        ("sql_injection_pattern", "bob'--"),
+        ("xss_pattern", "<script>"),
+        ("leading_digit", "1bob"),
+        ("hyphen_not_allowed", "bob-smith"),
+        ("period_not_allowed", "bob.smith"),
+        ("blocklist_exact_lowercase", "admin"),
+        ("blocklist_bypass_titlecase", "Admin"),
+        ("blocklist_bypass_uppercase", "ADMIN"),
+        ("blocklist_bypass_mixed_root", "RoOt"),
+        ("empty_string", ""),
+    ]
+
+
+    def main():
+        for label, raw in VALID_CASES:
+            r = _run(_snippet(raw))
+            case = f"validate_username({raw!r}) accepted [{label}]"
+            expected = f"OK:{raw}"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, raw in INVALID_CASES:
+            r = _run(_snippet(raw))
+            case = f"validate_username({raw!r}) rejected [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="EXC:ValueError", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "EXC:ValueError":
+                _emit(False, case=case, expected="EXC:ValueError", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("blocklist_bypass_blocked", "Admin", [], "EXC:ValueError"),
+            ("normal_registration", "bob", ["alice"], "OK:['alice', 'bob']"),
+            ("duplicate_blocked", "bob", ["bob"], "EXC:ValueError"),
+        ]
+        for label, raw, existing, expected in integration_cases:
+            code = ("import signup\n"
+                    f"raw = {raw!r}\n"
+                    f"existing = set({existing!r})\n"
+                    "try:\n"
+                    "    print('OK:' + repr(sorted(signup.register(raw, existing))))\n"
+                    "except ValueError:\n"
+                    "    print('EXC:ValueError')\n")
+            r = _run(code)
+            case = f"signup.register(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [signup.py, NOTES.md]
+allowed_diff_paths: [validators.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B3 robustness/security batch) -- an
+  allowlist-style input validator where the headline trap is a
+  CASE-SENSITIVE blocklist (a real bypass class: "Admin" defeats a
+  blocklist tuned only for "admin"). Traps:
+  1. Case-sensitive reserved-name check (the starter bug) -- accepts
+     `"Admin"`/`"ADMIN"`/`"RoOt"` when they must be rejected exactly like
+     their lowercase forms. Caught by the 3 `blocklist_bypass_*` cases;
+     `blocklist_exact_lowercase` alone would NOT catch this (the starter
+     already handles the un-cased exact match correctly).
+  2. An off-by-one on the length boundary (e.g. `< 20` instead of `<=
+     20`) -- wrongly REJECTS valid input at the boundary rather than
+     accepting invalid input, the opposite failure mode from trap 1.
+     Caught by `max_length` (exactly 20 characters).
+  3. Widening the allowed character set beyond the spec (e.g. also
+     allowing `-`/`.`, plausible since many REAL username policies do)
+     -- caught by `hyphen_not_allowed`/`period_not_allowed`, which exist
+     specifically because this task's OWN spec is stricter than that
+     common convention.
+
+  Verified empirically: `check_fixtures.wrong[0]` (the starter's
+  case-sensitive blocklist) fails `blocklist_bypass_titlecase` (`actual`
+  `'OK:Admin'`, want `'EXC:ValueError'`) -- the first of the 3
+  bypass-flavored INVALID_CASES it reaches. `wrong[1]` (`< 20` instead
+  of `<= 20`) passes every INVALID_CASES entry and fails the VALID case
+  `max_length` (`actual` `'EXC:ValueError'`, want `'OK:aaaaaaaaaaaaaaaaaaaa'`).
+  `wrong[2]` (allows `-`/`.` too) passes everything else and fails
+  `hyphen_not_allowed` (`actual` `'OK:bob-smith'`, want
+  `'EXC:ValueError'`).
+check_fixtures:
+  reference:
+    validators.py: |
+      import string
+
+      _ALLOWED_CHARS = set(string.ascii_letters + string.digits + "_")
+      _BLOCKLIST = {"admin", "root", "administrator", "null", "undefined", "system"}
+
+
+      def validate_username(raw):
+          if not isinstance(raw, str):
+              raise ValueError(f"username must be a string, got {type(raw).__name__}")
+          if not (3 <= len(raw) <= 20):
+              raise ValueError(f"username must be 3-20 characters, got {len(raw)}")
+          if not all(c in _ALLOWED_CHARS for c in raw):
+              raise ValueError(f"username contains disallowed characters: {raw!r}")
+          if raw[0].isdigit():
+              raise ValueError("username must not start with a digit")
+          if raw.lower() in _BLOCKLIST:
+              raise ValueError(f"username {raw!r} is reserved")
+          return raw
+  alternate:
+    validators.py: |
+      import re
+
+      _VALID_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+      _BLOCKLIST = {"admin", "root", "administrator", "null", "undefined", "system"}
+
+
+      def validate_username(raw):
+          if not isinstance(raw, str):
+              raise ValueError("username must be a string")
+          if not (3 <= len(raw) <= 20):
+              raise ValueError("username length out of range")
+          if not _VALID_RE.match(raw):
+              raise ValueError(f"username has an invalid format: {raw!r}")
+          if raw.casefold() in _BLOCKLIST:
+              raise ValueError(f"username {raw!r} is reserved")
+          return raw
+  wrong:
+    - validators.py: |
+        import string
+
+        _ALLOWED_CHARS = set(string.ascii_letters + string.digits + "_")
+        _BLOCKLIST = {"admin", "root", "administrator", "null", "undefined", "system"}
+
+
+        def validate_username(raw):
+            if not isinstance(raw, str):
+                raise ValueError(f"username must be a string, got {type(raw).__name__}")
+            if not (3 <= len(raw) <= 20):
+                raise ValueError(f"username must be 3-20 characters, got {len(raw)}")
+            if not all(c in _ALLOWED_CHARS for c in raw):
+                raise ValueError(f"username contains disallowed characters: {raw!r}")
+            if raw[0].isdigit():
+                raise ValueError("username must not start with a digit")
+            if raw in _BLOCKLIST:  # BUG: case-sensitive
+                raise ValueError(f"username {raw!r} is reserved")
+            return raw
+    - validators.py: |
+        import string
+
+        _ALLOWED_CHARS = set(string.ascii_letters + string.digits + "_")
+        _BLOCKLIST = {"admin", "root", "administrator", "null", "undefined", "system"}
+
+
+        def validate_username(raw):
+            if not isinstance(raw, str):
+                raise ValueError(f"username must be a string, got {type(raw).__name__}")
+            if not (3 <= len(raw) < 20):  # BUG: excludes the valid 20-char boundary
+                raise ValueError(f"username must be 3-20 characters, got {len(raw)}")
+            if not all(c in _ALLOWED_CHARS for c in raw):
+                raise ValueError(f"username contains disallowed characters: {raw!r}")
+            if raw[0].isdigit():
+                raise ValueError("username must not start with a digit")
+            if raw.lower() in _BLOCKLIST:
+                raise ValueError(f"username {raw!r} is reserved")
+            return raw
+    - validators.py: |
+        import string
+
+        _ALLOWED_CHARS = set(string.ascii_letters + string.digits + "_-.")  # BUG: hyphen/period allowed
+        _BLOCKLIST = {"admin", "root", "administrator", "null", "undefined", "system"}
+
+
+        def validate_username(raw):
+            if not isinstance(raw, str):
+                raise ValueError(f"username must be a string, got {type(raw).__name__}")
+            if not (3 <= len(raw) <= 20):
+                raise ValueError(f"username must be 3-20 characters, got {len(raw)}")
+            if not all(c in _ALLOWED_CHARS for c in raw):
+                raise ValueError(f"username contains disallowed characters: {raw!r}")
+            if raw[0].isdigit():
+                raise ValueError("username must not start with a digit")
+            if raw.lower() in _BLOCKLIST:
+                raise ValueError(f"username {raw!r} is reserved")
+            return raw

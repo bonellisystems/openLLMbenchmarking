@@ -1,0 +1,356 @@
+id: py-build-04
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo has two files:
+
+  - `layered_config.py` -- `resolve_settings(layers)`, meant to deep-merge
+    a list of settings dicts, ordered LOWEST to HIGHEST precedence (a
+    later entry in `layers` outranks an earlier one). Contract other code
+    relies on:
+    - For a given key, if BOTH the value accumulated so far AND the
+      current layer's value for that key are `dict`s, merge them
+      recursively using this SAME rule (a deep merge -- union of keys,
+      with the current layer's own nested keys winning any conflict at
+      that nested level, arbitrarily deep).
+    - Otherwise: if the key is PRESENT in the current layer's dict AT
+      ALL, its value REPLACES the accumulated one OUTRIGHT -- REGARDLESS
+      of whether that value is falsy. `None`, `0`, `False`, `""`, `[]`,
+      and `{}` (when the accumulated side ISN'T also a dict) are all
+      legitimate, intentional overrides, not "no override" -- a key must
+      never be treated as "not really set" just because its value
+      happens to be falsy.
+    - A key entirely ABSENT from a layer's dict never touches that key's
+      already-accumulated value (this is different from the key being
+      PRESENT with value `None` -- that case above still replaces).
+    - Lists are NEVER merged/concatenated across layers -- a later
+      layer's list value replaces an earlier one entirely (this already
+      follows from "not both dicts -> replace outright", but don't
+      special-case list concatenation as if it were smarter merging).
+  - `service.py` -- an EXISTING caller elsewhere in this codebase:
+    `effective_settings(file_layer, env_layer, cli_layer)` builds the
+    final settings via `resolve_settings([DEFAULTS, file_layer,
+    env_layer, cli_layer])` -- relies on the FULL contract above,
+    including that an explicit falsy/None override from `file_layer`
+    genuinely takes effect instead of being silently dropped. Must keep
+    working exactly as written.
+
+  The bug: `layered_config.py`'s `_merge_two` currently decides whether an
+  override "counts" using TRUTHINESS (`elif layer[key]:`) instead of
+  checking whether `key` is present in `layer` at all. This means any
+  override whose value happens to be `None`/`0`/`False`/`""`/`[]` is
+  silently ignored -- the accumulated value (or nothing, if there wasn't
+  one yet) is kept instead of the real override. Fix `layered_config.py`
+  so it implements the FULL contract above. Only modify
+  `layered_config.py` -- do not create or edit any other file (including
+  `service.py` or `NOTES.md`).
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 360, tokens: 7000, steps: 16}
+setup_repo:
+  layered_config.py: |
+    def _merge_two(base, layer):
+        """Merge `layer` on top of `base`. BUG: uses truthiness
+        (`elif layer[key]:`) to decide whether an override "counts",
+        instead of checking whether `key` is present in `layer` at all --
+        an override that is explicitly None/0/False/""/[] is silently
+        ignored instead of replacing the base value (or, if there was no
+        prior value at all, the key ends up missing from the result
+        entirely)."""
+        result = dict(base)
+        for key in layer:
+            if isinstance(result.get(key), dict) and isinstance(layer[key], dict):
+                result[key] = _merge_two(result[key], layer[key])
+            elif layer[key]:
+                result[key] = layer[key]
+        return result
+
+
+    def resolve_settings(layers):
+        result = {}
+        for layer in layers:
+            result = _merge_two(result, layer)
+        return result
+  service.py: |
+    from layered_config import resolve_settings
+
+    DEFAULTS = {"retries": 3, "timeout": {"connect": 5, "read": 30},
+                "tags": ["default"], "debug": True}
+
+
+    def effective_settings(file_layer, env_layer, cli_layer):
+        """Existing integration: layers defaults < file < env < cli (cli
+        wins outright), relying on resolve_settings implementing the FULL
+        deep-merge + explicit-override contract (nested dict keys merge
+        recursively; everything else -- including an explicit
+        None/0/False/""/[] override -- REPLACES the lower layer's value
+        outright, never silently ignored)."""
+        return resolve_settings([DEFAULTS, file_layer, env_layer, cli_layer])
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    _CANON_HELPER = (
+        "def _canon(x):\n"
+        "    if isinstance(x, dict):\n"
+        "        return tuple(sorted((k, _canon(v)) for k, v in x.items()))\n"
+        "    if isinstance(x, list):\n"
+        "        return tuple(_canon(v) for v in x)\n"
+        "    return x\n"
+    )
+
+
+    def _case_snippet(layers, expected):
+        return ("import layered_config\n" + _CANON_HELPER +
+                f"layers = {layers!r}\n"
+                f"expected = {expected!r}\n"
+                "result = layered_config.resolve_settings(layers)\n"
+                "print('MATCH' if _canon(result) == _canon(expected) else "
+                "'MISMATCH actual=' + repr(_canon(result)))\n")
+
+
+    CASES = [
+        ("basic_layering",
+         [{"retries": 3, "timeout": {"connect": 5, "read": 30},
+           "tags": ["default"], "debug": True},
+          {"timeout": {"connect": 2}}, {}, {"retries": 5}],
+         {"retries": 5, "timeout": {"connect": 2, "read": 30},
+          "tags": ["default"], "debug": True}),
+        ("falsy_override_wins_over_earlier_value",
+         [{"retries": 3}, {"retries": 0}], {"retries": 0}),
+        ("falsy_override_with_no_earlier_value",
+         [{"count": 0}], {"count": 0}),
+        ("none_override_replaces",
+         [{"mode": "auto"}, {"mode": None}], {"mode": None}),
+        ("absent_key_leaves_value_untouched",
+         [{"mode": "auto"}, {}], {"mode": "auto"}),
+        ("list_replaced_not_concatenated",
+         [{"tags": ["a", "b"]}, {"tags": ["c"]}], {"tags": ["c"]}),
+        ("empty_dict_merge_is_noop",
+         [{"opts": {"x": 1}}, {"opts": {}}], {"opts": {"x": 1}}),
+        ("three_level_nested_merge",
+         [{"a": {"b": {"c": 1, "d": 2}}}, {"a": {"b": {"c": 9}}}],
+         {"a": {"b": {"c": 9, "d": 2}}}),
+        ("dict_replaces_scalar",
+         [{"x": 5}, {"x": {"y": 1}}], {"x": {"y": 1}}),
+        ("scalar_replaces_dict",
+         [{"x": {"y": 1}}, {"x": 5}], {"x": 5}),
+        ("false_override",
+         [{"flag": True}, {"flag": False}], {"flag": False}),
+        ("empty_string_override",
+         [{"name": "bob"}, {"name": ""}], {"name": ""}),
+    ]
+
+
+    def main():
+        for label, layers, expected in CASES:
+            r = _run(_case_snippet(layers, expected))
+            case = f"resolve_settings [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="MATCH", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "MATCH":
+                _emit(False, case=case, expected="MATCH", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("no_overrides", {}, {}, {},
+             {"retries": 3, "timeout": {"connect": 5, "read": 30},
+              "tags": ["default"], "debug": True}),
+            ("falsy_and_nested_overrides", {"retries": 0}, {}, {"timeout": {"connect": 1}},
+             {"retries": 0, "timeout": {"connect": 1, "read": 30},
+              "tags": ["default"], "debug": True}),
+        ]
+        for label, file_layer, env_layer, cli_layer, expected in integration_cases:
+            code = ("import service\n" + _CANON_HELPER +
+                    f"expected = {expected!r}\n"
+                    f"result = service.effective_settings({file_layer!r}, {env_layer!r}, {cli_layer!r})\n"
+                    "print('MATCH' if _canon(result) == _canon(expected) else "
+                    "'MISMATCH actual=' + repr(_canon(result)))\n")
+            r = _run(code)
+            case = f"service.effective_settings(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="MATCH", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "MATCH":
+                _emit(False, case=case, expected="MATCH", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [service.py, NOTES.md]
+allowed_diff_paths: [layered_config.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B3 build/config batch) -- a layered
+  deep-merge with the classic "falsy override silently dropped" trap, plus
+  the sharper "explicit None override vs key simply absent" distinction.
+  Traps:
+  1. Truthiness-based override check (the starter bug) -- fails on ANY
+     falsy override (`0`/`False`/`""`/`None`), whether or not there was a
+     prior value for that key. Caught immediately by
+     `falsy_override_wins_over_earlier_value`.
+  2. A "smarter" list-merge that concatenates instead of replacing -- a
+     tempting overreach some agents add even when NOT asked for it. Caught
+     by `list_replaced_not_concatenated` alone; doesn't affect any other
+     case.
+  3. Conflating "key absent from this layer" with "key present with an
+     explicit `None` value" (e.g. `layer.get(key)` used as the presence
+     check, since it returns `None` for both cases) -- narrower than trap
+     1: only breaks the EXPLICIT-`None`-override case
+     (`none_override_replaces`), while still correctly leaving `0`/`False`/
+     `""` overrides alone (those aren't confusable with "absent" via
+     `.get()`, only `None` is) -- `absent_key_leaves_value_untouched`
+     (the positive-contrast case) still passes even under this bug.
+
+  Verified empirically: `check_fixtures.wrong[0]` (the starter's own
+  truthiness bug) fails `falsy_override_wins_over_earlier_value` (actual
+  `retries` stays `3`, want `0`) -- the very first non-trivial CASES
+  entry after `basic_layering`. `wrong[1]` (adds list-concatenation)
+  passes every other case and fails only
+  `list_replaced_not_concatenated` (`actual` `tags: ['a','b','c']`, want
+  `['c']`). `wrong[2]` (`layer.get(key)` conflates absent-vs-None) passes
+  every other case, including `falsy_override_with_no_earlier_value` and
+  `absent_key_leaves_value_untouched`, and fails only
+  `none_override_replaces` (`actual` `mode: 'auto'`, want `None`).
+check_fixtures:
+  reference:
+    layered_config.py: |
+      def _merge_two(base, layer):
+          result = dict(base)
+          for key in layer:
+              new_value = layer[key]
+              if isinstance(result.get(key), dict) and isinstance(new_value, dict):
+                  result[key] = _merge_two(result[key], new_value)
+              else:
+                  result[key] = new_value
+          return result
+
+
+      def resolve_settings(layers):
+          result = {}
+          for layer in layers:
+              result = _merge_two(result, layer)
+          return result
+  alternate:
+    layered_config.py: |
+      import functools
+
+
+      def _merge_two(base, layer):
+          result = dict(base)
+          for key, new_value in layer.items():
+              base_value = result.get(key)
+              if isinstance(base_value, dict) and isinstance(new_value, dict):
+                  result[key] = _merge_two(base_value, new_value)
+              else:
+                  result[key] = new_value
+          return result
+
+
+      def resolve_settings(layers):
+          return functools.reduce(_merge_two, layers, {})
+  wrong:
+    - layered_config.py: |
+        def _merge_two(base, layer):
+            result = dict(base)
+            for key in layer:
+                if isinstance(result.get(key), dict) and isinstance(layer[key], dict):
+                    result[key] = _merge_two(result[key], layer[key])
+                elif layer[key]:  # BUG: truthiness, not presence
+                    result[key] = layer[key]
+            return result
+
+
+        def resolve_settings(layers):
+            result = {}
+            for layer in layers:
+                result = _merge_two(result, layer)
+            return result
+    - layered_config.py: |
+        def _merge_two(base, layer):
+            result = dict(base)
+            for key in layer:
+                new_value = layer[key]
+                base_value = result.get(key)
+                if isinstance(base_value, dict) and isinstance(new_value, dict):
+                    result[key] = _merge_two(base_value, new_value)
+                elif isinstance(base_value, list) and isinstance(new_value, list):
+                    result[key] = base_value + new_value  # BUG: concatenate instead of replace
+                else:
+                    result[key] = new_value
+            return result
+
+
+        def resolve_settings(layers):
+            result = {}
+            for layer in layers:
+                result = _merge_two(result, layer)
+            return result
+    - layered_config.py: |
+        def _merge_two(base, layer):
+            result = dict(base)
+            for key in set(base) | set(layer):
+                new_value = layer.get(key)  # BUG: None means EITHER "absent" OR "explicitly None"
+                if new_value is None:
+                    continue
+                base_value = result.get(key)
+                if isinstance(base_value, dict) and isinstance(new_value, dict):
+                    result[key] = _merge_two(base_value, new_value)
+                else:
+                    result[key] = new_value
+            return result
+
+
+        def resolve_settings(layers):
+            result = {}
+            for layer in layers:
+                result = _merge_two(result, layer)
+            return result

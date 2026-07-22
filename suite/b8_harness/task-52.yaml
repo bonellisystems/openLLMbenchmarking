@@ -1,0 +1,410 @@
+id: py-robust-06
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a token-bucket rate limiter from scratch, in a new file
+  `rate_limiter.py`, exposing a class `TokenBucket(capacity, refill_rate,
+  clock=None)`:
+  - `capacity` -- the maximum number of tokens the bucket can ever hold
+    (a positive number). `refill_rate` -- tokens added per second (a
+    positive number). Both must be validated in the constructor: raise
+    `ValueError` if either is `<= 0`.
+  - `clock` -- a ZERO-ARG callable returning the current time in seconds
+    (`float`), INJECTABLE for fully deterministic testing (defaults to
+    `time.monotonic` when not provided, but every test here supplies its
+    own fake, controllable clock -- never a real `time.sleep()`).
+  - The bucket starts FULL (`capacity` tokens available) the moment it's
+    constructed.
+  - `try_consume(n=1) -> bool`: first, REFILL based on elapsed time since
+    the last refill (`elapsed_seconds * refill_rate` tokens added,
+    capped so the bucket NEVER holds more than `capacity` tokens no
+    matter how long it's been idle) -- this refill step must happen
+    BEFORE checking whether the request can be satisfied, every single
+    call (a request that's only satisfiable because enough time has
+    ALREADY passed since the last call must be correctly admitted, not
+    wrongly denied against a stale token count). Then: if `n <= 0`, raise
+    `ValueError`. If at least `n` tokens are now available, subtract `n`
+    and return `True`. Otherwise, return `False` WITHOUT consuming
+    anything (no partial consumption). A request for MORE tokens than
+    `capacity` can NEVER succeed, ever, even from a completely full
+    bucket (there's no way to ever have that many tokens available at
+    once).
+
+  An existing file, `gateway.py`, already does
+  `make_limiter(requests_per_second, burst, clock)`
+  (`TokenBucket(burst, requests_per_second, clock)`) -- must keep working
+  exactly as written.
+
+  Create ONLY `rate_limiter.py`. Do not create or edit `gateway.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 7500, steps: 17}
+setup_repo:
+  gateway.py: |
+    from rate_limiter import TokenBucket
+
+
+    def make_limiter(requests_per_second, burst, clock):
+        """Existing integration: builds a per-client rate limiter -- relies
+        on TokenBucket starting full (burst allowance available
+        immediately), correctly refilling based on elapsed time BEFORE
+        checking whether a request can be admitted, and never exceeding
+        its capacity even after a long idle gap."""
+        return TokenBucket(burst, requests_per_second, clock)
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        scenario = textwrap.dedent('''
+            from rate_limiter import TokenBucket
+
+            log = []
+
+
+            def check(label, got, want):
+                log.append(f"{label}=OK" if got == want else f"{label}={got!r}(want={want!r})")
+
+
+            def expect_value_error(label, fn):
+                try:
+                    fn()
+                    log.append(f"{label}=NO_EXCEPTION")
+                except ValueError:
+                    log.append(f"{label}=OK")
+                except Exception as e:
+                    log.append(f"{label}={type(e).__name__}(want=ValueError)")
+
+
+            class FakeClock:
+                def __init__(self, t=0.0):
+                    self.t = t
+
+                def __call__(self):
+                    return self.t
+
+                def advance(self, dt):
+                    self.t += dt
+
+
+            # Scenario A: basic capacity + refill + a long-idle-period cap.
+            clockA = FakeClock(0.0)
+            bucketA = TokenBucket(10, 1, clockA)
+            check("A_full_at_start", bucketA.try_consume(10), True)
+            check("A_empty_immediately_after", bucketA.try_consume(1), False)
+            clockA.advance(5)
+            check("A_partial_refill", bucketA.try_consume(5), True)
+            check("A_empty_again", bucketA.try_consume(1), False)
+            clockA.advance(1000)  # long idle -- must cap at capacity, never overflow
+            check("A_still_capped_cannot_exceed_capacity", bucketA.try_consume(15), False)
+            check("A_capped_at_capacity_after_long_idle", bucketA.try_consume(10), True)
+            check("A_empty_after_capped_consume", bucketA.try_consume(1), False)
+
+            # Scenario B: a request larger than capacity can NEVER succeed,
+            # even from a full bucket; the exact-capacity boundary DOES
+            # succeed.
+            clockB = FakeClock(0.0)
+            bucketB = TokenBucket(5, 1, clockB)
+            check("B_over_capacity_always_fails", bucketB.try_consume(6), False)
+            check("B_exact_capacity_succeeds", bucketB.try_consume(5), True)
+
+            # Scenario C: invalid request amount raises ValueError.
+            clockC = FakeClock(0.0)
+            bucketC = TokenBucket(5, 1, clockC)
+            expect_value_error("C_zero_amount_raises", lambda: bucketC.try_consume(0))
+            expect_value_error("C_negative_amount_raises", lambda: bucketC.try_consume(-1))
+
+            # Scenario D: constructor validation.
+            expect_value_error("D_zero_capacity_raises", lambda: TokenBucket(0, 1, clockC))
+            expect_value_error("D_zero_refill_rate_raises", lambda: TokenBucket(5, 0, clockC))
+            expect_value_error("D_negative_refill_rate_raises", lambda: TokenBucket(5, -1, clockC))
+
+            # Scenario E: refill must happen BEFORE the availability check,
+            # every call -- a stale-token-count bug wrongly denies a
+            # request that enough elapsed time has actually already
+            # earned.
+            clockE = FakeClock(0.0)
+            bucketE = TokenBucket(10, 2, clockE)
+            check("E_drain_full_bucket", bucketE.try_consume(10), True)
+            clockE.advance(3)
+            check("E_refill_before_check_allows_request", bucketE.try_consume(6), True)
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "TokenBucket full scenario (capacity cap, boundary, validation, refill-before-check)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # gateway.py -- the protected existing caller.
+        r = _run(
+            "import gateway\n"
+            "class FakeClock:\n"
+            "    def __init__(self, t=0.0):\n"
+            "        self.t = t\n"
+            "    def __call__(self):\n"
+            "        return self.t\n"
+            "    def advance(self, dt):\n"
+            "        self.t += dt\n"
+            "clock = FakeClock(0.0)\n"
+            "limiter = gateway.make_limiter(2, 4, clock)\n"
+            "results = [limiter.try_consume(1) for _ in range(5)]\n"
+            "clock.advance(1.0)\n"
+            "results.append(limiter.try_consume(2))\n"
+            "results.append(limiter.try_consume(1))\n"
+            "print(results)\n")
+        case = "gateway.make_limiter(...)  # protected caller"
+        expected = "[True, True, True, True, False, True, False]"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=expected, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != expected:
+            _emit(False, case=case, expected=expected, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [gateway.py, NOTES.md]
+allowed_diff_paths: [rate_limiter.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 robustness/security/perf batch) -- a
+  token-bucket rate limiter driven ENTIRELY by an injectable fake clock
+  (never a real `time.sleep()`), so the whole scenario is deterministic
+  and fast. Traps:
+  1. No cap on refilled tokens at `capacity` -- invisible if you only
+     check that consuming exactly `capacity` tokens still succeeds after
+     a long idle gap (an overflowed bucket trivially allows that too);
+     isolated by `A_still_capped_cannot_exceed_capacity`, which asks for
+     MORE than capacity right after the long idle period specifically to
+     expose unbounded accumulation.
+  2. An off-by-one on the availability comparison (`n >= tokens` instead
+     of `n > tokens`, i.e. treating "exactly enough" as insufficient) --
+     caught immediately by `A_full_at_start` (consuming exactly the full
+     `capacity` from a freshly-full bucket).
+  3. Checking availability against the STALE token count before
+     refilling (refill only happens on/after a successful consume, or
+     only after the check) -- silently under-serves legitimate requests
+     whenever enough real time has elapsed since the last call.
+
+  Verified empirically: `check_fixtures.wrong[0]` (no cap on refill)
+  passes every earlier check in Scenario A and fails
+  `A_still_capped_cannot_exceed_capacity` (`actual` `True`, want
+  `False` -- the uncapped bucket has ~1000 tokens after the idle gap, so
+  a 15-token request wrongly succeeds). `wrong[1]` (`n >= tokens` instead
+  of `n > tokens`) fails immediately at `A_full_at_start` (`actual`
+  `False`, want `True`). `wrong[2]` (checks the stale token count before
+  refilling) fails at `A_partial_refill`, well before Scenario E even
+  runs (`actual` `False`, want `True` -- `bucketA`'s 5 seconds of elapsed
+  time haven't been credited yet when the check runs).
+check_fixtures:
+  reference:
+    rate_limiter.py: |
+      import time as _time
+
+
+      class TokenBucket:
+          def __init__(self, capacity, refill_rate, clock=None):
+              if capacity <= 0:
+                  raise ValueError("capacity must be positive")
+              if refill_rate <= 0:
+                  raise ValueError("refill_rate must be positive")
+              self._capacity = capacity
+              self._refill_rate = refill_rate
+              self._clock = clock if clock is not None else _time.monotonic
+              self._tokens = float(capacity)
+              self._last_refill = self._clock()
+
+          def _refill(self):
+              now = self._clock()
+              elapsed = now - self._last_refill
+              if elapsed > 0:
+                  self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
+              self._last_refill = now
+
+          def try_consume(self, n=1):
+              self._refill()
+              if n <= 0:
+                  raise ValueError("n must be positive")
+              if n > self._tokens:
+                  return False
+              self._tokens -= n
+              return True
+  alternate:
+    rate_limiter.py: |
+      import time as _time
+
+
+      class TokenBucket:
+          def __init__(self, capacity, refill_rate, clock=None):
+              if capacity <= 0 or refill_rate <= 0:
+                  raise ValueError("capacity and refill_rate must both be positive")
+              self.capacity = capacity
+              self.refill_rate = refill_rate
+              self._clock = clock if clock is not None else _time.monotonic
+              self._available = float(capacity)
+              self._checkpoint = self._clock()
+
+          def _sync(self):
+              now = self._clock()
+              gained = (now - self._checkpoint) * self.refill_rate
+              self._available = min(self.capacity, self._available + gained)
+              self._checkpoint = now
+
+          def try_consume(self, n=1):
+              self._sync()
+              if n <= 0:
+                  raise ValueError("n must be a positive amount")
+              if self._available < n:
+                  return False
+              self._available -= n
+              return True
+  wrong:
+    - rate_limiter.py: |
+        import time as _time
+
+
+        class TokenBucket:
+            def __init__(self, capacity, refill_rate, clock=None):
+                if capacity <= 0:
+                    raise ValueError("capacity must be positive")
+                if refill_rate <= 0:
+                    raise ValueError("refill_rate must be positive")
+                self._capacity = capacity
+                self._refill_rate = refill_rate
+                self._clock = clock if clock is not None else _time.monotonic
+                self._tokens = float(capacity)
+                self._last_refill = self._clock()
+
+            def _refill(self):
+                now = self._clock()
+                elapsed = now - self._last_refill
+                if elapsed > 0:
+                    self._tokens = self._tokens + elapsed * self._refill_rate  # BUG: no cap
+                self._last_refill = now
+
+            def try_consume(self, n=1):
+                self._refill()
+                if n <= 0:
+                    raise ValueError("n must be positive")
+                if n > self._tokens:
+                    return False
+                self._tokens -= n
+                return True
+    - rate_limiter.py: |
+        import time as _time
+
+
+        class TokenBucket:
+            def __init__(self, capacity, refill_rate, clock=None):
+                if capacity <= 0:
+                    raise ValueError("capacity must be positive")
+                if refill_rate <= 0:
+                    raise ValueError("refill_rate must be positive")
+                self._capacity = capacity
+                self._refill_rate = refill_rate
+                self._clock = clock if clock is not None else _time.monotonic
+                self._tokens = float(capacity)
+                self._last_refill = self._clock()
+
+            def _refill(self):
+                now = self._clock()
+                elapsed = now - self._last_refill
+                if elapsed > 0:
+                    self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
+                self._last_refill = now
+
+            def try_consume(self, n=1):
+                self._refill()
+                if n <= 0:
+                    raise ValueError("n must be positive")
+                if n >= self._tokens:  # BUG: off-by-one -- "exactly enough" wrongly fails
+                    return False
+                self._tokens -= n
+                return True
+    - rate_limiter.py: |
+        import time as _time
+
+
+        class TokenBucket:
+            def __init__(self, capacity, refill_rate, clock=None):
+                if capacity <= 0:
+                    raise ValueError("capacity must be positive")
+                if refill_rate <= 0:
+                    raise ValueError("refill_rate must be positive")
+                self._capacity = capacity
+                self._refill_rate = refill_rate
+                self._clock = clock if clock is not None else _time.monotonic
+                self._tokens = float(capacity)
+                self._last_refill = self._clock()
+
+            def _refill(self):
+                now = self._clock()
+                elapsed = now - self._last_refill
+                if elapsed > 0:
+                    self._tokens = min(self._capacity, self._tokens + elapsed * self._refill_rate)
+                self._last_refill = now
+
+            def try_consume(self, n=1):
+                if n <= 0:
+                    raise ValueError("n must be positive")
+                # BUG: checks against the STALE token count before refilling.
+                if n > self._tokens:
+                    return False
+                self._refill()
+                self._tokens -= n
+                return True

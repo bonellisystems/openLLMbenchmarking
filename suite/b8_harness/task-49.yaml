@@ -1,0 +1,461 @@
+id: py-robust-03
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a numerically-stable running (streaming) statistics
+  accumulator from scratch, in a new file `stats.py`, exposing a class
+  `RunningStats` with:
+  - `add(x)` -- incorporates one more numeric sample. `x` must be an
+    `int` or `float` (NOT `bool` -- `bool` is a subclass of `int` in
+    Python but must still be REJECTED here) -- raise `TypeError`
+    otherwise. `x` must also be FINITE (not NaN, not `+inf`/`-inf`) --
+    raise `ValueError` otherwise (an incorporated NaN/Infinity would
+    silently poison every statistic computed afterward).
+  - `count` -- the number of samples added so far (an `int`, `0` before
+    any `add`).
+  - `mean` -- the arithmetic mean of every sample added so far. Raise
+    `ValueError` if `count == 0` (no data yet).
+  - `variance` -- the POPULATION variance (divide by `count`, NOT
+    `count - 1`) of every sample added so far. Raise `ValueError` if
+    `count == 0`; for `count == 1`, variance is `0.0`.
+  - `stdev` -- `variance ** 0.5`. Raise `ValueError` if `count == 0`.
+
+  The critical correctness requirement: `variance` (and therefore
+  `stdev`) MUST be computed in a NUMERICALLY STABLE way -- e.g. Welford's
+  online algorithm (track a running mean and running sum-of-squared-
+  differences-from-the-mean, updated incrementally on each `add`) --
+  NEVER via the naive textbook formula `E[X^2] - (E[X])^2` (accumulate
+  `sum(x)` and `sum(x*x)`, then compute `sum(x*x)/n - mean**2` at the
+  end). The naive formula suffers CATASTROPHIC CANCELLATION whenever the
+  data has a large common offset with a small genuine spread (e.g. a
+  stream of latency samples that are all huge numbers close together) --
+  it can be wildly wrong, or even produce a NEGATIVE variance (which is
+  mathematically impossible for any real dataset), because it subtracts
+  two enormous, nearly-equal floating-point numbers to recover a tiny
+  result.
+
+  An existing file, `monitor.py`, already does
+  `summarize_latencies(samples)` (feeds a list of samples through a fresh
+  `RunningStats` and formats `mean`/`stdev`/`count`) -- relies on exactly
+  this numerical-stability property, since real latency samples are
+  routinely large-offset, small-spread data. Must keep working exactly as
+  written.
+
+  Create ONLY `stats.py`. Do not create or edit `monitor.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 7500, steps: 17}
+setup_repo:
+  monitor.py: |
+    from stats import RunningStats
+
+
+    def summarize_latencies(samples):
+        """Existing integration: aggregates a stream of latency samples
+        (which in production may share a large common baseline, e.g. all
+        clustered around a big epoch-millisecond timestamp, with only a
+        small genuine spread) -- relies on RunningStats computing
+        mean/variance in a NUMERICALLY STABLE way, never via naive
+        sum-of-squares (which suffers catastrophic cancellation and can
+        even go negative for exactly this kind of large-offset,
+        small-spread data)."""
+        stats = RunningStats()
+        for s in samples:
+            stats.add(s)
+        return f"mean={stats.mean:.4f} stdev={stats.stdev:.4f} n={stats.count}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _numeric_match(actual_str, want, tol):
+        try:
+            return abs(float(actual_str) - want) <= tol
+        except ValueError:
+            return False
+
+
+    NUMERIC_CASES = [
+        ("small_clean", [4, 7, 13, 16], 10.0, 22.5, 1e-6),
+        ("single_value", [5], 5.0, 0.0, 1e-6),
+        ("large_offset_catastrophic_cancellation",
+         [1000000004.0, 1000000007.0, 1000000013.0, 1000000016.0], 1000000010.0, 22.5, 0.01),
+        ("negative_and_positive_mix", [-10, -5, 0, 5, 10], 0.0, 50.0, 1e-6),
+        ("all_same_value_zero_variance", [7, 7, 7, 7], 7.0, 0.0, 1e-6),
+    ]
+
+    ERROR_CASES = [
+        ("reject_string_type", "s.add('oops')", "TypeError"),
+        ("reject_none_type", "s.add(None)", "TypeError"),
+        ("reject_bool_type", "s.add(True)", "TypeError"),
+        ("reject_nan", "s.add(float('nan'))", "ValueError"),
+        ("reject_infinity", "s.add(float('inf'))", "ValueError"),
+        ("mean_before_any_add_raises", "s.mean", "ValueError"),
+        ("variance_before_any_add_raises", "s.variance", "ValueError"),
+    ]
+
+
+    def main():
+        for label, values, expected_mean, expected_var, tol in NUMERIC_CASES:
+            code = ("import stats\n"
+                    f"values = {values!r}\n"
+                    "s = stats.RunningStats()\n"
+                    "for v in values:\n"
+                    "    s.add(v)\n"
+                    "print(repr(s.mean))\n"
+                    "print(repr(s.variance))\n")
+            r = _run(code)
+            case = f"RunningStats [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=f"mean={expected_mean} var={expected_var}",
+                      actual=actual, stage=stage, reason_code=reason_code)
+            lines = r.stdout.strip().splitlines()
+            if len(lines) != 2:
+                _emit(False, case=case, expected=f"mean={expected_mean} var={expected_var}",
+                      actual=r.stdout.strip(), stage="behavior", reason_code="wrong_output")
+            mean_line, var_line = lines
+            if not _numeric_match(mean_line, expected_mean, tol):
+                _emit(False, case=f"{case} mean", expected=str(expected_mean), actual=mean_line,
+                      stage="behavior", reason_code="wrong_output")
+            if not _numeric_match(var_line, expected_var, tol):
+                _emit(False, case=f"{case} variance", expected=str(expected_var), actual=var_line,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, access_expr, expected_exc in ERROR_CASES:
+            code = ("import stats\n"
+                    "s = stats.RunningStats()\n"
+                    "try:\n"
+                    f"    {access_expr}\n"
+                    "    print('NO_EXCEPTION')\n"
+                    "except Exception as e:\n"
+                    "    print(type(e).__name__)\n")
+            r = _run(code)
+            case = f"RunningStats [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected_exc, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected_exc:
+                _emit(False, case=case, expected=expected_exc, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("clean_small", [4, 7, 13, 16], 10.0, 4.7434),
+            ("large_offset", [1000000004.0, 1000000007.0, 1000000013.0, 1000000016.0], 1000000010.0, 4.7434),
+        ]
+        for label, samples, expected_mean, expected_stdev in integration_cases:
+            code = (f"import monitor\nprint(monitor.summarize_latencies({samples!r}))\n")
+            r = _run(code)
+            case = f"monitor.summarize_latencies(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=f"mean~={expected_mean}", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            ok = (f"mean={expected_mean:.4f}" in got) and (f"stdev={expected_stdev:.4f}" in got) and ("n=4" in got)
+            if not ok:
+                _emit(False, case=case,
+                      expected=f"mean={expected_mean:.4f} stdev={expected_stdev:.4f} n=4", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [monitor.py, NOTES.md]
+allowed_diff_paths: [stats.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 robustness/security/perf batch) --
+  numerical stability for a streaming variance accumulator, the classic
+  "naive E[X^2]-(E[X])^2 catastrophically cancels" trap, verified with an
+  ACTUAL empirically-confirmed failure (not a theoretical claim): with
+  `[4,7,13,16]` shifted by `1e9`, `sum(x*x)/n - mean**2` in real Python
+  float64 arithmetic evaluates to `-128.0` -- a NEGATIVE variance,
+  mathematically impossible -- while the true value (invariant under a
+  constant shift) is `22.5`, and Welford's algorithm reproduces `22.5`
+  exactly. Traps:
+  1. Naive batch/incremental sum-of-squares instead of Welford -- CORRECT
+     on ordinary small numbers (passes `small_clean`, `single_value`, and
+     the other non-offset cases fine), only exposed by
+     `large_offset_catastrophic_cancellation` specifically.
+  2. Sample variance (divide by `count - 1`) instead of population
+     variance (divide by `count`) -- a plain semantic bug, unrelated to
+     numerical stability, but plausible since "sample variance" is the
+     more commonly-taught default in statistics courses. Caught
+     immediately by `small_clean` (`90/3=30.0` vs the expected
+     population value `90/4=22.5`), well before reaching the
+     numerical-stability-specific case.
+  3. Not rejecting NaN/Infinity in `add()` -- lets a poison value in
+     silently, which would corrupt every statistic computed afterward.
+     Caught only by `reject_nan`/`reject_infinity`; doesn't affect any
+     numeric case since none of them ever add a non-finite value.
+
+  Verified empirically: `check_fixtures.wrong[0]` (naive sum-of-squares)
+  passes `small_clean`/`single_value` and fails
+  `large_offset_catastrophic_cancellation` (`actual` variance `'-128.0'`,
+  want `'22.5'`, tolerance `0.01`). `wrong[1]` (sample variance, `n-1`
+  divisor) fails `small_clean` immediately (`actual` variance `'30.0'`,
+  want `'22.5'`). `wrong[2]` (no NaN/Infinity rejection) passes every
+  NUMERIC_CASES and type-rejection case, and fails only at `reject_nan`
+  (`actual` `'NO_EXCEPTION'`, want `'ValueError'`).
+check_fixtures:
+  reference:
+    stats.py: |
+      import math
+
+
+      class RunningStats:
+          def __init__(self):
+              self._n = 0
+              self._mean = 0.0
+              self._m2 = 0.0
+
+          def add(self, x):
+              if isinstance(x, bool) or not isinstance(x, (int, float)):
+                  raise TypeError(f"expected a real number, got {type(x).__name__}")
+              x = float(x)
+              if math.isnan(x) or math.isinf(x):
+                  raise ValueError(f"value must be finite, got {x}")
+              self._n += 1
+              delta = x - self._mean
+              self._mean += delta / self._n
+              delta2 = x - self._mean
+              self._m2 += delta * delta2
+
+          @property
+          def count(self):
+              return self._n
+
+          @property
+          def mean(self):
+              if self._n == 0:
+                  raise ValueError("no values added yet")
+              return self._mean
+
+          @property
+          def variance(self):
+              if self._n == 0:
+                  raise ValueError("no values added yet")
+              return self._m2 / self._n
+
+          @property
+          def stdev(self):
+              if self._n == 0:
+                  raise ValueError("no values added yet")
+              return math.sqrt(self.variance)
+  alternate:
+    stats.py: |
+      import math
+
+
+      class RunningStats:
+          def __init__(self):
+              self._count = 0
+              self._mean = 0.0
+              self._sum_sq_diff = 0.0
+
+          def add(self, value):
+              if isinstance(value, bool) or not isinstance(value, (int, float)):
+                  raise TypeError(f"expected a real number, got {type(value).__name__}")
+              value = float(value)
+              if not math.isfinite(value):
+                  raise ValueError(f"value must be finite, got {value}")
+              self._count += 1
+              prev_mean = self._mean
+              self._mean = prev_mean + (value - prev_mean) / self._count
+              self._sum_sq_diff += (value - prev_mean) * (value - self._mean)
+
+          @property
+          def count(self):
+              return self._count
+
+          @property
+          def mean(self):
+              if self._count == 0:
+                  raise ValueError("RunningStats has no data yet")
+              return self._mean
+
+          @property
+          def variance(self):
+              if self._count == 0:
+                  raise ValueError("RunningStats has no data yet")
+              return self._sum_sq_diff / self._count
+
+          @property
+          def stdev(self):
+              return math.sqrt(self.variance)
+  wrong:
+    - stats.py: |
+        import math
+
+
+        class RunningStats:
+            def __init__(self):
+                self._n = 0
+                self._sum = 0.0
+                self._sum_sq = 0.0
+
+            def add(self, x):
+                if isinstance(x, bool) or not isinstance(x, (int, float)):
+                    raise TypeError(f"expected a real number, got {type(x).__name__}")
+                x = float(x)
+                if math.isnan(x) or math.isinf(x):
+                    raise ValueError(f"value must be finite, got {x}")
+                self._n += 1
+                self._sum += x
+                self._sum_sq += x * x  # BUG: naive sum-of-squares, catastrophic cancellation
+
+            @property
+            def count(self):
+                return self._n
+
+            @property
+            def mean(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return self._sum / self._n
+
+            @property
+            def variance(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                mean = self.mean
+                return self._sum_sq / self._n - mean * mean
+
+            @property
+            def stdev(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return math.sqrt(abs(self.variance))
+    - stats.py: |
+        import math
+
+
+        class RunningStats:
+            def __init__(self):
+                self._n = 0
+                self._mean = 0.0
+                self._m2 = 0.0
+
+            def add(self, x):
+                if isinstance(x, bool) or not isinstance(x, (int, float)):
+                    raise TypeError(f"expected a real number, got {type(x).__name__}")
+                x = float(x)
+                if math.isnan(x) or math.isinf(x):
+                    raise ValueError(f"value must be finite, got {x}")
+                self._n += 1
+                delta = x - self._mean
+                self._mean += delta / self._n
+                delta2 = x - self._mean
+                self._m2 += delta * delta2
+
+            @property
+            def count(self):
+                return self._n
+
+            @property
+            def mean(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return self._mean
+
+            @property
+            def variance(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                if self._n == 1:  # BUG: sample variance (n-1) instead of population (n)
+                    return 0.0
+                return self._m2 / (self._n - 1)
+
+            @property
+            def stdev(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return math.sqrt(self.variance)
+    - stats.py: |
+        import math
+
+
+        class RunningStats:
+            def __init__(self):
+                self._n = 0
+                self._mean = 0.0
+                self._m2 = 0.0
+
+            def add(self, x):
+                if isinstance(x, bool) or not isinstance(x, (int, float)):
+                    raise TypeError(f"expected a real number, got {type(x).__name__}")
+                x = float(x)
+                # BUG: no NaN/Infinity rejection -- a poison value silently
+                # corrupts every statistic computed afterward.
+                self._n += 1
+                delta = x - self._mean
+                self._mean += delta / self._n
+                delta2 = x - self._mean
+                self._m2 += delta * delta2
+
+            @property
+            def count(self):
+                return self._n
+
+            @property
+            def mean(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return self._mean
+
+            @property
+            def variance(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return self._m2 / self._n
+
+            @property
+            def stdev(self):
+                if self._n == 0:
+                    raise ValueError("no values added yet")
+                return math.sqrt(self.variance)

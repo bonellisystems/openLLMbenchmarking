@@ -1,0 +1,321 @@
+id: py-robust-05
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a de-duplicating record merger from scratch, in a new file
+  `dedup.py`, exposing `dedup_merge(records, key) -> list`.
+
+  Contract:
+  - `records` is a list of `dict`s; `key` is the field name used to
+    decide identity. Every record MUST contain `key` -- raise
+    `ValueError` (never a different exception) for any record that
+    doesn't.
+  - Output: exactly ONE merged `dict` per DISTINCT value of
+    `record[key]`, in the order each distinct value FIRST appears in
+    `records` (first-seen order -- NOT sorted, NOT the order a key was
+    last touched).
+  - Merge rule for records sharing the same key value: process them in
+    their ORIGINAL list order; each subsequent record's fields OVERWRITE
+    the accumulated record's fields for every field name PRESENT in that
+    later record (equivalent to calling `.update()` with each record in
+    turn onto one shared dict per key) -- so the final merged record for
+    a key reflects the LATEST value for every field ANY record sharing
+    that key ever set, and RETAINS a field from an earlier record if a
+    later record sharing the same key never mentions that field at all.
+  - Must handle a LARGE input (thousands of records) without hanging or
+    crashing -- correctness and not-hanging are what's graded here, NOT
+    micro-optimization (an O(n^2) approach that finishes in reasonable
+    time is fine).
+
+  An existing file, `pipeline.py`, already does
+  `latest_snapshot(events)` (`dedup_merge(events, "id")`, collapsing a
+  stream of partial-update events sharing an `"id"` field into one
+  current-state record per id) -- must keep working exactly as written.
+
+  Create ONLY `dedup.py`. Do not create or edit `pipeline.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 7500, steps: 17}
+setup_repo:
+  pipeline.py: |
+    from dedup import dedup_merge
+
+
+    def latest_snapshot(events):
+        """Existing integration: collapses a stream of partial-update
+        events (sharing an 'id' field) into one current-state record per
+        id, in the order each id was FIRST seen -- relies on dedup_merge
+        correctly merging (not replacing) fields across events sharing
+        the same id, applying later events' fields over earlier ones."""
+        return dedup_merge(events, "id")
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code, timeout=10):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=timeout)
+
+
+    SMALL_CASES = [
+        ("field_merge_across_updates",
+         [{"id": 1, "name": "Bob"}, {"id": 2, "name": "Alice"}, {"id": 1, "age": 30}], "id",
+         [{"id": 1, "name": "Bob", "age": 30}, {"id": 2, "name": "Alice"}]),
+        ("first_seen_order_preserved",
+         [{"id": 3, "v": "a"}, {"id": 1, "v": "b"}, {"id": 3, "v": "c"}, {"id": 2, "v": "d"}], "id",
+         [{"id": 3, "v": "c"}, {"id": 1, "v": "b"}, {"id": 2, "v": "d"}]),
+        ("no_duplicates_passthrough",
+         [{"id": "a", "x": 1}, {"id": "b", "x": 2}], "id",
+         [{"id": "a", "x": 1}, {"id": "b", "x": 2}]),
+        ("later_field_overwrites_earlier_unconditionally",
+         [{"id": 1, "status": "pending"}, {"id": 1, "status": "done"}], "id",
+         [{"id": 1, "status": "done"}]),
+    ]
+
+
+    def main():
+        for label, records, key, expected in SMALL_CASES:
+            code = ("import dedup\n"
+                    f"records = {records!r}\n"
+                    f"expected = {expected!r}\n"
+                    f"actual = dedup.dedup_merge(records, {key!r})\n"
+                    "print('MATCH' if actual == expected else 'MISMATCH: ' + repr(actual))\n")
+            r = _run(code)
+            case = f"dedup_merge [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="MATCH", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "MATCH":
+                _emit(False, case=case, expected="MATCH", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        code = ("import dedup\n"
+                "try:\n"
+                "    dedup.dedup_merge([{'id': 1}, {'name': 'no id here'}], 'id')\n"
+                "    print('NO_EXCEPTION')\n"
+                "except Exception as e:\n"
+                "    print(type(e).__name__)\n")
+        r = _run(code)
+        case = "dedup_merge raises ValueError on a record missing the key field"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="ValueError", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "ValueError":
+            _emit(False, case=case, expected="ValueError", actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+        # Large case: 5000 records, 800 distinct ids -- data is GENERATED
+        # inside the subprocess (never embedded as a giant literal), and
+        # "ground truth" is computed independently, in plain Python, right
+        # here in the trusted oracle -- never by hand-deriving expected
+        # values for 5000 records. Generous timeout: an O(n^2) candidate
+        # implementation is expected to still finish comfortably.
+        code = (
+            "import dedup\n"
+            "\n"
+            "def _ground_truth(records, key):\n"
+            "    order = []\n"
+            "    merged = {}\n"
+            "    for record in records:\n"
+            "        k = record[key]\n"
+            "        if k not in merged:\n"
+            "            order.append(k)\n"
+            "            merged[k] = {}\n"
+            "        merged[k].update(record)\n"
+            "    return [merged[k] for k in order]\n"
+            "\n"
+            "records = [{'id': i % 800, 'seq': i} for i in range(5000)]\n"
+            "expected = _ground_truth(list(records), 'id')\n"
+            "actual = dedup.dedup_merge(list(records), 'id')\n"
+            "print('MATCH' if actual == expected else 'MISMATCH')\n"
+        )
+        r = _run(code, timeout=25)
+        case = "dedup_merge on 5000 records / 800 distinct ids (large, generous timeout)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="MATCH", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "MATCH":
+            _emit(False, case=case, expected="MATCH", actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("snapshot_merge",
+             [{"id": "u1", "status": "new"}, {"id": "u2", "status": "new"},
+              {"id": "u1", "status": "active", "plan": "pro"}], "MATCH"),
+        ]
+        for label, events, expected in integration_cases:
+            code = ("import pipeline\n"
+                    f"events = {events!r}\n"
+                    "expected = [{'id': 'u1', 'status': 'active', 'plan': 'pro'}, "
+                    "{'id': 'u2', 'status': 'new'}]\n"
+                    "actual = pipeline.latest_snapshot(events)\n"
+                    "print('MATCH' if actual == expected else 'MISMATCH: ' + repr(actual))\n")
+            r = _run(code)
+            case = f"pipeline.latest_snapshot(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [pipeline.py, NOTES.md]
+allowed_diff_paths: [dedup.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 robustness/security/perf batch) --
+  de-dup/merge where correctness has TWO independent axes (per-field
+  merge vs whole-record replace; first-seen vs last-touched ordering),
+  and the perf axis is a deliberately LOW bar (the prompt itself says an
+  O(n^2) solution is fine) -- the large case exists to catch a hang/crash/
+  timeout, not to reward micro-optimization. Data for the large case is
+  generated INSIDE the subprocess via a list comprehension, and "ground
+  truth" is computed independently in plain Python right in the oracle --
+  never a hand-derived expected value for 5000 records, and never a giant
+  literal embedded in a `-c` argument (which risks exceeding the host
+  OS's max command-line length; a real failure hit and fixed while
+  authoring the sibling `py-robust-04` parser task's own large-input
+  case). Traps:
+  1. Whole-record replacement instead of per-field merge (`merged[k] =
+     dict(record)` instead of `merged[k].update(record)`) -- a later
+     record missing some field the earlier one had silently LOSES that
+     field instead of retaining it. Caught by
+     `field_merge_across_updates`.
+  2. Ordering by LAST-touched position instead of FIRST-seen position --
+     plausible if a solution naturally re-inserts/re-touches a key's slot
+     every time a new record for it arrives. Caught by
+     `first_seen_order_preserved` (and, as it turns out, even earlier by
+     `field_merge_across_updates`, whose own record set also has
+     divergent first-seen vs last-touched orderings).
+  3. No presence check for the `key` field -- crashes with `KeyError`
+     instead of raising `ValueError`. Caught only by the dedicated
+     missing-key case; doesn't affect anything else since every
+     SMALL_CASES record has the key present.
+
+  Verified empirically: `check_fixtures.wrong[0]` (whole-record
+  replacement) fails `field_merge_across_updates` (`actual` embeds
+  `{'id': 1, 'age': 30}`, missing the `'name': 'Bob'` field the earlier
+  record for `id=1` had). `wrong[1]` (last-touched ordering) ALSO fails
+  at `field_merge_across_updates` (that case's own first-seen order,
+  `[1, 2]`, already differs from its last-touched order, `[2, 1]`) --
+  not at `first_seen_order_preserved` as originally designed, but a
+  correct rejection of the same root defect either way. `wrong[2]` (no
+  key-presence check) passes every SMALL_CASES entry and fails only the
+  dedicated missing-key case (`actual` `'KeyError'`, want `'ValueError'`).
+check_fixtures:
+  reference:
+    dedup.py: |
+      def dedup_merge(records, key):
+          order = []
+          merged = {}
+          for record in records:
+              if key not in record:
+                  raise ValueError(f"record missing required key {key!r}: {record!r}")
+              k = record[key]
+              if k not in merged:
+                  order.append(k)
+                  merged[k] = {}
+              merged[k].update(record)
+          return [merged[k] for k in order]
+  alternate:
+    dedup.py: |
+      def dedup_merge(records, key):
+          index = {}
+          result = []
+          for record in records:
+              if key not in record:
+                  raise ValueError(f"record missing required key {key!r}")
+              k = record[key]
+              if k in index:
+                  result[index[k]].update(record)
+              else:
+                  index[k] = len(result)
+                  result.append(dict(record))
+          return result
+  wrong:
+    - dedup.py: |
+        def dedup_merge(records, key):
+            order = []
+            merged = {}
+            for record in records:
+                if key not in record:
+                    raise ValueError(f"record missing required key {key!r}: {record!r}")
+                k = record[key]
+                if k not in merged:
+                    order.append(k)
+                merged[k] = dict(record)  # BUG: replaces entirely, doesn't merge fields
+            return [merged[k] for k in order]
+    - dedup.py: |
+        def dedup_merge(records, key):
+            merged = {}
+            last_index = {}
+            for i, record in enumerate(records):
+                if key not in record:
+                    raise ValueError(f"record missing required key {key!r}: {record!r}")
+                k = record[key]
+                if k not in merged:
+                    merged[k] = {}
+                merged[k].update(record)
+                last_index[k] = i  # BUG: tracks LAST occurrence, used for ordering below
+            order = sorted(merged.keys(), key=lambda k: last_index[k])
+            return [merged[k] for k in order]
+    - dedup.py: |
+        def dedup_merge(records, key):
+            order = []
+            merged = {}
+            for record in records:
+                k = record[key]  # BUG: no presence check -- crashes with KeyError
+                if k not in merged:
+                    order.append(k)
+                    merged[k] = {}
+                merged[k].update(record)
+            return [merged[k] for k in order]

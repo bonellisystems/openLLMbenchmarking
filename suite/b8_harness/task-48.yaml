@@ -1,0 +1,364 @@
+id: py-robust-02
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a path-traversal-safe join from scratch, in a new file
+  `safe_path.py`, exposing `safe_join(base_dir, user_path) -> str`.
+  Operate on POSIX-style forward-slash paths using the `posixpath`
+  module (NOT `os.path`) so behavior is identical regardless of the host
+  OS this runs on.
+
+  Contract:
+  - `user_path` must be a `str`; reject (raise `ValueError`) anything
+    else.
+  - Reject a NUL byte (`"\x00"`) anywhere in `user_path`.
+  - Reject a backslash (`\`) anywhere in `user_path` -- this
+    implementation is POSIX-only, but the resulting path may later be
+    handed to a Windows-native API elsewhere, where `\` IS a separator;
+    reject it defensively here rather than silently passing it through.
+  - Reject an ABSOLUTE `user_path` (starts with `/`), and reject a
+    Windows drive-letter path (`user_path[0]` a letter and
+    `user_path[1] == ':'`, e.g. `"C:/secret.txt"`).
+  - Otherwise, join `user_path` onto `base_dir` and FULLY NORMALIZE the
+    result (resolve every `.`/`..` segment) -- then verify the
+    normalized result is still located INSIDE the normalized `base_dir`
+    (either equal to it, e.g. an empty `user_path`, or nested under it
+    with a real path-separator boundary -- comparing raw string PREFIXES
+    without that boundary is not enough: `/srv/data2/...` is NOT inside
+    `/srv/data` even though the string `"/srv/data2"` starts with the
+    string `"/srv/data"`). If it escapes, raise `ValueError`; otherwise
+    return the normalized, joined absolute path.
+  - A `..` PATH COMPONENT is traversal and must be resolved/rejected
+    appropriately -- but `..` as a mere SUBSTRING of a longer path
+    component is NOT traversal and must be left alone: `"..hidden_file"`
+    (a single component, a valid filename that merely starts with two
+    dots) and `"....//secret.txt"` (a component of four literal dots,
+    not two `..` components) must both be accepted, resolving to a path
+    nested under `base_dir` with that literal (if unusual-looking)
+    component -- reject based on genuine `..` PATH SEGMENTS after
+    normalization, never by pattern-matching/stripping the substring
+    `"../"` out of the raw string (that approach is a well-known
+    insufficient defense: e.g. `"..././"` still contains a live `"../"`
+    sequence AFTER a single substring-replace pass over it, since
+    removing the FIRST match reassembles the remaining characters into a
+    new one).
+  - A `user_path` that legitimately uses `..` internally but still
+    resolves to somewhere INSIDE `base_dir` (e.g. `"subdir/../report.txt"`
+    -> the same as `"report.txt"`) must be ACCEPTED, not rejected outright
+    just for containing `..` at all.
+
+  An existing file, `file_server.py`, already does
+  `read_request(base_dir, requested_path)` (`safe_join(base_dir,
+  requested_path)`, resolving a client-supplied path before any real file
+  I/O) -- must keep working exactly as written.
+
+  Create ONLY `safe_path.py`. Do not create or edit `file_server.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 400, tokens: 7500, steps: 17}
+setup_repo:
+  file_server.py: |
+    from safe_path import safe_join
+
+
+    def read_request(base_dir, requested_path):
+        """Existing integration: resolves a client-supplied relative path
+        against a server-side base directory before any file I/O -- relies
+        on safe_join raising ValueError for ANY path that would escape
+        base_dir, while still resolving legitimate relative paths
+        (including ones that harmlessly use '..' to stay within base_dir)
+        to the correct absolute location."""
+        return safe_join(base_dir, requested_path)
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _snippet(base_dir, user_path):
+        return ("import safe_path\n"
+                f"base_dir = {base_dir!r}\n"
+                f"user_path = {user_path!r}\n"
+                "try:\n"
+                "    print('OK:' + safe_path.safe_join(base_dir, user_path))\n"
+                "except ValueError:\n"
+                "    print('EXC:ValueError')\n"
+                "except Exception as e:\n"
+                "    print('EXC:' + type(e).__name__)\n")
+
+
+    VALID_CASES = [
+        ("plain_file", "/srv/data", "report.txt", "/srv/data/report.txt"),
+        ("nested_subdir", "/srv/data", "sub/dir/file.txt", "/srv/data/sub/dir/file.txt"),
+        ("harmless_dotdot_stays_inside", "/srv/data", "subdir/../report.txt", "/srv/data/report.txt"),
+        ("filename_with_dots_substring_not_traversal", "/srv/data", "..hidden_file", "/srv/data/..hidden_file"),
+        ("filename_is_exactly_dots_plus_suffix", "/srv/data", "file...txt", "/srv/data/file...txt"),
+        ("empty_user_path_returns_base", "/srv/data", "", "/srv/data"),
+        ("dot_current_dir_noop", "/srv/data", "./report.txt", "/srv/data/report.txt"),
+        ("trailing_slash_base_dir_normalized", "/srv/data/", "report.txt", "/srv/data/report.txt"),
+        ("dots_and_double_slash_not_traversal", "/srv/data", "....//secret.txt", "/srv/data/..../secret.txt"),
+    ]
+
+    INVALID_CASES = [
+        ("simple_traversal", "/srv/data", "../secret.txt"),
+        ("traversal_to_root_and_beyond", "/srv/data", "../../../etc/passwd"),
+        ("absolute_path_escape", "/srv/data", "/etc/passwd"),
+        ("sibling_dir_prefix_collision", "/srv/data", "../data2/secret.txt"),
+        ("windows_backslash_traversal", "/srv/data", "..\\..\\secret.txt"),
+        ("nul_byte", "/srv/data", "report.txt\x00.jpg"),
+        ("drive_letter_path", "/srv/data", "C:/secret.txt"),
+    ]
+
+
+    def main():
+        for label, base_dir, user_path, expected_joined in VALID_CASES:
+            r = _run(_snippet(base_dir, user_path))
+            case = f"safe_join({base_dir!r}, {user_path!r}) accepted [{label}]"
+            expected = f"OK:{expected_joined}"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, base_dir, user_path in INVALID_CASES:
+            r = _run(_snippet(base_dir, user_path))
+            case = f"safe_join({base_dir!r}, {user_path!r}) rejected [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="EXC:ValueError", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "EXC:ValueError":
+                _emit(False, case=case, expected="EXC:ValueError", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("legit_request", "/srv/data", "sub/report.txt", "OK:/srv/data/sub/report.txt"),
+            ("traversal_request_blocked", "/srv/data", "../../etc/passwd", "EXC:ValueError"),
+        ]
+        for label, base_dir, requested, expected in integration_cases:
+            code = ("import file_server\n"
+                    f"base_dir = {base_dir!r}\n"
+                    f"requested = {requested!r}\n"
+                    "try:\n"
+                    "    print('OK:' + file_server.read_request(base_dir, requested))\n"
+                    "except ValueError:\n"
+                    "    print('EXC:ValueError')\n")
+            r = _run(code)
+            case = f"file_server.read_request(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [file_server.py, NOTES.md]
+allowed_diff_paths: [safe_path.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 robustness/security batch) -- a
+  path-traversal sanitizer with the classic "reject the malicious, accept
+  the merely dot-heavy-looking" balance: difficulty is entirely in NOT
+  overreacting to `..`-as-substring while still correctly resolving `..`
+  as a genuine path segment. Traps:
+  1. A raw string-prefix containment check (`joined.startswith(base_norm)`)
+     without a trailing-separator boundary -- `/srv/data2/...` is a
+     sibling directory, not a child of `/srv/data`, but a bare prefix
+     check wrongly accepts it. Caught by `sibling_dir_prefix_collision`
+     alone (a relative `..`-based path that lands in a same-prefixed
+     sibling directory).
+  2. Skipping the explicit backslash rejection (relying only on
+     normalize-then-check) -- under `posixpath` semantics a backslash
+     payload like `"..\\..\\secret.txt"` is actually just ONE inert,
+     harmless literal path component (posixpath never treats `\` as a
+     separator), so it would incidentally stay inside `base_dir` and NOT
+     get caught by the normalize+containment logic at all -- it can only
+     be caught by an EXPLICIT rejection rule. Caught only by
+     `windows_backslash_traversal`.
+  3. "Sanitizing" via a single substring-replace pass
+     (`user_path.replace("../", "")`) instead of real normalization --
+     an well-known-insufficient defense (removing the first `"../"` match
+     can reassemble the surrounding characters into a fresh `"../"`, and
+     it also mangles ordinary, harmless `..` usage that should have
+     resolved away cleanly). Caught by `harmless_dotdot_stays_inside`
+     (a VALID case: the naive replace corrupts `"subdir/../report.txt"`
+     into `"subdir/report.txt"` instead of collapsing it to
+     `"report.txt"`) -- well before reaching the more exotic
+     `dots_and_double_slash_not_traversal` case, which exists to catch a
+     more careful (but still naive) variant that doesn't mangle THAT
+     particular case.
+
+  Verified empirically: `check_fixtures.wrong[0]` (prefix check without
+  the separator) fails `sibling_dir_prefix_collision` (`actual`
+  `'OK:/srv/data2/secret.txt'`, want `'EXC:ValueError'`). `wrong[1]` (no
+  backslash rejection) passes every other case and fails only
+  `windows_backslash_traversal` (`actual`
+  `'OK:/srv/data/..\\..\\secret.txt'`, want `'EXC:ValueError'`).
+  `wrong[2]` (substring-replace sanitization, no real normalization)
+  fails `harmless_dotdot_stays_inside` (`actual`
+  `'OK:/srv/data/subdir/report.txt'`, want `'OK:/srv/data/report.txt'`)
+  -- the third VALID_CASES entry, before any INVALID_CASES even run.
+check_fixtures:
+  reference:
+    safe_path.py: |
+      import posixpath
+
+
+      def safe_join(base_dir, user_path):
+          if not isinstance(user_path, str):
+              raise ValueError(f"user_path must be a string, got {type(user_path).__name__}")
+          if "\x00" in user_path:
+              raise ValueError("NUL byte in path")
+          if "\\" in user_path:
+              raise ValueError("backslash not allowed in path")
+          if user_path.startswith("/"):
+              raise ValueError("absolute path not allowed")
+          if len(user_path) >= 2 and user_path[1] == ":" and user_path[0].isalpha():
+              raise ValueError("drive-letter path not allowed")
+
+          base_norm = posixpath.normpath(base_dir)
+          joined = posixpath.normpath(posixpath.join(base_norm, user_path))
+
+          if joined != base_norm and not joined.startswith(base_norm + "/"):
+              raise ValueError(f"path escapes base directory: {user_path!r}")
+
+          return joined
+  alternate:
+    safe_path.py: |
+      import posixpath
+
+
+      def safe_join(base_dir, user_path):
+          if not isinstance(user_path, str):
+              raise ValueError(f"user_path must be a string, got {type(user_path).__name__}")
+          if "\x00" in user_path or "\\" in user_path:
+              raise ValueError(f"disallowed characters in path: {user_path!r}")
+          if posixpath.isabs(user_path):
+              raise ValueError("absolute path not allowed")
+          if len(user_path) >= 2 and user_path[1] == ":" and user_path[0].isalpha():
+              raise ValueError("drive-letter path not allowed")
+
+          base_norm = posixpath.normpath(base_dir)
+          joined = posixpath.normpath(posixpath.join(base_norm, user_path))
+
+          base_parts = base_norm.split("/")
+          joined_parts = joined.split("/")
+          if joined_parts[:len(base_parts)] != base_parts:
+              raise ValueError(f"path escapes base directory: {user_path!r}")
+          return joined
+  wrong:
+    - safe_path.py: |
+        import posixpath
+
+
+        def safe_join(base_dir, user_path):
+            if not isinstance(user_path, str):
+                raise ValueError(f"user_path must be a string, got {type(user_path).__name__}")
+            if "\x00" in user_path:
+                raise ValueError("NUL byte in path")
+            if "\\" in user_path:
+                raise ValueError("backslash not allowed in path")
+            if user_path.startswith("/"):
+                raise ValueError("absolute path not allowed")
+            if len(user_path) >= 2 and user_path[1] == ":" and user_path[0].isalpha():
+                raise ValueError("drive-letter path not allowed")
+
+            base_norm = posixpath.normpath(base_dir)
+            joined = posixpath.normpath(posixpath.join(base_norm, user_path))
+
+            if joined != base_norm and not joined.startswith(base_norm):  # BUG: no separator boundary
+                raise ValueError(f"path escapes base directory: {user_path!r}")
+
+            return joined
+    - safe_path.py: |
+        import posixpath
+
+
+        def safe_join(base_dir, user_path):
+            if not isinstance(user_path, str):
+                raise ValueError(f"user_path must be a string, got {type(user_path).__name__}")
+            if "\x00" in user_path:
+                raise ValueError("NUL byte in path")
+            # BUG: no backslash rejection
+            if user_path.startswith("/"):
+                raise ValueError("absolute path not allowed")
+            if len(user_path) >= 2 and user_path[1] == ":" and user_path[0].isalpha():
+                raise ValueError("drive-letter path not allowed")
+
+            base_norm = posixpath.normpath(base_dir)
+            joined = posixpath.normpath(posixpath.join(base_norm, user_path))
+
+            if joined != base_norm and not joined.startswith(base_norm + "/"):
+                raise ValueError(f"path escapes base directory: {user_path!r}")
+
+            return joined
+    - safe_path.py: |
+        def safe_join(base_dir, user_path):
+            if not isinstance(user_path, str):
+                raise ValueError(f"user_path must be a string, got {type(user_path).__name__}")
+            if "\x00" in user_path:
+                raise ValueError("NUL byte in path")
+            if "\\" in user_path:
+                raise ValueError("backslash not allowed in path")
+            if user_path.startswith("/"):
+                raise ValueError("absolute path not allowed")
+            if len(user_path) >= 2 and user_path[1] == ":" and user_path[0].isalpha():
+                raise ValueError("drive-letter path not allowed")
+
+            # BUG: "sanitizes" by stripping '../' substrings with a single
+            # pass instead of normalizing the full path and checking real
+            # containment.
+            cleaned = user_path.replace("../", "")
+            base_norm = base_dir.rstrip("/")
+            return base_norm + "/" + cleaned

@@ -1,0 +1,640 @@
+id: py-build-03
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a custom, self-contained serialization format from scratch,
+  in a new file `serializer.py`, exposing `encode(obj) -> str` and
+  `decode(s) -> obj`. Supported Python types: `int`, `str`, `list`, and
+  `dict` (with `str`-only keys) -- nested arbitrarily. `bool`, `float`,
+  `None`, and any other type are NOT supported: `encode` must raise
+  `TypeError` for one of these (or for a dict with a non-`str` key).
+
+  The format (a simplified, bencode-style text encoding):
+  - Integer `n` -> `i<n>e`, e.g. `42` -> `i42e`, `-3` -> `i-3e`, `0` ->
+    `i0e`.
+  - String `s` -> `<byte-length>:<s>`, where `<byte-length>` is the
+    number of BYTES in `s.encode("utf-8")` -- NOT the number of
+    characters. This matters for any non-ASCII string: e.g. `"café"`
+    (4 characters, but the `é` encodes to 2 UTF-8 bytes) must encode
+    as `5:café` (length `5`, the BYTE count), not `4:café`.
+    `decode` must mirror this exactly -- read the declared byte-length,
+    then slice that many BYTES off the (UTF-8-encoded) remainder before
+    decoding them back to a `str`, NOT slice that many characters.
+  - List -> `l<item1><item2>...e`, each item itself encoded per these
+    same rules, e.g. `[1, "ab"]` -> `li1e2:abe`.
+  - Dict (str keys only) -> `d<key1><val1><key2><val2>...e`, with entries
+    in SORTED key order (`sorted(d)`) REGARDLESS of the input dict's own
+    iteration order -- e.g. `{"spam": "eggs", "cow": "moo"}` must encode
+    as `d3:cow3:moo4:spam4:eggse` (`"cow"` before `"spam"`, sorted), even
+    though `"spam"` was inserted first.
+  - Empty containers: `""` -> `0:`, `[]` -> `le`, `{}` -> `de`.
+
+  `decode` must raise `ValueError` on malformed input: an unterminated
+  list/dict/integer (missing the closing `e`), or a string whose declared
+  byte-length exceeds the bytes actually available, or an unrecognized
+  leading character, or trailing data left over after the top-level value.
+
+  An existing file, `store.py`, already does
+  `save_and_load(obj) -> obj` (`decode(encode(obj))`, plus a sanity check
+  that `encode` returns a `str`) -- must keep working exactly as written.
+
+  Create ONLY `serializer.py`. Do not create or edit `store.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  store.py: |
+    from serializer import encode, decode
+
+
+    def save_and_load(obj):
+        """Existing integration: a full encode/decode round trip through
+        the custom format -- relies on decode(encode(x)) reproducing x
+        exactly (including nested containers, unicode, and empty values),
+        and on encode() always returning a str."""
+        blob = encode(obj)
+        if not isinstance(blob, str):
+            raise TypeError("encode() must return a str")
+        return decode(blob)
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    # Every value that crosses the subprocess boundary (either direction)
+    # is routed through ascii() rather than repr()/str() -- guarantees a
+    # pure-ASCII stdout stream regardless of the host/container's default
+    # text encoding, so a genuinely non-ASCII payload (this task's whole
+    # point) can never itself cause a false mismatch here.
+    def _roundtrip_snippet(obj):
+        return ("import serializer\n"
+                f"obj = {ascii(obj)}\n"
+                "try:\n"
+                "    blob = serializer.encode(obj)\n"
+                "    result = serializer.decode(blob)\n"
+                "except Exception as e:\n"
+                "    print('EXC:' + type(e).__name__)\n"
+                "else:\n"
+                "    print('MATCH' if result == obj else 'MISMATCH ' + ascii(result))\n")
+
+
+    ROUND_TRIP_CASES = [
+        ("empty_dict", {}),
+        ("empty_list", []),
+        ("empty_string", ""),
+        ("zero", 0),
+        ("negative_int", -17),
+        ("unicode_basic", "café"),
+        ("unicode_mixed", "héllo wörld \u65e5\u672c\u8a9e \U0001F600"),
+        ("weird_syntax_chars", "3:e\"quoted\\slash\nline2:more"),
+        ("nested_mixed", {"name": "café", "tags": ["a", "b b", ""], "count": 3,
+                           "nested": {"x": -7, "y": []}}),
+        ("deep_nesting", [[[[[1, 2], 3]]], {"k": [4, 5]}]),
+        ("list_of_dicts", [{"a": 1}, {"b": 2}, {}]),
+    ]
+
+    CANONICAL_CASES = [
+        ("encode_unicode_byte_length", "encode", "café", "5:café"),
+        ("encode_sorted_keys", "encode", {"spam": "eggs", "cow": "moo"},
+         "d3:cow3:moo4:spam4:eggse"),
+        ("decode_unicode_byte_length", "decode", "5:café", "café"),
+    ]
+
+    MALFORMED_CASES = [
+        ("unterminated_list", "l4:spam"),
+        ("truncated_string", "4:abc"),
+    ]
+
+    TYPE_REJECTION_CASES = [
+        ("float_unsupported", 3.14),
+        ("none_unsupported", None),
+        ("bool_unsupported", True),
+    ]
+
+
+    def main():
+        for label, obj in ROUND_TRIP_CASES:
+            r = _run(_roundtrip_snippet(obj))
+            case = f"round-trip [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="MATCH", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "MATCH":
+                _emit(False, case=case, expected="MATCH", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, op, arg, expected in CANONICAL_CASES:
+            if op == "encode":
+                code = ("import serializer\n"
+                        f"obj = {ascii(arg)}\n"
+                        "print(ascii(serializer.encode(obj)))\n")
+            else:
+                code = ("import serializer\n"
+                        f"s = {ascii(arg)}\n"
+                        "print(ascii(serializer.decode(s)))\n")
+            r = _run(code)
+            case = f"canonical [{label}]"
+            expected_repr = ascii(expected)
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected_repr, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected_repr:
+                _emit(False, case=case, expected=expected_repr, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, malformed in MALFORMED_CASES:
+            code = ("import serializer\n"
+                    f"s = {malformed!r}\n"
+                    "try:\n"
+                    "    serializer.decode(s)\n"
+                    "    print('NO_EXCEPTION')\n"
+                    "except Exception as e:\n"
+                    "    print(type(e).__name__)\n")
+            r = _run(code)
+            case = f"decode raises ValueError [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="ValueError", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "ValueError":
+                _emit(False, case=case, expected="ValueError", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, bad_obj in TYPE_REJECTION_CASES:
+            code = ("import serializer\n"
+                    f"obj = {bad_obj!r}\n"
+                    "try:\n"
+                    "    serializer.encode(obj)\n"
+                    "    print('NO_EXCEPTION')\n"
+                    "except Exception as e:\n"
+                    "    print(type(e).__name__)\n")
+            r = _run(code)
+            case = f"encode raises TypeError [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="TypeError", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "TypeError":
+                _emit(False, case=case, expected="TypeError", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("plain", {"a": 1, "b": [2, 3]}, {"a": 1, "b": [2, 3]}),
+            ("unicode", {"emoji": "\U0001F600"}, {"emoji": "\U0001F600"}),
+        ]
+        for label, obj, expected in integration_cases:
+            code = ("import store\n"
+                    f"obj = {ascii(obj)}\n"
+                    "print(ascii(store.save_and_load(obj)))\n")
+            r = _run(code)
+            case = f"store.save_and_load(...) [{label}]  # protected caller"
+            expected_repr = ascii(expected)
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected_repr, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected_repr:
+                _emit(False, case=case, expected=expected_repr, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [store.py, NOTES.md]
+allowed_diff_paths: [serializer.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 build/config batch) -- a bencode-style
+  round-trip serializer where the two headline edge cases are UNICODE
+  BYTE-LENGTH (not character count) and CANONICAL SORTED dict-key order.
+  Traps:
+  1. Using `len(s)` (character count) instead of `len(s.encode("utf-8"))`
+     (byte count) for string length prefixes -- self-consistent for a
+     round trip through the SAME (buggy) implementation, since encode and
+     decode agree with each other, so it does NOT fail any
+     `ROUND_TRIP_CASES` entry, even the unicode ones. Only caught by the
+     CANONICAL cases, which check the exact wire format independently of
+     the candidate's own encode/decode agreeing with itself:
+     `encode_unicode_byte_length` (`encode("café")` must be exactly
+     `"5:café"`, not `"4:café"`) and
+     `decode_unicode_byte_length` (feeding the CORRECT, byte-length-
+     prefixed `"5:café"` into `decode` directly).
+  2. Dict keys NOT sorted on encode (using the dict's own iteration/
+     insertion order instead) -- doesn't affect any round trip either
+     (`decode` reconstructs an equal dict regardless of key order), only
+     caught by `encode_sorted_keys`'s exact-string comparison.
+  3. `encode` byte-length-correct but `decode` still character-based
+     (an asymmetric copy-paste mistake) -- THIS one DOES fail a round trip
+     directly (`decode(encode("café"))` slices the wrong byte range
+     and either raises or returns a truncated/garbled string), unlike
+     traps 1-2.
+
+  Verified empirically: `check_fixtures.wrong[0]` (character-length both
+  sides) passes every `ROUND_TRIP_CASES` entry (including
+  `unicode_mixed`), then fails `encode_unicode_byte_length` (`actual`
+  `ascii("4:café")`, want `ascii("5:café")`). `wrong[1]` (no
+  `sorted()` on dict keys) passes every round-trip and both unicode
+  canonical cases, then fails `encode_sorted_keys` (`actual`
+  `"d4:spam4:eggs3:cow3:mooe"`, insertion order, not sorted). `wrong[2]`
+  (byte-length encode, char-length decode) fails directly at
+  `round-trip [unicode_basic]` -- `decode` slices a too-short character
+  range off `"5:café"` and raises `ValueError` instead of
+  reconstructing `"café"`.
+check_fixtures:
+  reference:
+    serializer.py: |
+      def encode(obj):
+          if isinstance(obj, bool):
+              raise TypeError("bool is not a supported type")
+          if isinstance(obj, int):
+              return f"i{obj}e"
+          if isinstance(obj, str):
+              return f"{len(obj.encode('utf-8'))}:{obj}"
+          if isinstance(obj, list):
+              return "l" + "".join(encode(item) for item in obj) + "e"
+          if isinstance(obj, dict):
+              if not all(isinstance(k, str) for k in obj):
+                  raise TypeError("dict keys must be str")
+              parts = []
+              for k in sorted(obj):
+                  parts.append(encode(k))
+                  parts.append(encode(obj[k]))
+              return "d" + "".join(parts) + "e"
+          raise TypeError(f"unsupported type: {type(obj).__name__}")
+
+
+      def decode(s):
+          value, pos = _decode_at(s, 0)
+          if pos != len(s):
+              raise ValueError("trailing data after top-level value")
+          return value
+
+
+      def _decode_at(s, pos):
+          if pos >= len(s):
+              raise ValueError("unexpected end of input")
+          ch = s[pos]
+          if ch == "i":
+              end = s.find("e", pos)
+              if end == -1:
+                  raise ValueError("unterminated integer")
+              return int(s[pos + 1:end]), end + 1
+          if ch == "l":
+              pos += 1
+              items = []
+              while True:
+                  if pos >= len(s):
+                      raise ValueError("unterminated list")
+                  if s[pos] == "e":
+                      return items, pos + 1
+                  item, pos = _decode_at(s, pos)
+                  items.append(item)
+          if ch == "d":
+              pos += 1
+              result = {}
+              while True:
+                  if pos >= len(s):
+                      raise ValueError("unterminated dict")
+                  if s[pos] == "e":
+                      return result, pos + 1
+                  key, pos = _decode_at(s, pos)
+                  if not isinstance(key, str):
+                      raise ValueError("dict key must be a string")
+                  value, pos = _decode_at(s, pos)
+                  result[key] = value
+          if ch.isdigit():
+              colon = s.find(":", pos)
+              if colon == -1:
+                  raise ValueError("malformed string length")
+              length = int(s[pos:colon])
+              body_start = colon + 1
+              raw_tail = s[body_start:].encode("utf-8")
+              if length > len(raw_tail):
+                  raise ValueError("string length exceeds available data")
+              text_value = raw_tail[:length].decode("utf-8")
+              return text_value, body_start + len(text_value)
+          raise ValueError(f"unrecognized type prefix: {ch!r} at position {pos}")
+  alternate:
+    serializer.py: |
+      class _Cursor:
+          __slots__ = ("s", "pos")
+
+          def __init__(self, s):
+              self.s = s
+              self.pos = 0
+
+          def peek(self):
+              if self.pos >= len(self.s):
+                  raise ValueError("unexpected end of input")
+              return self.s[self.pos]
+
+
+      def _decode_value(cur):
+          ch = cur.peek()
+          if ch == "i":
+              end = cur.s.find("e", cur.pos)
+              if end == -1:
+                  raise ValueError("unterminated integer")
+              value = int(cur.s[cur.pos + 1:end])
+              cur.pos = end + 1
+              return value
+          if ch == "l":
+              cur.pos += 1
+              items = []
+              while cur.peek() != "e":
+                  items.append(_decode_value(cur))
+              cur.pos += 1
+              return items
+          if ch == "d":
+              cur.pos += 1
+              result = {}
+              while cur.peek() != "e":
+                  key = _decode_value(cur)
+                  if not isinstance(key, str):
+                      raise ValueError("dict key must be a string")
+                  value = _decode_value(cur)
+                  result[key] = value
+              cur.pos += 1
+              return result
+          if ch.isdigit():
+              colon = cur.s.find(":", cur.pos)
+              if colon == -1:
+                  raise ValueError("malformed string length")
+              length = int(cur.s[cur.pos:colon])
+              raw_tail = cur.s[colon + 1:].encode("utf-8")
+              if length > len(raw_tail):
+                  raise ValueError("string length exceeds available data")
+              text_value = raw_tail[:length].decode("utf-8")
+              cur.pos = colon + 1 + len(text_value)
+              return text_value
+          raise ValueError(f"unrecognized type prefix: {ch!r}")
+
+
+      def decode(s):
+          cur = _Cursor(s)
+          value = _decode_value(cur)
+          if cur.pos != len(s):
+              raise ValueError("trailing data after top-level value")
+          return value
+
+
+      def encode(obj):
+          if isinstance(obj, bool):
+              raise TypeError("bool is not a supported type")
+          if isinstance(obj, int):
+              return f"i{obj}e"
+          if isinstance(obj, str):
+              return f"{len(obj.encode('utf-8'))}:{obj}"
+          if isinstance(obj, list):
+              return "l" + "".join(encode(x) for x in obj) + "e"
+          if isinstance(obj, dict):
+              if not all(isinstance(k, str) for k in obj):
+                  raise TypeError("dict keys must be str")
+              return "d" + "".join(encode(k) + encode(obj[k]) for k in sorted(obj)) + "e"
+          raise TypeError(f"unsupported type: {type(obj).__name__}")
+  wrong:
+    - serializer.py: |
+        def encode(obj):
+            if isinstance(obj, bool):
+                raise TypeError("bool is not a supported type")
+            if isinstance(obj, int):
+                return f"i{obj}e"
+            if isinstance(obj, str):
+                return f"{len(obj)}:{obj}"  # BUG: character count, not byte count
+            if isinstance(obj, list):
+                return "l" + "".join(encode(x) for x in obj) + "e"
+            if isinstance(obj, dict):
+                if not all(isinstance(k, str) for k in obj):
+                    raise TypeError("dict keys must be str")
+                return "d" + "".join(encode(k) + encode(obj[k]) for k in sorted(obj)) + "e"
+            raise TypeError(f"unsupported type: {type(obj).__name__}")
+
+
+        def decode(s):
+            value, pos = _decode_at(s, 0)
+            if pos != len(s):
+                raise ValueError("trailing data after top-level value")
+            return value
+
+
+        def _decode_at(s, pos):
+            if pos >= len(s):
+                raise ValueError("unexpected end of input")
+            ch = s[pos]
+            if ch == "i":
+                end = s.find("e", pos)
+                if end == -1:
+                    raise ValueError("unterminated integer")
+                return int(s[pos + 1:end]), end + 1
+            if ch == "l":
+                pos += 1
+                items = []
+                while True:
+                    if pos >= len(s):
+                        raise ValueError("unterminated list")
+                    if s[pos] == "e":
+                        return items, pos + 1
+                    item, pos = _decode_at(s, pos)
+                    items.append(item)
+            if ch == "d":
+                pos += 1
+                result = {}
+                while True:
+                    if pos >= len(s):
+                        raise ValueError("unterminated dict")
+                    if s[pos] == "e":
+                        return result, pos + 1
+                    key, pos = _decode_at(s, pos)
+                    value, pos = _decode_at(s, pos)
+                    result[key] = value
+            if ch.isdigit():
+                colon = s.find(":", pos)
+                if colon == -1:
+                    raise ValueError("malformed string length")
+                length = int(s[pos:colon])
+                body_start = colon + 1
+                text_value = s[body_start:body_start + length]  # BUG: character slice
+                if len(text_value) < length:
+                    raise ValueError("string length exceeds available data")
+                return text_value, body_start + length
+            raise ValueError(f"unrecognized type prefix: {ch!r}")
+    - serializer.py: |
+        def encode(obj):
+            if isinstance(obj, bool):
+                raise TypeError("bool is not a supported type")
+            if isinstance(obj, int):
+                return f"i{obj}e"
+            if isinstance(obj, str):
+                return f"{len(obj.encode('utf-8'))}:{obj}"
+            if isinstance(obj, list):
+                return "l" + "".join(encode(x) for x in obj) + "e"
+            if isinstance(obj, dict):
+                if not all(isinstance(k, str) for k in obj):
+                    raise TypeError("dict keys must be str")
+                return "d" + "".join(encode(k) + encode(obj[k]) for k in obj) + "e"  # BUG: no sorted()
+            raise TypeError(f"unsupported type: {type(obj).__name__}")
+
+
+        def decode(s):
+            value, pos = _decode_at(s, 0)
+            if pos != len(s):
+                raise ValueError("trailing data after top-level value")
+            return value
+
+
+        def _decode_at(s, pos):
+            if pos >= len(s):
+                raise ValueError("unexpected end of input")
+            ch = s[pos]
+            if ch == "i":
+                end = s.find("e", pos)
+                if end == -1:
+                    raise ValueError("unterminated integer")
+                return int(s[pos + 1:end]), end + 1
+            if ch == "l":
+                pos += 1
+                items = []
+                while True:
+                    if pos >= len(s):
+                        raise ValueError("unterminated list")
+                    if s[pos] == "e":
+                        return items, pos + 1
+                    item, pos = _decode_at(s, pos)
+                    items.append(item)
+            if ch == "d":
+                pos += 1
+                result = {}
+                while True:
+                    if pos >= len(s):
+                        raise ValueError("unterminated dict")
+                    if s[pos] == "e":
+                        return result, pos + 1
+                    key, pos = _decode_at(s, pos)
+                    value, pos = _decode_at(s, pos)
+                    result[key] = value
+            if ch.isdigit():
+                colon = s.find(":", pos)
+                if colon == -1:
+                    raise ValueError("malformed string length")
+                length = int(s[pos:colon])
+                body_start = colon + 1
+                raw_tail = s[body_start:].encode("utf-8")
+                if length > len(raw_tail):
+                    raise ValueError("string length exceeds available data")
+                text_value = raw_tail[:length].decode("utf-8")
+                return text_value, body_start + len(text_value)
+            raise ValueError(f"unrecognized type prefix: {ch!r}")
+    - serializer.py: |
+        def encode(obj):
+            if isinstance(obj, bool):
+                raise TypeError("bool is not a supported type")
+            if isinstance(obj, int):
+                return f"i{obj}e"
+            if isinstance(obj, str):
+                return f"{len(obj.encode('utf-8'))}:{obj}"
+            if isinstance(obj, list):
+                return "l" + "".join(encode(x) for x in obj) + "e"
+            if isinstance(obj, dict):
+                if not all(isinstance(k, str) for k in obj):
+                    raise TypeError("dict keys must be str")
+                return "d" + "".join(encode(k) + encode(obj[k]) for k in sorted(obj)) + "e"
+            raise TypeError(f"unsupported type: {type(obj).__name__}")
+
+
+        def decode(s):
+            value, pos = _decode_at(s, 0)
+            if pos != len(s):
+                raise ValueError("trailing data after top-level value")
+            return value
+
+
+        def _decode_at(s, pos):
+            if pos >= len(s):
+                raise ValueError("unexpected end of input")
+            ch = s[pos]
+            if ch == "i":
+                end = s.find("e", pos)
+                if end == -1:
+                    raise ValueError("unterminated integer")
+                return int(s[pos + 1:end]), end + 1
+            if ch == "l":
+                pos += 1
+                items = []
+                while True:
+                    if pos >= len(s):
+                        raise ValueError("unterminated list")
+                    if s[pos] == "e":
+                        return items, pos + 1
+                    item, pos = _decode_at(s, pos)
+                    items.append(item)
+            if ch == "d":
+                pos += 1
+                result = {}
+                while True:
+                    if pos >= len(s):
+                        raise ValueError("unterminated dict")
+                    if s[pos] == "e":
+                        return result, pos + 1
+                    key, pos = _decode_at(s, pos)
+                    value, pos = _decode_at(s, pos)
+                    result[key] = value
+            if ch.isdigit():
+                colon = s.find(":", pos)
+                if colon == -1:
+                    raise ValueError("malformed string length")
+                length = int(s[pos:colon])
+                body_start = colon + 1
+                text_value = s[body_start:body_start + length]  # BUG: character slice, not byte slice
+                if len(text_value) < length:
+                    raise ValueError("string length exceeds available data")
+                return text_value, body_start + length
+            raise ValueError(f"unrecognized type prefix: {ch!r}")

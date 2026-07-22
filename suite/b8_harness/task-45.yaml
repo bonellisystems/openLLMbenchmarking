@@ -1,0 +1,551 @@
+id: py-build-05
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement Semantic Versioning 2.0.0 precedence comparison from scratch,
+  in a new file `semver.py`, exposing two functions:
+
+  - `parse_version(s)` -- parses a version string
+    `MAJOR.MINOR.PATCH(-PRERELEASE)?(+BUILD)?` (`MAJOR`/`MINOR`/`PATCH`
+    each a non-negative integer with no leading zero, except `0` itself;
+    `PRERELEASE`, if present, a dot-separated list of alphanumeric/hyphen
+    identifiers, e.g. `alpha.1`; `BUILD` metadata, if present, is
+    completely ignored/discarded -- it plays NO role in precedence at
+    all) and returns a 4-tuple `(major: int, minor: int, patch: int,
+    prerelease: tuple[str, ...])` -- `prerelease` is `()` when the
+    version has no pre-release part. Raises `ValueError` on anything that
+    doesn't match this shape (missing a component, a non-numeric
+    major/minor/patch, an empty pre-release identifier like the trailing
+    `.` in `"1.2.3-alpha."`, etc).
+  - `compare_versions(a, b)` -- takes two RAW version strings (parses them
+    internally) and returns EXACTLY `-1`, `0`, or `1` (not just "any
+    negative/positive number") for `a < b`, `a == b` (same precedence),
+    `a > b` respectively, per full semver 2.0.0 precedence rules:
+    1. Compare `major`, then `minor`, then `patch`, NUMERICALLY (never as
+       strings -- e.g. `"1.10.0"` is greater than `"1.9.0"`, even though
+       the string `"10"` sorts before `"9"` lexically).
+    2. A version WITH a pre-release part has LOWER precedence than the
+       same `major.minor.patch` WITHOUT one (e.g. `"1.0.0-alpha"` <
+       `"1.0.0"`).
+    3. Two pre-release parts are compared identifier-by-identifier
+       (dot-separated fields), left to right:
+       - If BOTH identifiers being compared consist only of digits,
+         compare them NUMERICALLY (e.g. the identifier `"2"` is less than
+         `"11"` -- NOT lexically, where `"11"` would sort first).
+       - If exactly one of the two identifiers is purely numeric, the
+         numeric one has LOWER precedence than the other, REGARDLESS of
+         its value.
+       - Otherwise (both contain a letter or hyphen), compare them
+         lexically (plain ASCII string ordering).
+       - If every identifier compared so far is equal but one pre-release
+         has MORE identifiers than the other, the LONGER one has HIGHER
+         precedence (e.g. `"1.0.0-alpha"` < `"1.0.0-alpha.1"`).
+
+  An existing file, `deploy_gate.py`, already does
+  `is_compatible(candidate, minimum)` (`compare_versions(candidate,
+  minimum) >= 0`) -- must keep working exactly as written.
+
+  Create ONLY `semver.py`. Do not create or edit `deploy_gate.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  deploy_gate.py: |
+    from semver import compare_versions
+
+
+    def is_compatible(candidate, minimum):
+        """Existing integration: a deployment gate -- a candidate build is
+        compatible if its version has precedence >= the minimum required
+        version, per full semver 2.0.0 precedence rules (numeric
+        major/minor/patch, then pre-release identifier comparison, with
+        build metadata ignored entirely)."""
+        return compare_versions(candidate, minimum) >= 0
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    PARSE_CASES = [
+        ("1.2.3", "(1, 2, 3, ())"),
+        ("1.2.3-alpha.1", "(1, 2, 3, ('alpha', '1'))"),
+        ("1.2.3+build.5", "(1, 2, 3, ())"),
+        ("0.0.0", "(0, 0, 0, ())"),
+    ]
+
+    PARSE_ERROR_CASES = ["1.2", "1.2.x", "1.2.3-", "1.2.3-alpha.", "not-a-version"]
+
+    COMPARE_CASES = [
+        ("chain_alpha_lt_alpha1", "1.0.0-alpha", "1.0.0-alpha.1", -1),
+        ("chain_alpha1_lt_alphabeta", "1.0.0-alpha.1", "1.0.0-alpha.beta", -1),
+        ("chain_alphabeta_lt_beta", "1.0.0-alpha.beta", "1.0.0-beta", -1),
+        ("chain_beta_lt_beta2", "1.0.0-beta", "1.0.0-beta.2", -1),
+        ("chain_beta2_lt_beta11_numeric_not_lexical", "1.0.0-beta.2", "1.0.0-beta.11", -1),
+        ("chain_beta11_lt_rc1", "1.0.0-beta.11", "1.0.0-rc.1", -1),
+        ("chain_rc1_lt_release", "1.0.0-rc.1", "1.0.0", -1),
+        ("reverse_of_beta_chain", "1.0.0-beta.11", "1.0.0-beta.2", 1),
+        ("minor_numeric_not_lexical", "1.10.0", "1.9.0", 1),
+        ("major_numeric_not_lexical", "10.0.0", "9.9.9", 1),
+        ("patch_numeric_not_lexical", "1.0.10", "1.0.9", 1),
+        ("equal_versions", "1.2.3", "1.2.3", 0),
+        ("build_metadata_ignored_equal", "1.0.0+build1", "1.0.0+build2", 0),
+        ("build_metadata_ignored_with_prerelease", "1.0.0-alpha+001", "1.0.0-alpha+002", 0),
+    ]
+
+
+    def main():
+        for s, expected in PARSE_CASES:
+            r = _run(f"import semver\nprint(repr(semver.parse_version({s!r})))\n")
+            case = f"parse_version({s!r})"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for s in PARSE_ERROR_CASES:
+            code = ("import semver\n"
+                    "try:\n"
+                    f"    semver.parse_version({s!r})\n"
+                    "    print('NO_EXCEPTION')\n"
+                    "except Exception as e:\n"
+                    "    print(type(e).__name__)\n")
+            r = _run(code)
+            case = f"parse_version({s!r}) raises ValueError"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="ValueError", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "ValueError":
+                _emit(False, case=case, expected="ValueError", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for label, a, b, expected in COMPARE_CASES:
+            r = _run(f"import semver\nprint(repr(semver.compare_versions({a!r}, {b!r})))\n")
+            case = f"compare_versions({a!r}, {b!r}) [{label}]"
+            expected_repr = repr(expected)
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected_repr, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected_repr:
+                _emit(False, case=case, expected=expected_repr, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("numeric_minor_gate", "1.10.0", "1.9.0", "True"),
+            ("prerelease_below_release_gate", "1.0.0-alpha", "1.0.0", "False"),
+            ("build_metadata_ignored_gate", "1.0.0+build5", "1.0.0", "True"),
+        ]
+        for label, candidate, minimum, expected in integration_cases:
+            code = f"import deploy_gate\nprint(deploy_gate.is_compatible({candidate!r}, {minimum!r}))\n"
+            r = _run(code)
+            case = f"deploy_gate.is_compatible(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [deploy_gate.py, NOTES.md]
+allowed_diff_paths: [semver.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 build/config batch) -- semver 2.0.0
+  precedence, an inherently trap-laden spec even with zero planted bugs
+  (difficulty is purely "did you implement the real rules correctly").
+  `COMPARE_CASES`'s first 7 entries are the EXACT chain from semver.org's
+  own spec example (`1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta <
+  1.0.0-beta < 1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0`), so this
+  task's oracle is grounded in the authoritative reference ordering, not
+  an invented one. Traps:
+  1. Comparing `major`/`minor`/`patch` AS STRINGS instead of ints --
+     `"1.10.0"` vs `"1.9.0"`: lexically `"10"` < `"9"` (wrong), but
+     numerically `10 > 9` (right). Caught by 3 different positions
+     (major/minor/patch) so a solution that fixes only one component but
+     not the others is still caught.
+  2. Numeric PRE-RELEASE identifiers compared as strings instead of ints
+     -- `"2"` vs `"11"`: lexically `"11"` < `"2"` (wrong, `'1'` < `'2'` as
+     the first character), numerically `2 < 11` (right). Caught by
+     `chain_beta2_lt_beta11_numeric_not_lexical` specifically (and its
+     reverse-direction pair, to rule out a solution that just always
+     returns a fixed sign).
+  3. Reversing the release-vs-pre-release rule (treating "no pre-release"
+     as LOWER precedence than "has a pre-release", an intuitive-but-wrong
+     guess) -- caught by `chain_rc1_lt_release` and the two
+     `prerelease_below_release_gate`-style integration checks.
+
+  Verified empirically: `check_fixtures.wrong[0]` (major/minor/patch
+  compared as strings) fails `minor_numeric_not_lexical` (`actual` `-1`,
+  want `1`) -- the first of the three `_numeric_not_lexical` cases it
+  reaches in case order. `wrong[1]` (pre-release identifiers always
+  compared lexically, even when both numeric) passes every chain case
+  EXCEPT the one built specifically to isolate it,
+  `chain_beta2_lt_beta11_numeric_not_lexical` (`actual` `1`, want `-1`).
+  `wrong[2]` (release-vs-pre-release precedence reversed) passes every
+  identifier-comparison case and fails `chain_rc1_lt_release` (`actual`
+  `1`, want `-1`).
+check_fixtures:
+  reference:
+    semver.py: |
+      import re
+
+      _VERSION_RE = re.compile(
+          r'^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)'
+          r'(?:-(?P<prerelease>[0-9A-Za-z.-]+))?'
+          r'(?:\+[0-9A-Za-z.-]+)?$'
+      )
+
+
+      def parse_version(s):
+          if not isinstance(s, str):
+              raise ValueError(f"version must be a string, got {type(s).__name__}")
+          m = _VERSION_RE.match(s)
+          if not m:
+              raise ValueError(f"not a valid semantic version: {s!r}")
+          major, minor, patch = int(m.group('major')), int(m.group('minor')), int(m.group('patch'))
+          prerelease_raw = m.group('prerelease')
+          if prerelease_raw is None:
+              prerelease = ()
+          else:
+              parts = prerelease_raw.split('.')
+              for p in parts:
+                  if p == "":
+                      raise ValueError(f"empty pre-release identifier in {s!r}")
+              prerelease = tuple(parts)
+          return (major, minor, patch, prerelease)
+
+
+      def _compare_identifier(a, b):
+          a_is_num, b_is_num = a.isdigit(), b.isdigit()
+          if a_is_num and b_is_num:
+              a_val, b_val = int(a), int(b)
+              return (a_val > b_val) - (a_val < b_val)
+          if a_is_num and not b_is_num:
+              return -1
+          if b_is_num and not a_is_num:
+              return 1
+          return (a > b) - (a < b)
+
+
+      def _compare_prerelease(a_pre, b_pre):
+          if not a_pre and not b_pre:
+              return 0
+          if not a_pre:
+              return 1
+          if not b_pre:
+              return -1
+          for a_id, b_id in zip(a_pre, b_pre):
+              c = _compare_identifier(a_id, b_id)
+              if c != 0:
+                  return c
+          return (len(a_pre) > len(b_pre)) - (len(a_pre) < len(b_pre))
+
+
+      def compare_versions(a, b):
+          a_major, a_minor, a_patch, a_pre = parse_version(a)
+          b_major, b_minor, b_patch, b_pre = parse_version(b)
+          for x, y in ((a_major, b_major), (a_minor, b_minor), (a_patch, b_patch)):
+              if x != y:
+                  return (x > y) - (x < y)
+          return _compare_prerelease(a_pre, b_pre)
+  alternate:
+    semver.py: |
+      import re
+
+      _VERSION_RE = re.compile(
+          r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-([0-9A-Za-z.-]+))?(\+[0-9A-Za-z.-]+)?$'
+      )
+
+
+      def parse_version(s):
+          if not isinstance(s, str):
+              raise ValueError("version must be a string")
+          m = _VERSION_RE.match(s)
+          if not m:
+              raise ValueError(f"invalid version: {s!r}")
+          major, minor, patch = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+          pre_raw = m.group(5)
+          if not pre_raw:
+              return (major, minor, patch, ())
+          parts = tuple(pre_raw.split("."))
+          if any(p == "" for p in parts):
+              raise ValueError(f"invalid version: {s!r}")
+          return (major, minor, patch, parts)
+
+
+      def _identifier_key(ident):
+          return (0, int(ident)) if ident.isdigit() else (1, ident)
+
+
+      def _cmp(x, y):
+          return (x > y) - (x < y)
+
+
+      def compare_versions(a, b):
+          ma, mi, pa, pre_a = parse_version(a)
+          mb, ni, pb, pre_b = parse_version(b)
+          core = _cmp((ma, mi, pa), (mb, ni, pb))
+          if core != 0:
+              return core
+          if not pre_a and not pre_b:
+              return 0
+          if not pre_a:
+              return 1
+          if not pre_b:
+              return -1
+          for ia, ib in zip(pre_a, pre_b):
+              ka, kb = _identifier_key(ia), _identifier_key(ib)
+              if ka[0] != kb[0]:
+                  return _cmp(ka[0], kb[0])
+              c = _cmp(ka[1], kb[1])
+              if c != 0:
+                  return c
+          return _cmp(len(pre_a), len(pre_b))
+  wrong:
+    - semver.py: |
+        import re
+
+        _VERSION_RE = re.compile(
+            r'^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)'
+            r'(?:-(?P<prerelease>[0-9A-Za-z.-]+))?'
+            r'(?:\+[0-9A-Za-z.-]+)?$'
+        )
+
+
+        def parse_version(s):
+            if not isinstance(s, str):
+                raise ValueError(f"version must be a string, got {type(s).__name__}")
+            m = _VERSION_RE.match(s)
+            if not m:
+                raise ValueError(f"not a valid semantic version: {s!r}")
+            major, minor, patch = int(m.group('major')), int(m.group('minor')), int(m.group('patch'))
+            prerelease_raw = m.group('prerelease')
+            if prerelease_raw is None:
+                prerelease = ()
+            else:
+                parts = prerelease_raw.split('.')
+                for p in parts:
+                    if p == "":
+                        raise ValueError(f"empty pre-release identifier in {s!r}")
+                prerelease = tuple(parts)
+            return (major, minor, patch, prerelease)
+
+
+        def _compare_identifier(a, b):
+            a_is_num, b_is_num = a.isdigit(), b.isdigit()
+            if a_is_num and b_is_num:
+                a_val, b_val = int(a), int(b)
+                return (a_val > b_val) - (a_val < b_val)
+            if a_is_num and not b_is_num:
+                return -1
+            if b_is_num and not a_is_num:
+                return 1
+            return (a > b) - (a < b)
+
+
+        def _compare_prerelease(a_pre, b_pre):
+            if not a_pre and not b_pre:
+                return 0
+            if not a_pre:
+                return 1
+            if not b_pre:
+                return -1
+            for a_id, b_id in zip(a_pre, b_pre):
+                c = _compare_identifier(a_id, b_id)
+                if c != 0:
+                    return c
+            return (len(a_pre) > len(b_pre)) - (len(a_pre) < len(b_pre))
+
+
+        def compare_versions(a, b):
+            # BUG: compares the raw string components of major/minor/patch,
+            # never converting to int.
+            m1 = _VERSION_RE.match(a)
+            m2 = _VERSION_RE.match(b)
+            a_parts = (m1.group('major'), m1.group('minor'), m1.group('patch'))
+            b_parts = (m2.group('major'), m2.group('minor'), m2.group('patch'))
+            for x, y in zip(a_parts, b_parts):
+                if x != y:
+                    return (x > y) - (x < y)
+            _, _, _, a_pre = parse_version(a)
+            _, _, _, b_pre = parse_version(b)
+            return _compare_prerelease(a_pre, b_pre)
+    - semver.py: |
+        import re
+
+        _VERSION_RE = re.compile(
+            r'^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)'
+            r'(?:-(?P<prerelease>[0-9A-Za-z.-]+))?'
+            r'(?:\+[0-9A-Za-z.-]+)?$'
+        )
+
+
+        def parse_version(s):
+            if not isinstance(s, str):
+                raise ValueError(f"version must be a string, got {type(s).__name__}")
+            m = _VERSION_RE.match(s)
+            if not m:
+                raise ValueError(f"not a valid semantic version: {s!r}")
+            major, minor, patch = int(m.group('major')), int(m.group('minor')), int(m.group('patch'))
+            prerelease_raw = m.group('prerelease')
+            if prerelease_raw is None:
+                prerelease = ()
+            else:
+                parts = prerelease_raw.split('.')
+                for p in parts:
+                    if p == "":
+                        raise ValueError(f"empty pre-release identifier in {s!r}")
+                prerelease = tuple(parts)
+            return (major, minor, patch, prerelease)
+
+
+        def _compare_identifier(a, b):
+            # BUG: always lexical, even when both identifiers are numeric
+            # ("11" sorts before "2").
+            a_is_num, b_is_num = a.isdigit(), b.isdigit()
+            if a_is_num and not b_is_num:
+                return -1
+            if b_is_num and not a_is_num:
+                return 1
+            return (a > b) - (a < b)
+
+
+        def _compare_prerelease(a_pre, b_pre):
+            if not a_pre and not b_pre:
+                return 0
+            if not a_pre:
+                return 1
+            if not b_pre:
+                return -1
+            for a_id, b_id in zip(a_pre, b_pre):
+                c = _compare_identifier(a_id, b_id)
+                if c != 0:
+                    return c
+            return (len(a_pre) > len(b_pre)) - (len(a_pre) < len(b_pre))
+
+
+        def compare_versions(a, b):
+            a_major, a_minor, a_patch, a_pre = parse_version(a)
+            b_major, b_minor, b_patch, b_pre = parse_version(b)
+            for x, y in ((a_major, b_major), (a_minor, b_minor), (a_patch, b_patch)):
+                if x != y:
+                    return (x > y) - (x < y)
+            return _compare_prerelease(a_pre, b_pre)
+    - semver.py: |
+        import re
+
+        _VERSION_RE = re.compile(
+            r'^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)'
+            r'(?:-(?P<prerelease>[0-9A-Za-z.-]+))?'
+            r'(?:\+[0-9A-Za-z.-]+)?$'
+        )
+
+
+        def parse_version(s):
+            if not isinstance(s, str):
+                raise ValueError(f"version must be a string, got {type(s).__name__}")
+            m = _VERSION_RE.match(s)
+            if not m:
+                raise ValueError(f"not a valid semantic version: {s!r}")
+            major, minor, patch = int(m.group('major')), int(m.group('minor')), int(m.group('patch'))
+            prerelease_raw = m.group('prerelease')
+            if prerelease_raw is None:
+                prerelease = ()
+            else:
+                parts = prerelease_raw.split('.')
+                for p in parts:
+                    if p == "":
+                        raise ValueError(f"empty pre-release identifier in {s!r}")
+                prerelease = tuple(parts)
+            return (major, minor, patch, prerelease)
+
+
+        def _compare_identifier(a, b):
+            a_is_num, b_is_num = a.isdigit(), b.isdigit()
+            if a_is_num and b_is_num:
+                a_val, b_val = int(a), int(b)
+                return (a_val > b_val) - (a_val < b_val)
+            if a_is_num and not b_is_num:
+                return -1
+            if b_is_num and not a_is_num:
+                return 1
+            return (a > b) - (a < b)
+
+
+        def _compare_prerelease(a_pre, b_pre):
+            # BUG: release-vs-pre-release precedence reversed -- treats
+            # "no pre-release" as LOWER precedence than "has one".
+            if not a_pre and not b_pre:
+                return 0
+            if not a_pre:
+                return -1
+            if not b_pre:
+                return 1
+            for a_id, b_id in zip(a_pre, b_pre):
+                c = _compare_identifier(a_id, b_id)
+                if c != 0:
+                    return c
+            return (len(a_pre) > len(b_pre)) - (len(a_pre) < len(b_pre))
+
+
+        def compare_versions(a, b):
+            a_major, a_minor, a_patch, a_pre = parse_version(a)
+            b_major, b_minor, b_patch, b_pre = parse_version(b)
+            for x, y in ((a_major, b_major), (a_minor, b_minor), (a_patch, b_patch)):
+                if x != y:
+                    return (x > y) - (x < y)
+            return _compare_prerelease(a_pre, b_pre)

@@ -1,0 +1,443 @@
+id: py-build-02
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a v1-to-v2 user-record migration from scratch, in a new file
+  `migrate.py`, exposing a function `migrate_record(record)` that returns
+  a NEW dict (never mutates the input) in the v2 schema.
+
+  v1 schema (legacy): `user_name` (str, REQUIRED), `full_name` (str,
+  optional), `street`/`city`/`zip` (str, each independently optional),
+  `email` (str, optional), `active` (bool, optional) -- plus possibly
+  other, unrecognized extra keys.
+
+  v2 schema (target): `username`, `first_name`, `last_name`, `address`
+  (a nested dict with exactly `street`/`city`/`zip`), `email`, `active`,
+  `schema_version` (always the int `2` on output) -- plus any
+  unrecognized extra keys from the input, carried over unchanged.
+
+  Exact transformation contract:
+  - **Idempotent**: if `record.get("schema_version") == 2` EXACTLY, return
+    it as-is (a copy, same content) -- do NOT require `user_name` or any
+    other v1-only field to be present, and do NOT re-derive anything. Any
+    OTHER value of `schema_version` (missing entirely, or present but not
+    `2`, e.g. an explicit `1`) means "still needs migrating" -- run the
+    full migration below (and the output's `schema_version` ends up `2`).
+  - `user_name` -> renamed to `username`, copied unchanged. REQUIRED: if
+    absent (and the record isn't already schema_version 2), raise
+    `KeyError`.
+  - `full_name` -> split into `first_name`/`last_name` on ONLY the FIRST
+    space character (`full_name.strip().split(" ", 1)`, not a generic
+    whitespace split): if the stripped name has no space, `first_name` is
+    the whole (stripped) name and `last_name` is `""`; if it's empty (or
+    the key is missing entirely), both are `""`. Because only the FIRST
+    space is consumed as the separator, any FURTHER whitespace runs stay
+    exactly as-is inside `last_name` (e.g. `"John  Smith"` with two
+    spaces between the names splits into `first_name="John"`,
+    `last_name=" Smith"` -- note the leading space that survives in
+    `last_name`; do not additionally strip or collapse it).
+  - `street`/`city`/`zip` -> merged into a nested `address` dict with
+    exactly those three keys; each is independently optional, defaulting
+    to `""` if its key is absent from the input.
+  - `email` -> copied unchanged if present; defaults to `None` if absent.
+  - `active` -> copied unchanged if present (already a real `bool`, not a
+    string -- no coercion needed); defaults to `True` if absent.
+  - `schema_version` -> always `2` in the output.
+  - The 5 consumed v1 key NAMES (`user_name`, `full_name`, `street`,
+    `city`, `zip`) must NOT appear in the output (only their v2
+    replacements do) -- but any OTHER key present on the input record
+    that isn't part of this schema at all (e.g. a free-text `notes`
+    field, or a numeric `legacy_id`) must be carried over into the output
+    UNCHANGED, not silently dropped.
+
+  An existing file, `reports.py`, already does
+  `summarize(record)` (migrates-or-passes-through, then formats a
+  one-line report using the v2 field names, including branching on
+  `active` as a real bool) -- must keep working exactly as written.
+
+  Create ONLY `migrate.py`. Do not create or edit `reports.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  reports.py: |
+    from migrate import migrate_record
+
+
+    def summarize(record):
+        """Existing integration: migrates (or passes through) a record,
+        then formats a one-line report -- relies on migrate_record's exact
+        v2 key names/types (username/first_name/last_name: str, address: a
+        dict with a 'city' key, active: a real bool for the branch below)."""
+        v2 = migrate_record(record)
+        status = "ACTIVE" if v2["active"] else "INACTIVE"
+        return f"{v2['username']} <{v2['first_name']} {v2['last_name']}> [{v2['address']['city']}] {status}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    _CANON_HELPER = (
+        "def _canon(x):\n"
+        "    if isinstance(x, dict):\n"
+        "        return tuple(sorted((k, _canon(v)) for k, v in x.items()))\n"
+        "    if isinstance(x, list):\n"
+        "        return tuple(_canon(v) for v in x)\n"
+        "    return x\n"
+    )
+
+
+    def _case_snippet(record, expected):
+        return ("import migrate\n" + _CANON_HELPER +
+                f"record = {record!r}\n"
+                f"expected = {expected!r}\n"
+                "try:\n"
+                "    result = migrate.migrate_record(record)\n"
+                "except Exception as e:\n"
+                "    print('EXC:' + type(e).__name__)\n"
+                "else:\n"
+                "    if _canon(result) == _canon(expected):\n"
+                "        print('MATCH')\n"
+                "    else:\n"
+                "        print('MISMATCH actual=' + repr(_canon(result)))\n")
+
+
+    CASES = [
+        ("full_basic",
+         {"user_name": "jdoe", "full_name": "Jane Doe", "street": "1 Main St",
+          "city": "Springfield", "zip": "12345", "email": "jane@example.com", "active": False},
+         {"username": "jdoe", "first_name": "Jane", "last_name": "Doe",
+          "address": {"street": "1 Main St", "city": "Springfield", "zip": "12345"},
+          "email": "jane@example.com", "active": False, "schema_version": 2}),
+        ("minimal",
+         {"user_name": "min1", "full_name": "Solo"},
+         {"username": "min1", "first_name": "Solo", "last_name": "",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+        ("no_space_name",
+         {"user_name": "cher1", "full_name": "Cher"},
+         {"username": "cher1", "first_name": "Cher", "last_name": "",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+        ("multi_word_single_spaces",
+         {"user_name": "mjw", "full_name": "Mary Jane Watson"},
+         {"username": "mjw", "first_name": "Mary", "last_name": "Jane Watson",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+        ("double_space_preserved",
+         {"user_name": "ds1", "full_name": "John  Smith"},
+         {"username": "ds1", "first_name": "John", "last_name": " Smith",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+        ("empty_full_name",
+         {"user_name": "empty1", "full_name": ""},
+         {"username": "empty1", "first_name": "", "last_name": "",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+        ("missing_full_name_key_entirely",
+         {"user_name": "nofull1"},
+         {"username": "nofull1", "first_name": "", "last_name": "",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+        ("extra_fields_preserved_and_old_keys_removed",
+         {"user_name": "extra1", "full_name": "A B", "notes": "legacy free text", "legacy_id": 42},
+         {"username": "extra1", "first_name": "A", "last_name": "B",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2,
+          "notes": "legacy free text", "legacy_id": 42}),
+        ("explicit_schema_version_1_still_migrates",
+         {"schema_version": 1, "user_name": "v1exp", "full_name": "Ver One"},
+         {"username": "v1exp", "first_name": "Ver", "last_name": "One",
+          "address": {"street": "", "city": "", "zip": ""},
+          "email": None, "active": True, "schema_version": 2}),
+    ]
+
+    _IDEMPOTENT_RECORD = {
+        "username": "already2", "first_name": "Al", "last_name": "Ready",
+        "address": {"street": "9 Elm", "city": "Metropolis", "zip": "00000"},
+        "email": "al@x.com", "active": True, "schema_version": 2, "notes": "keep me",
+    }
+
+
+    def main():
+        for label, record, expected in CASES:
+            r = _run(_case_snippet(record, expected))
+            case = f"migrate_record [{label}]"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected="MATCH", actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != "MATCH":
+                _emit(False, case=case, expected="MATCH", actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        r = _run(_case_snippet(_IDEMPOTENT_RECORD, _IDEMPOTENT_RECORD))
+        case = "migrate_record [idempotent_passthrough]"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="MATCH", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "MATCH":
+            _emit(False, case=case, expected="MATCH", actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+        code = ("import migrate\n"
+                "try:\n"
+                "    migrate.migrate_record({'full_name': 'No User'})\n"
+                "    print('NO_EXCEPTION')\n"
+                "except Exception as e:\n"
+                "    print(type(e).__name__)\n")
+        r = _run(code)
+        case = "migrate_record raises on missing user_name"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="KeyError", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "KeyError":
+            _emit(False, case=case, expected="KeyError", actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+        integration_cases = [
+            ("missing_active_defaults_active",
+             {"user_name": "itg1", "full_name": "Val User", "city": "Gotham"},
+             "itg1 <Val User> [Gotham] ACTIVE"),
+            ("explicit_inactive",
+             {"user_name": "itg2", "full_name": "No Body", "city": "Star City", "active": False},
+             "itg2 <No Body> [Star City] INACTIVE"),
+        ]
+        for label, record, expected in integration_cases:
+            code = f"import reports\nprint(reports.summarize({record!r}))\n"
+            r = _run(code)
+            case = f"reports.summarize(...) [{label}]  # protected caller"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=expected, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != expected:
+                _emit(False, case=case, expected=expected, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [reports.py, NOTES.md]
+allowed_diff_paths: [migrate.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B3 build/config batch) -- a v1->v2
+  record-migration with rename/split/merge, missing-field defaults, and
+  IDEMPOTENCY over already-migrated records (a realistic migration-batch
+  concern: the same job may see a mix of legacy and already-migrated rows).
+  Traps:
+  1. Missing-field defaults applied inconsistently -- e.g. defaulting
+     `active` via `record.get("active")` (no second arg) instead of
+     `record.get("active", True)` silently produces `None` instead of
+     `True` for a legacy record that never had the field. Caught by every
+     CASES entry except `full_basic` (which sets `active` explicitly).
+  2. `full_name.split()` (generic whitespace split) instead of
+     `.split(" ", 1)` -- both give identical results for single-space
+     names (`"Jane Doe"`), so this only diverges on irregular spacing;
+     `double_space_preserved` isolates it precisely (`"John  Smith"` ->
+     `last_name` must retain the leading space from the second, unconsumed
+     space character).
+  3. No idempotency short-circuit -- a solution that always assumes v1
+     shape (unconditionally indexes/pops `user_name`) crashes on an
+     already-`schema_version: 2` record, which by design never has that
+     key. Caught by the dedicated idempotent-passthrough case.
+
+  Verified empirically: `check_fixtures.wrong[0]` (active defaults to
+  `None`) fails the very next case after `full_basic` (`minimal`,
+  `actual` embeds `active: None` instead of `True`). `wrong[1]` (naive
+  `.split()`+rejoin) passes every single-space-name case, including
+  `multi_word_single_spaces`, then fails `double_space_preserved`
+  specifically. `wrong[2]` (no `schema_version==2` short-circuit) passes
+  every CASES entry, then fails `idempotent_passthrough` with
+  `EXC:KeyError` instead of `MATCH` (the already-v2 record has no
+  `user_name` key to pop).
+check_fixtures:
+  reference:
+    migrate.py: |
+      def migrate_record(record):
+          if record.get("schema_version") == 2:
+              return dict(record)
+
+          result = dict(record)
+          username = result.pop("user_name")
+          full_name = result.pop("full_name", "")
+          street = result.pop("street", "")
+          city = result.pop("city", "")
+          zip_code = result.pop("zip", "")
+
+          stripped = full_name.strip()
+          if " " in stripped:
+              first_name, last_name = stripped.split(" ", 1)
+          else:
+              first_name, last_name = stripped, ""
+
+          result["username"] = username
+          result["first_name"] = first_name
+          result["last_name"] = last_name
+          result["address"] = {"street": street, "city": city, "zip": zip_code}
+          result.setdefault("email", None)
+          result.setdefault("active", True)
+          result["schema_version"] = 2
+          return result
+  alternate:
+    migrate.py: |
+      _CONSUMED_KEYS = {"user_name", "full_name", "street", "city", "zip"}
+
+
+      def migrate_record(record):
+          if record.get("schema_version") == 2:
+              return dict(record)
+          if "user_name" not in record:
+              raise KeyError("user_name")
+
+          full_name = record.get("full_name", "")
+          stripped = full_name.strip()
+          if " " in stripped:
+              first_name, last_name = stripped.split(" ", 1)
+          else:
+              first_name, last_name = stripped, ""
+
+          address = {
+              "street": record.get("street", ""),
+              "city": record.get("city", ""),
+              "zip": record.get("zip", ""),
+          }
+
+          result = {k: v for k, v in record.items() if k not in _CONSUMED_KEYS}
+          result["username"] = record["user_name"]
+          result["first_name"] = first_name
+          result["last_name"] = last_name
+          result["address"] = address
+          if "email" not in result:
+              result["email"] = None
+          if "active" not in result:
+              result["active"] = True
+          result["schema_version"] = 2
+          return result
+  wrong:
+    - migrate.py: |
+        def migrate_record(record):
+            if record.get("schema_version") == 2:
+                return dict(record)
+
+            result = dict(record)
+            username = result.pop("user_name")
+            full_name = result.pop("full_name", "")
+            street = result.pop("street", "")
+            city = result.pop("city", "")
+            zip_code = result.pop("zip", "")
+
+            stripped = full_name.strip()
+            if " " in stripped:
+                first_name, last_name = stripped.split(" ", 1)
+            else:
+                first_name, last_name = stripped, ""
+
+            result["username"] = username
+            result["first_name"] = first_name
+            result["last_name"] = last_name
+            result["address"] = {"street": street, "city": city, "zip": zip_code}
+            result.setdefault("email", None)
+            result["active"] = result.get("active")  # BUG: None when missing, not True
+            result["schema_version"] = 2
+            return result
+    - migrate.py: |
+        def migrate_record(record):
+            if record.get("schema_version") == 2:
+                return dict(record)
+
+            result = dict(record)
+            username = result.pop("user_name")
+            full_name = result.pop("full_name", "")
+            street = result.pop("street", "")
+            city = result.pop("city", "")
+            zip_code = result.pop("zip", "")
+
+            parts = full_name.split()  # BUG: collapses/loses irregular whitespace
+            if parts:
+                first_name = parts[0]
+                last_name = " ".join(parts[1:])
+            else:
+                first_name, last_name = "", ""
+
+            result["username"] = username
+            result["first_name"] = first_name
+            result["last_name"] = last_name
+            result["address"] = {"street": street, "city": city, "zip": zip_code}
+            result.setdefault("email", None)
+            result.setdefault("active", True)
+            result["schema_version"] = 2
+            return result
+    - migrate.py: |
+        def migrate_record(record):
+            # BUG: no idempotency short-circuit -- always assumes v1 shape.
+            result = dict(record)
+            username = result.pop("user_name")
+            full_name = result.pop("full_name", "")
+            street = result.pop("street", "")
+            city = result.pop("city", "")
+            zip_code = result.pop("zip", "")
+
+            stripped = full_name.strip()
+            if " " in stripped:
+                first_name, last_name = stripped.split(" ", 1)
+            else:
+                first_name, last_name = stripped, ""
+
+            result["username"] = username
+            result["first_name"] = first_name
+            result["last_name"] = last_name
+            result["address"] = {"street": street, "city": city, "zip": zip_code}
+            result.setdefault("email", None)
+            result.setdefault("active", True)
+            result["schema_version"] = 2
+            return result
