@@ -142,6 +142,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session-id", default=None,
                    help="Override the session_id stamped on emitted rows "
                         "(provenance only). Default: a fresh 'manual-<uuid8>'.")
+    p.add_argument("--results-dir", default=None,
+                   help="Store dir for the emitted rows shard (default: "
+                        "<repo>/results). Set a SEPARATE dir per concurrent "
+                        "invocation (e.g. results_gpt/, results_gemma/) so two "
+                        "parallel run_b8_local processes never append to the "
+                        "same shard file at once (interleave-corruption guard); "
+                        "merge the per-model shards at report time. plan() "
+                        "resume/--force dedup reads this same dir, so per-model "
+                        "replicate counting stays correct.")
     return p
 
 
@@ -160,7 +169,7 @@ def main(argv=None) -> int:
         normalized_config={"runtime": "manual", "ctx": b8cfg.get("ctx"),
                            "kv_dtype": b8cfg.get("kv"), "endpoint_url": base_url})
 
-    store = Store(ROOT / "results")
+    store = Store(Path(args.results_dir) if args.results_dir else ROOT / "results")
     ctx = RunContext(cfg=cfg, store=store, root=ROOT, keep_server=True, debug=False)
     ctx.b8_endpoint = endpoint   # the seam -- ctx.server_manager() is never called
 

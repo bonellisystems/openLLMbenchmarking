@@ -1,40 +1,39 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Serve one model with llama.cpp CUDA, on the HOST network so the OpenCode
-# containers reach it at host.docker.internal:8080 (host-gateway) exactly as
-# the OpenCodeAdapter already assumes -- no adapter change needed on Linux.
+# Serve one model with llama.cpp CUDA on the HOST network so OpenCode
+# containers reach it at host.docker.internal:<port> (host-gateway), exactly
+# as the OpenCodeAdapter assumes -- no adapter change needed on Linux.
 #
-#     bash serve.sh <stable-model-name.gguf>     # e.g. gpt-oss-20b.gguf
-#     bash serve.sh stop                          # stop + remove the server
+#     bash serve.sh <model.gguf> [gpu] [port]     # gpu: "all"|0|1 ; port: 8080
+#     bash serve.sh stop                           # stop+remove ALL b8 servers
 #
 # THE KV-EXHAUSTION FIX (why this differs from the CLAUDE.md template):
 #   --ctx-checkpoints 0  -> disable the per-slot context-checkpoint cache that
-#                           accumulated ~13k-token OpenCode prompts across runs
-#                           until the KV cache OOM'd and the server crashed
-#                           (GGML_ASSERT logits!=nullptr). This was THE root
-#                           cause of the escalating infra-errors on the local
-#                           Windows box.
+#                           accumulated OpenCode's ~13k-token prompts across
+#                           runs until the KV OOM'd and the server CRASHED
+#                           (GGML_ASSERT logits!=nullptr) -- the local root cause.
 #   --parallel 1         -> single slot; no cross-request KV contention.
-# ngram spec-decode is intentionally ABSENT: it's a prism-fork-only flag and
-# only affects DECODE SPEED, never completion/oracle outcome, so the ranking
-# is valid without it (just slower). Build the prism fork on-box if you want
-# the 2-9x edit-decode speedup to cut GPU-hours.
+# ngram spec-decode is intentionally ABSENT (prism-fork-only flag; affects
+# DECODE SPEED only, never completion/oracle outcome -> ranking stays valid).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 B8_ROOT="${B8_ROOT:-/opt/b8}"
 MODELS="$B8_ROOT/models"
 LLAMA_IMAGE="${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}"
-NAME=llama-b8
 CTX="${CTX:-40960}"          # OpenCode needs max_tokens 32000 -> ctx >= ~40k
-PORT="${PORT:-8080}"
 
 if [ "${1:-}" = "stop" ]; then
-  docker rm -f "$NAME" 2>/dev/null || true; echo "stopped $NAME"; exit 0
+  docker ps -a --filter 'name=llama-b8-' -q | xargs -r docker rm -f >/dev/null 2>&1 || true
+  echo "stopped all llama-b8-* servers"; exit 0
 fi
-GGUF="${1:?usage: serve.sh <model.gguf> | stop}"
+GGUF="${1:?usage: serve.sh <model.gguf> [gpu] [port] | stop}"
+GPU="${2:-all}"              # "all" | "0" | "1"
+PORT="${3:-8080}"
+NAME="llama-b8-$PORT"
+if [ "$GPU" = "all" ]; then GPUFLAG=(--gpus all); else GPUFLAG=(--gpus "device=$GPU"); fi
 
-docker rm -f "$NAME" 2>/dev/null || true
-docker run -d --name "$NAME" --gpus all --network host \
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker run -d --name "$NAME" "${GPUFLAG[@]}" --network host \
     -v "$MODELS":/models:ro \
     "$LLAMA_IMAGE" \
     --model "/models/$GGUF" -ngl 99 -c "$CTX" --jinja -fa on \
@@ -42,8 +41,8 @@ docker run -d --name "$NAME" --gpus all --network host \
     --cache-type-k q8_0 --cache-type-v q8_0 \
     --host 0.0.0.0 --port "$PORT" >/dev/null
 
-echo -n "waiting for $GGUF to load"
-for i in $(seq 1 120); do
+echo -n "waiting for $GGUF (gpu=$GPU port=$PORT) to load"
+for i in $(seq 1 150); do
   if curl -s -m 3 "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"ok"'; then
     echo " -> healthy (~$((i*2))s)"; exit 0
   fi

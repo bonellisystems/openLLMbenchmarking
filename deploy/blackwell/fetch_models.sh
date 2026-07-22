@@ -16,7 +16,7 @@ MODELS="$B8_ROOT/models"
 HF="${HF:-$B8_ROOT/venv/bin/huggingface-cli}"
 mkdir -p "$MODELS"
 
-GPT_OSS_REPO="${GPT_OSS_REPO:-openai/gpt-oss-20b}"
+GPT_OSS_REPO="${GPT_OSS_REPO:-ggml-org/gpt-oss-20b-GGUF}"   # GGUF repo (llama.cpp org); openai/gpt-oss-20b is safetensors, NOT gguf
 GPT_OSS_PATTERN="${GPT_OSS_PATTERN:-*mxfp4*.gguf}"
 GEMMA_REPO="${GEMMA_REPO:-unsloth/gemma-4-26B-A4B-it-qat-GGUF}"
 GEMMA_PATTERN="${GEMMA_PATTERN:-*mxfp4*.gguf}"   # falls back to Q4_0 if none
