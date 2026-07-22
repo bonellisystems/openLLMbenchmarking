@@ -57,7 +57,10 @@ def test_load_b8_tasks_returns_all_manifests_with_required_fields():
     real Python tasks are all solved 30/30 by gpt-oss-20b and don't
     discriminate."""
     all_tasks = t.load_b8_tasks(ROOT)
-    assert len(all_tasks) == 16
+    # >= 16: Wave-4 breadth batches add manifests over time; this test is an
+    # all-manifests-load sanity check, not an exact-count pin (per-task
+    # discrimination is covered by tests/test_task_discrimination.py).
+    assert len(all_tasks) >= 16
     assert [x.id for x in all_tasks] == sorted(x.id for x in all_tasks)
     for task in all_tasks:
         assert task.id

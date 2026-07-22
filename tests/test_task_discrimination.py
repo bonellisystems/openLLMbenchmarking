@@ -73,8 +73,8 @@ def test_at_least_the_11_real_python_tasks_carry_check_fixtures():
     empty or short, every test below silently no-ops (pytest parametrize
     over an empty list just collects zero tests), which would look like
     "everything passed" while actually testing nothing."""
-    assert len(_TASK_IDS) == 11, _TASK_IDS
-    assert set(_TASK_IDS) == {
+    assert len(_TASK_IDS) >= 11, _TASK_IDS
+    assert set(_TASK_IDS) >= {
         "py-bugfix-01", "py-fromscratch-01", "py-edit-01", "py-multifile-01",
         "py-toolheavy-01", "py-fromscratch-02", "py-hard-bugfix-01",
         "py-hard-algo-01", "py-hard-edge-01", "py-hard-multifile-01",
