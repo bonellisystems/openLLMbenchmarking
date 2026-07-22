@@ -125,24 +125,26 @@ def test_suite_yaml_has_b8_block_and_condition_additions():
     assert "B8" in cfg.suite["condition_vocab"]["cond"]
 
 
-def test_suite_yaml_b8_tasks_allowlist_is_the_five_hard_python_task_ids():
-    """The real suite.yaml (task-b8hard) restricts a live run to exactly
-    the 5 HARDER Python task ids -- the original 6 real Python tasks
-    (task-06..11.yaml) and the 5 bash placeholder manifests
-    (task-01..05.yaml) are all loaded (load_b8_tasks still returns them)
-    but never crossed by plan(). The original 6 are all solved 30/30 by
-    gpt-oss-20b and don't discriminate; the 5 harder manifests
-    (task-12..16.yaml) are calibrated so a capable 20B model is genuinely
-    expected to fail some fraction of the time."""
+def test_suite_yaml_b8_task_forms_are_well_formed():
+    """Wave 4 splits the 47 Python breadth tasks into SEALED forms:
+    `tasks` (DEV -- what plan() runs, for instrument validation/tuning),
+    `tasks_confirmatory` (SEALED holdout, NEVER run by plan -- reserved for
+    the eventual multi-model ranking so tuning against dev can't contaminate
+    it), and `tasks_anchor` (the original easy Python tasks, regression only).
+    Every id must exist as a manifest, and dev/confirmatory MUST be disjoint
+    (the seal)."""
     cfg = load_config(ROOT)
-    allowlist = cfg.suite["b8"].get("tasks")
-    assert allowlist, "suite.yaml b8.tasks allowlist must be set (task-b8hard)"
-    assert set(allowlist) == {
-        "py-hard-bugfix-01", "py-hard-algo-01", "py-hard-edge-01",
-        "py-hard-multifile-01", "py-hard-toolheavy-01",
-    }
+    b8 = cfg.suite["b8"]
+    dev = b8.get("tasks") or []
+    conf = b8.get("tasks_confirmatory") or []
+    anchor = b8.get("tasks_anchor") or []
+    assert len(dev) >= 20, dev
+    assert conf, "confirmatory holdout must be set"
+    # the seal: a task used to tune the instrument (dev) is never in the
+    # confirmatory holdout.
+    assert set(dev).isdisjoint(set(conf)), set(dev) & set(conf)
     all_task_ids = {task.id for task in b8f.load_tasks(ROOT)}
-    for task_id in allowlist:
+    for task_id in list(dev) + list(conf) + list(anchor):
         assert task_id in all_task_ids, f"{task_id} not found by load_tasks"
 
 
