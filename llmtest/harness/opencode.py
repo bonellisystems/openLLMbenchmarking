@@ -290,6 +290,24 @@ class OpenCodeAdapter(HarnessAdapter):
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
         materialize_repo(task, self.workspace)
+        if self.sandbox_image is not None:
+            # LINUX containment fix (sibling of the opencode-home chmod below).
+            # The workspace + its materialized files are root-owned (the run
+            # process is root on the datacenter box), but the container edits
+            # them as --user node (uid 1000). Without world-write, EVERY
+            # OpenCode edit/write tool call fails ("error") -> the agent never
+            # modifies code -> run_oracle sees the untouched (still-broken)
+            # repo -> completion is systematically False for ALL tasks (a
+            # silent 0%, since the run still terminates `completed`). Docker
+            # Desktop's VM masked host bind-mount ownership; native Linux
+            # exposes it. chmod the whole materialized tree so uid 1000 can
+            # write. (Safe for the oracle: protected-hash/diff-constraint check
+            # CONTENT, not mode, and catch any tamper regardless of perms.)
+            for _p in (self.workspace, *self.workspace.rglob("*")):
+                try:
+                    os.chmod(_p, 0o777)
+                except OSError:
+                    pass
         # Record BEFORE launch (with slack) so `_read_trace` can find this
         # run's session even if OpenCode's own clock is a hair behind ours.
         self._since_ts = int(time.time() * 1000) - _SESSION_TS_SLACK_MS

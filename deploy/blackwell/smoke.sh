@@ -33,11 +33,23 @@ if not rows:
 m = rows[-1]["metrics"]
 print(f"terminal_status={m['terminal_status']} completion={m['completion']} "
       f"tokens_prompt={m['tokens_prompt']} tokens_completion={m['tokens_completion']} steps={m['steps']}")
-# A valid pipeline: the model was actually reached (tokens_prompt>0) and the
-# run reached a real terminal state (not infra-error). completion may be
-# True or False -- the SMOKE proves the PIPELINE, not that the model solves
-# this task; but tokens_prompt>0 + non-infra terminal is the gate.
-ok = m['terminal_status'] != 'infra-error' and (m['tokens_prompt'] or 0) > 0
-print("SMOKE_PASS" if ok else "SMOKE_FAIL: infra-error or zero prompt tokens (pipeline broken)")
-raise SystemExit(0 if ok else 1)
+# The gate requires COMPLETION=True on this trivial task (py-brk-01 = collapse
+# whitespace). Reaching the endpoint (tokens_prompt>0) + a non-infra terminal
+# is necessary but NOT sufficient: a run can terminate `completed` yet have
+# made ZERO successful edits (e.g. the workspace mount not writable by the
+# container's uid-1000 user -> every edit/write tool errors -> oracle sees the
+# untouched broken repo -> completion=False for EVERY task, a silent 0%). Only
+# completion=True proves the agent actually WROTE a working fix end-to-end.
+reached = m['terminal_status'] != 'infra-error' and (m['tokens_prompt'] or 0) > 0
+if not reached:
+    print("SMOKE_FAIL: infra-error or zero prompt tokens (endpoint unreachable / pipeline broken)")
+    raise SystemExit(1)
+if not m['completion']:
+    print("SMOKE_FAIL: reached the model but completion=False on a TRIVIAL task.")
+    print("  Likely the agent's edits never landed -- inspect the newest trace's")
+    print("  tool_result events: if every edit/write is \"error\", the workspace")
+    print("  mount is not writable by the container user (chmod/uid). Do NOT")
+    print("  launch the full matrix until a trivial task completes.")
+    raise SystemExit(1)
+print("SMOKE_PASS")
 PY
