@@ -85,10 +85,157 @@ def test_load_b8_tasks_covers_all_shapes():
 
 
 def test_fixture_sha_is_sha256_of_manifest_bytes():
+    """Wave 3b: fixture_sha is sha256 of the manifest bytes with any
+    check_fixtures block excluded (t._strip_check_fixtures_for_hash) --
+    a no-op for every one of the 5 bash placeholders (task-01..05.yaml,
+    no check_fixtures key at all), so this is still, in effect, "sha256 of
+    the raw file" for them; the 11 real Python manifests now have a
+    check_fixtures block, so their fixture_sha is the sha256 of the file
+    WITHOUT that block (see test_check_fixtures_does_not_change_fixture_sha
+    below for the direct before/after proof that adding it left fixture_sha
+    unchanged)."""
     all_tasks = t.load_b8_tasks(ROOT)
     for task in all_tasks:
-        expected = hashlib.sha256(task.path.read_bytes()).hexdigest()
+        raw = task.path.read_bytes()
+        expected = hashlib.sha256(t._strip_check_fixtures_for_hash(raw)).hexdigest()
         assert task.fixture_sha == expected
+
+
+# -- Wave 3b: check_fixtures -- test-only, additive, excluded from row -----
+# identity (fixture_sha/setup_repo_sha) -----------------------------------
+
+
+def test_load_b8_tasks_loads_check_fixtures_for_the_11_real_python_tasks():
+    """Every one of the 11 real Python manifests (task-06..16.yaml) now
+    carries a check_fixtures block -- reference (+ optionally alternate)
+    solution(s), plus 1-3 plausible-but-wrong ones -- and load_b8_tasks
+    surfaces it as B8Task.check_fixtures, unvalidated against
+    setup_repo/oracle content (a pure test aid, per its own docstring)."""
+    all_tasks = t.load_b8_tasks(ROOT)
+    python_task_ids = {"py-bugfix-01", "py-fromscratch-01", "py-edit-01",
+                       "py-multifile-01", "py-toolheavy-01", "py-fromscratch-02",
+                       "py-hard-bugfix-01", "py-hard-algo-01", "py-hard-edge-01",
+                       "py-hard-multifile-01", "py-hard-toolheavy-01"}
+    seen = set()
+    for task in all_tasks:
+        if task.id not in python_task_ids:
+            continue
+        seen.add(task.id)
+        assert "reference" in task.check_fixtures, task.id
+        assert isinstance(task.check_fixtures["reference"], dict) and task.check_fixtures["reference"]
+        assert "wrong" in task.check_fixtures, task.id
+        wrong = task.check_fixtures["wrong"]
+        assert isinstance(wrong, list) and 1 <= len(wrong) <= 3, task.id
+        for solution in wrong:
+            assert isinstance(solution, dict) and solution, task.id
+    assert seen == python_task_ids, f"missing check_fixtures for: {python_task_ids - seen}"
+
+
+def test_load_b8_tasks_check_fixtures_defaults_to_empty_dict_when_absent():
+    """The 5 bash placeholder manifests (task-01..05.yaml) predate this
+    convention and never get a check_fixtures block -- additive, so they
+    must load exactly as before with an empty dict, not a missing
+    attribute/KeyError."""
+    all_tasks = t.load_b8_tasks(ROOT)
+    bash_ids = {"edit-01", "multifile-01", "bugfix-01", "scratch-01", "toolheavy-01"}
+    for task in all_tasks:
+        if task.id in bash_ids:
+            assert task.check_fixtures == {}
+
+
+def test_check_fixtures_does_not_change_fixture_sha(tmp_path):
+    """The direct, load-bearing row-identity proof (Wave 3b brief:
+    "Keep check_fixtures out of fixture_sha/setup_repo_sha/row identity"):
+    a manifest's fixture_sha, computed BEFORE any check_fixtures block
+    exists, is byte-for-byte the SAME after check_fixtures is added (or
+    later edited) -- adding/fixing test-only fixtures must never look like
+    a fixture/oracle content change to row identity."""
+    task_dir = tmp_path / "suite" / "b8_harness"
+    task_dir.mkdir(parents=True)
+    manifest_path = task_dir / "task-01.yaml"
+    _write_minimal_manifest(manifest_path, extra_file_content="one")
+
+    sha_before = t.load_b8_tasks(tmp_path)[0].fixture_sha
+    setup_repo_sha_before = t.load_b8_tasks(tmp_path)[0].setup_repo_sha
+
+    text = manifest_path.read_text(encoding="utf-8")
+    text += (
+        "check_fixtures:\n"
+        "  reference:\n"
+        "    main.sh: |\n"
+        "      echo one\n"
+        "  wrong:\n"
+        "    - main.sh: |\n"
+        "        echo nope\n"
+    )
+    manifest_path.write_text(text, encoding="utf-8")
+
+    tasks_after = t.load_b8_tasks(tmp_path)
+    assert len(tasks_after) == 1
+    task_after = tasks_after[0]
+    assert task_after.check_fixtures  # actually loaded, not silently dropped
+    assert task_after.fixture_sha == sha_before
+    assert task_after.setup_repo_sha == setup_repo_sha_before
+
+    # And editing an EXISTING check_fixtures block again -- not just adding
+    # one for the first time -- must also leave fixture_sha unchanged.
+    text2 = text.replace("echo nope", "echo still nope, edited")
+    manifest_path.write_text(text2, encoding="utf-8")
+    task_after_edit = t.load_b8_tasks(tmp_path)[0]
+    assert task_after_edit.fixture_sha == sha_before
+
+
+def test_check_fixtures_block_stripped_regardless_of_position(tmp_path):
+    """_strip_check_fixtures_for_hash must find and remove the
+    check_fixtures block wherever it appears in the file, not merely when
+    it's the LAST top-level key -- Wave 4 authors are not required to
+    place it at the end."""
+    task_dir = tmp_path / "suite" / "b8_harness"
+    task_dir.mkdir(parents=True)
+    manifest_path = task_dir / "task-01.yaml"
+    _write_minimal_manifest(manifest_path, extra_file_content="one")
+    sha_before = t.load_b8_tasks(tmp_path)[0].fixture_sha
+
+    text = manifest_path.read_text(encoding="utf-8")
+    # Insert check_fixtures in the MIDDLE of the file, followed by more
+    # real content (protected_paths/allowed_diff_paths/oracle), not at EOF.
+    text = text.replace(
+        "protected_paths: [notes.txt]",
+        "check_fixtures:\n"
+        "  reference:\n"
+        "    main.sh: |\n"
+        "      echo one\n"
+        "protected_paths: [notes.txt]",
+    )
+    manifest_path.write_text(text, encoding="utf-8")
+
+    task_after = t.load_b8_tasks(tmp_path)[0]
+    assert task_after.check_fixtures
+    assert task_after.fixture_sha == sha_before
+
+
+def test_loader_raises_on_check_fixtures_not_a_mapping(tmp_path):
+    task_dir = tmp_path / "suite" / "b8_harness"
+    task_dir.mkdir(parents=True)
+    manifest_path = task_dir / "task-01.yaml"
+    _write_minimal_manifest(manifest_path, extra_file_content="one")
+    text = manifest_path.read_text(encoding="utf-8")
+    text += "check_fixtures: not_a_mapping\n"
+    manifest_path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="check_fixtures must be a mapping"):
+        t.load_b8_tasks(tmp_path)
+
+
+def test_loader_raises_on_check_fixtures_wrong_wrong_count(tmp_path):
+    task_dir = tmp_path / "suite" / "b8_harness"
+    task_dir.mkdir(parents=True)
+    manifest_path = task_dir / "task-01.yaml"
+    _write_minimal_manifest(manifest_path, extra_file_content="one")
+    text = manifest_path.read_text(encoding="utf-8")
+    text += "check_fixtures:\n  wrong: []\n"
+    manifest_path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="check_fixtures.wrong must be a list of 1-3"):
+        t.load_b8_tasks(tmp_path)
 
 
 def test_setup_repo_sha_changes_when_repo_content_changes(tmp_path):

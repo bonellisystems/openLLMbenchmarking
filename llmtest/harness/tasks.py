@@ -93,6 +93,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -128,7 +129,24 @@ class B8Task:
     `run_oracle`'s step (c) does (re-injecting into a copy the agent never
     sees). `setup_repo_sha` is computed over `setup_repo` ONLY -- it never
     includes `oracle_files`, so it reflects exactly what the agent could
-    ever have observed."""
+    ever have observed.
+
+    `check_fixtures` (Wave 3b, B8 validity program: "give every task a
+    reference solution, at least one alternate valid solution, and several
+    plausible incorrect or shortcut patches") is a TEST-ONLY, additive
+    dict, never read by `materialize_repo`/`run_oracle`/`B8Harness` --
+    `{"reference": {path: content}, "alternate": {path: content},
+    "wrong": [{path: content}, ...]}` (`alternate` optional, `wrong` 1-3
+    entries), each inner mapping keyed by the file(s) it overlays onto an
+    already-materialized `setup_repo` workspace. Only
+    `tests/test_task_discrimination.py` reads this field -- it exists so a
+    manifest's own file carries the proof-of-discrimination fixtures
+    alongside the oracle they exercise, per `suite/b8_harness/
+    _schema.md`'s check_fixtures convention (the pattern Wave 4's ~40-50
+    new tasks are meant to follow). Deliberately EXCLUDED from
+    `fixture_sha` (see `_strip_check_fixtures_for_hash`) -- it is test
+    scaffolding, not scored task content, so adding or editing it must
+    never look like a fixture/oracle change to row identity."""
 
     id: str
     shape: str
@@ -145,6 +163,7 @@ class B8Task:
     allowed_diff_paths: list[str] = field(default_factory=list)
     prompt: str = ""
     path: Path | None = None
+    check_fixtures: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -297,6 +316,52 @@ def _hash_setup_repo(setup_repo: dict[str, str]) -> str:
     return h.hexdigest()
 
 
+# Matches a top-level (column-0, i.e. un-indented) "key:" line -- every real
+# key `_hash_setup_repo`'s manifests use (id, shape, prompt, setup_repo,
+# oracle_files, check_fixtures, ...) is written this way, and every value
+# under it (a scalar on the same line, or a `|` block scalar) is indented,
+# per this suite's own authoring convention -- see `_strip_check_fixtures_
+# for_hash`'s docstring.
+_TOP_LEVEL_KEY_RE = re.compile(rb"(?m)^([A-Za-z_][A-Za-z0-9_]*):")
+
+
+def _strip_check_fixtures_for_hash(raw: bytes) -> bytes:
+    """Wave 3b, B8 validity program ("give every task a reference solution,
+    ... and several plausible incorrect or shortcut patches"): `fixture_sha`
+    must stay UNAFFECTED by a manifest's `check_fixtures` block (test-only
+    scaffolding -- see `B8Task.check_fixtures`'s docstring) -- adding it, or
+    later editing/fixing a fixture inside it, must never look like a
+    fixture/oracle CONTENT change to row identity the way an actual
+    `setup_repo`/`oracle_files`/`oracle` edit legitimately does (task-w3a
+    precedent: those bump `fixture_sha`/`task_version` on purpose).
+
+    Returns `raw` with the ENTIRE `check_fixtures:` top-level block removed
+    (from its own "check_fixtures:" line up to, but not including, the next
+    top-level key line, or EOF) -- wherever that block appears in the file,
+    not merely "if it's last" (Wave 4 authors are not required to place it
+    at the end for this to hold). A manifest with no `check_fixtures` key at
+    all (every one of the 5 bash placeholders, task-01..05.yaml, and any
+    future manifest that never adds this key) round-trips through this
+    function UNCHANGED -- `fixture_sha` for those stays EXACTLY the legacy
+    `sha256(raw file bytes)` value, byte for byte, and this is genuinely a
+    no-op for them (not merely close): there is nothing to find or remove.
+    For the 11 real Python manifests (task-06..16.yaml), adding
+    `check_fixtures` as a purely ADDITIVE block leaves every byte before and
+    after it identical to the pre-Wave-3b file, so stripping it back out
+    reproduces the EXACT pre-edit byte sequence -- `fixture_sha` for these
+    11 is therefore unchanged by this wave's edit, confirmed directly by
+    `test_check_fixtures_does_not_change_fixture_sha` (a before/after
+    hermetic proof, not merely an assertion about this function in
+    isolation)."""
+    matches = list(_TOP_LEVEL_KEY_RE.finditer(raw))
+    out = bytearray(raw[:matches[0].start()] if matches else raw)
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+        if m.group(1) != b"check_fixtures":
+            out += raw[m.start():end]
+    return bytes(out)
+
+
 def load_b8_tasks(root: Path) -> list[B8Task]:
     """Load all B8 task manifests from suite/b8_harness/task-*.yaml.
 
@@ -315,7 +380,13 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
     for task_file in sorted(tasks_dir.glob("task-*.yaml")):
         try:
             raw = task_file.read_bytes()
-            fixture_sha = hashlib.sha256(raw).hexdigest()
+            # Wave 3b: fixture_sha excludes any check_fixtures block (test
+            # scaffolding, not scored content) -- see
+            # _strip_check_fixtures_for_hash's docstring. A no-op, byte-for-
+            # byte identical to the legacy sha256(raw) for every manifest
+            # that has no check_fixtures key at all (still true for the 5
+            # bash placeholders, task-01..05.yaml).
+            fixture_sha = hashlib.sha256(_strip_check_fixtures_for_hash(raw)).hexdigest()
             data = yaml.safe_load(raw.decode("utf-8"))
 
             for key in _REQUIRED_KEYS:
@@ -380,6 +451,33 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
             protected_shas = {p: hashlib.sha256(setup_repo[p].encode("utf-8")).hexdigest()
                                for p in protected_paths}
 
+            # check_fixtures (Wave 3b, additive, OPTIONAL): a pure test aid
+            # -- see B8Task.check_fixtures's docstring -- so validation here
+            # is deliberately light (shape only, not cross-referenced
+            # against setup_repo/allowed_diff_paths/oracle content the way
+            # protected_paths etc. are above): a manifest with no
+            # check_fixtures key at all (every manifest predating this
+            # wave) loads exactly as before, `{}`.
+            check_fixtures = data.get("check_fixtures", {})
+            if not isinstance(check_fixtures, dict):
+                raise ValueError("check_fixtures must be a mapping")
+            for cf_key in ("reference", "alternate"):
+                if cf_key in check_fixtures:
+                    solution = check_fixtures[cf_key]
+                    if not isinstance(solution, dict) or not solution or not all(
+                            isinstance(k, str) and isinstance(v, str) for k, v in solution.items()):
+                        raise ValueError(
+                            f"check_fixtures.{cf_key} must be a non-empty mapping of path -> content")
+            if "wrong" in check_fixtures:
+                wrong = check_fixtures["wrong"]
+                if not isinstance(wrong, list) or not (1 <= len(wrong) <= 3):
+                    raise ValueError("check_fixtures.wrong must be a list of 1-3 solutions")
+                for solution in wrong:
+                    if not isinstance(solution, dict) or not solution or not all(
+                            isinstance(k, str) and isinstance(v, str) for k, v in solution.items()):
+                        raise ValueError(
+                            "check_fixtures.wrong entries must be non-empty mappings of path -> content")
+
             task = B8Task(
                 id=data["id"], shape=shape,
                 setup_repo_sha=_hash_setup_repo(setup_repo),
@@ -389,7 +487,8 @@ def load_b8_tasks(root: Path) -> list[B8Task]:
                 setup_repo=dict(setup_repo), oracle_files=dict(oracle_files),
                 protected_paths=list(protected_paths),
                 allowed_diff_paths=list(allowed_diff_paths),
-                prompt=data["prompt"], path=task_file)
+                prompt=data["prompt"], path=task_file,
+                check_fixtures=check_fixtures)
             out.append(task)
         except Exception as e:  # noqa: BLE001 - wrap with file context, mirrors b6_fixtures
             raise ValueError(f"malformed manifest {task_file}: {e}") from e

@@ -409,3 +409,87 @@ list/mapping of the right shape, a path claimed by both `setup_repo` and
 `oracle_files`, a `protected_paths` entry absent from `setup_repo`, an
 `allowed_diff_paths`/`protected_paths` overlap, `budgets` missing a
 required sub-key, or an unsupported `oracle.type`.
+
+## `check_fixtures` (Wave 3b, B8 validity program) -- OPTIONAL, test-only
+
+Codex review (B8 validity program, Wave 3b): "give every task a reference
+solution, at least one alternate valid solution, and several plausible
+incorrect or shortcut patches" -- this is the mechanism that PROVES a
+task's oracle actually discriminates (rejects wrong/shortcut solutions,
+accepts genuinely correct ones), rather than merely trusting that it does.
+`check_fixtures` is an OPTIONAL top-level manifest key, structurally
+identical in spirit to `setup_repo`/`oracle_files` (path -> content
+mappings) but semantically completely different: **nothing in
+`materialize_repo`, `run_oracle`, or `B8Harness` ever reads it.** It exists
+purely so `tests/test_task_discrimination.py` can find a task's
+proof-of-discrimination fixtures living alongside the oracle they exercise,
+instead of hand-duplicating solutions in a test file far from the manifest
+they target (the pre-Wave-3b pattern in `tests/test_harness_tasks.py`'s
+`_CORRECT_SOLUTIONS`/`_HARD_FLAWED_SOLUTIONS` dicts).
+
+**Shape:**
+
+```yaml
+check_fixtures:
+  reference:            # REQUIRED when check_fixtures is present at all
+    <path>: |
+      <a genuinely correct solution -- the oracle must PASS this>
+  alternate:             # OPTIONAL -- a second, DIFFERENT correct solution
+    <path>: |
+      <another genuinely correct solution, ideally a different approach>
+  wrong:                 # REQUIRED, 1-3 entries
+    - <path>: |
+        <a plausible-but-flawed solution -- the oracle must FAIL this>
+    - <path>: |
+        <a second plausible-but-flawed solution>
+```
+
+Each of `reference`/`alternate`/one `wrong` entry is a mapping of
+`relative/path -> full file content`, exactly like `setup_repo` -- but only
+the file(s) that solution actually needs to WRITE, not the whole repo. A
+discrimination test overlays these paths on top of an already-materialized
+`setup_repo` workspace (so an omitted file in a `wrong` entry deliberately
+LEAVES that file at its original `setup_repo` content -- itself sometimes
+the most direct "wrong" fixture, e.g. "the agent fixed one of two files it
+needed to fix").
+
+**Rules a `check_fixtures` author must follow** (not mechanically enforced
+by the loader beyond basic shape validation -- these are the properties
+that make the discrimination test meaningful):
+
+- Every solution (`reference`, `alternate`, every `wrong` entry) must only
+  ever write paths in the task's own `allowed_diff_paths` -- never a
+  `protected_paths` file. A fixture that touches a protected file gets
+  rejected by the HARD-CAP tamper/hash check (`run_oracle` steps (a)/(b)),
+  never even reaching the behavioral oracle -- that would prove the hard
+  cap works, not that the oracle discriminates, and defeats the point of
+  this convention.
+- `reference` (and `alternate`, when present) must be a solution a human
+  actually believes is CORRECT per the task's own prompt/contract -- verify
+  it against the real oracle (`run_oracle`, or the faster hermetic
+  host-subprocess path `tests/test_harness_tasks.py`'s
+  `_run_oracle_locally` uses) before committing it, not merely written to
+  "look right."
+- Each `wrong` entry should be PLAUSIBLE -- a mistake a real agent might
+  actually make (an off-by-one, a missed edge case, a copy-paste bug, an
+  unfixed original bug) -- not an absurd/deliberately-nonsensical input;
+  the discrimination proof is only meaningful against realistic failure
+  modes.
+
+**Excluded from row identity.** `check_fixtures` is deliberately EXCLUDED
+from `fixture_sha` (see `llmtest.harness.tasks._strip_check_fixtures_for_
+hash`) and never touches `setup_repo_sha` at all (that hash only ever
+covers `setup_repo`). Adding a `check_fixtures` block to an existing
+manifest, or later editing/fixing an existing one (e.g. because this
+wave's own build found a fixture that didn't discriminate -- see below),
+must never look like a fixture/oracle CONTENT change to row identity the
+way an actual `setup_repo`/`oracle_files`/`oracle` edit legitimately does
+(that case DOES bump `fixture_sha`/`task_version`, task-w3a precedent) --
+`check_fixtures` is test scaffolding, not scored task content.
+
+**Convention for Wave 4** (~40-50 new task manifests): every new manifest
+should ship its own `check_fixtures` block from the start, verified against
+the real oracle at authoring time exactly like the 11 in task-06..16.yaml
+were for Wave 3b -- see `tests/test_task_discrimination.py`'s parametrized
+test for the exact shape a new task's fixtures must satisfy (reference
+[+alternate] PASS, every `wrong` entry FAILS).
