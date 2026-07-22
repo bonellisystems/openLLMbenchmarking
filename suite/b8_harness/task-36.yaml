@@ -1,0 +1,449 @@
+id: py-state-02
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement an order lifecycle state machine from scratch, in a new file
+  `orders.py`, exposing:
+
+  - `class InvalidTransition(Exception)` -- raised for any illegal state
+    transition attempt.
+  - `class Order(order_id)` -- `.order_id` is stored as given; `.state`
+    starts as the string `"pending"`; `.history` starts as the list
+    `["pending"]` (every state the order has ever ENTERED, in order,
+    including `"pending"` itself as the starting state).
+
+  Legal transitions ONLY: `pending -> paid` (via `.pay()`), `paid ->
+  shipped` (via `.ship()`), `shipped -> delivered` (via `.deliver()`),
+  `pending -> cancelled` (via `.cancel()`), `paid -> cancelled` (via
+  `.cancel()`). Every other transition is illegal, including: skipping a
+  step (e.g. `pending -> shipped`), going backwards, re-entering the
+  current state (e.g. calling `.pay()` twice), or transitioning out of a
+  TERMINAL state (`cancelled` or `delivered` -- once an order reaches
+  either one, no method may ever change its state again, including
+  `.cancel()` on an already-cancelled order).
+
+  Each of `.pay()`/`.ship()`/`.deliver()`/`.cancel()` either performs its
+  transition (updating `.state` and appending the NEW state to
+  `.history`) or, if the transition is illegal from the order's CURRENT
+  state, raises `InvalidTransition` -- and on an illegal attempt, `.state`
+  and `.history` must be left COMPLETELY UNCHANGED (a failed transition
+  attempt must never mutate state).
+
+  You may modify ONLY `orders.py` (a new file -- it does not exist yet).
+  Do not create or edit `order_log.py` or `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  order_log.py: |
+    from orders import InvalidTransition
+
+
+    def summarize(order):
+        """Existing caller: relies on order.order_id/.state/.history
+        exactly as documented."""
+        return f"{order.order_id}: {order.state} ({'->'.join(order.history)})"
+
+
+    def safe_pay(order):
+        """Existing caller: relies on InvalidTransition being the EXACT
+        exception type .pay() raises for an illegal attempt -- swallows
+        it, never lets any other exception type through silently."""
+        try:
+            order.pay()
+            return True
+        except InvalidTransition:
+            return False
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        scenario = textwrap.dedent('''
+            import orders
+
+            log = []
+
+
+            def check(label, got, want):
+                log.append(f"{label}={got!r}(want={want!r})" if got != want else f"{label}=OK")
+
+
+            def expect_invalid(label, fn):
+                try:
+                    fn()
+                    log.append(f"{label}=NO_EXCEPTION(want=InvalidTransition)")
+                except orders.InvalidTransition:
+                    log.append(f"{label}=OK")
+                except Exception as e:
+                    log.append(f"{label}={type(e).__name__}(want=InvalidTransition)")
+
+
+            o = orders.Order("X1")
+            check("initial_state", o.state, "pending")
+            check("initial_history", o.history, ["pending"])
+
+            expect_invalid("ship_from_pending_illegal", o.ship)
+            check("state_unchanged_after_illegal_ship", o.state, "pending")
+            check("history_unchanged_after_illegal_ship", o.history, ["pending"])
+
+            expect_invalid("deliver_from_pending_illegal", o.deliver)
+            check("state_unchanged_after_illegal_deliver", o.state, "pending")
+
+            o.pay()
+            check("state_after_pay", o.state, "paid")
+            check("history_after_pay", o.history, ["pending", "paid"])
+
+            expect_invalid("pay_twice_illegal", o.pay)
+            check("state_unchanged_after_illegal_repay", o.state, "paid")
+            check("history_unchanged_after_illegal_repay", o.history, ["pending", "paid"])
+
+            o.cancel()
+            check("state_after_cancel_from_paid", o.state, "cancelled")
+            check("history_after_cancel_from_paid", o.history, ["pending", "paid", "cancelled"])
+
+            expect_invalid("ship_from_cancelled_illegal", o.ship)
+            check("state_unchanged_after_illegal_ship_from_terminal", o.state, "cancelled")
+
+            expect_invalid("cancel_twice_illegal", o.cancel)
+            check("state_unchanged_after_double_cancel", o.state, "cancelled")
+            check("history_unchanged_after_double_cancel", o.history, ["pending", "paid", "cancelled"])
+
+            o2 = orders.Order("X2")
+            o2.pay()
+            o2.ship()
+            check("state_after_ship", o2.state, "shipped")
+            expect_invalid("cancel_after_shipped_illegal", o2.cancel)
+            check("state_unchanged_after_illegal_cancel_from_shipped", o2.state, "shipped")
+
+            o2.deliver()
+            check("state_after_deliver", o2.state, "delivered")
+            check("history_after_full_lifecycle", o2.history, ["pending", "paid", "shipped", "delivered"])
+
+            expect_invalid("cancel_from_delivered_illegal", o2.cancel)
+            check("state_unchanged_after_illegal_cancel_from_delivered", o2.state, "delivered")
+            expect_invalid("pay_from_delivered_illegal", o2.pay)
+
+            o3 = orders.Order("X3")
+            o3.cancel()  # pending -> cancelled IS legal
+            check("cancel_directly_from_pending_legal", o3.state, "cancelled")
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "Order full lifecycle scenario (legal/illegal transitions, history, no-mutation-on-failure)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # order_log.py -- the protected existing caller: exact-type
+        # exception contract and .order_id/.state/.history field contract.
+        r = _run("import orders, order_log\n"
+                  "o = orders.Order('A1')\n"
+                  "print(order_log.summarize(o))\n")
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case="order_log.summarize(fresh order)", expected="A1: pending (pending)",
+                  actual=actual, stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "A1: pending (pending)":
+            _emit(False, case="order_log.summarize(fresh order)", expected="A1: pending (pending)",
+                  actual=got, stage="behavior", reason_code="wrong_output")
+
+        r = _run("import orders, order_log\n"
+                  "o = orders.Order('A2')\n"
+                  "o.pay()\n"
+                  "print(order_log.safe_pay(o))\n")
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case="order_log.safe_pay(already-paid order)  # exact exception type contract",
+                  expected="False", actual=actual, stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "False":
+            _emit(False, case="order_log.safe_pay(already-paid order)  # exact exception type contract",
+                  expected="False", actual=got, stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [order_log.py, NOTES.md]
+allowed_diff_paths: [orders.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B2 stateful/resource-lifecycle batch) --
+  a finite state machine whose invariants only surface across a SEQUENCE
+  of transition attempts, several of them deliberately illegal from the
+  order's CURRENT state (not just "any invalid input"). Traps:
+  1. Allowing an illegal transition to still MUTATE state before
+     detecting it's illegal (e.g. `self.state = "shipped";
+     self.history.append(...)` THEN checking legality and raising) --
+     caught by the `state_unchanged_after_illegal_*` checks, which run
+     immediately after every `expect_invalid(...)` call.
+  2. Treating re-entry into the SAME state as legal (`.pay()` twice) or
+     allowing a transition out of a TERMINAL state (`cancelled`/
+     `delivered`) -- both are natural implementation slips if legality is
+     checked via "is the target state reachable from ANY earlier state in
+     history" instead of "is the target state reachable from the CURRENT
+     state, and is the current state non-terminal".
+  3. Raising a generic `Exception`/`ValueError` instead of the specific
+     `InvalidTransition` type -- `order_log.py`'s `safe_pay()` (protected)
+     only catches `InvalidTransition` by design, exactly mirroring
+     `py-xmod-06`/task-28.yaml's exception-TYPE contract, but combined
+     here with genuine state-machine sequencing (not just single-call
+     input validation).
+
+  Verified empirically (hermetic, host python): the reference passes the
+  full scenario; a `wrong` fixture that mutates state before validating
+  legality fails `state_unchanged_after_illegal_ship_from_terminal` (state
+  ends up `"shipped"` instead of staying `"cancelled"`); a `wrong` fixture
+  that allows same-state re-entry (`.pay()` twice succeeds) fails
+  `pay_twice_illegal` with `actual` `NO_EXCEPTION`; a `wrong` fixture that
+  raises `ValueError` instead of `InvalidTransition` fails
+  `order_log.safe_pay(already-paid order)` with `ValueError` propagating
+  uncaught through `safe_pay`, registering as a `behavior`/`runtime_error`
+  crash instead of the expected `False`.
+check_fixtures:
+  reference:
+    orders.py: |
+      class InvalidTransition(Exception):
+          pass
+
+
+      _TRANSITIONS = {
+          "pending": {"paid": "pay", "cancelled": "cancel"},
+          "paid": {"shipped": "ship", "cancelled": "cancel"},
+          "shipped": {"delivered": "deliver"},
+          "delivered": {},
+          "cancelled": {},
+      }
+
+
+      class Order:
+          def __init__(self, order_id):
+              self.order_id = order_id
+              self.state = "pending"
+              self.history = ["pending"]
+
+          def _transition(self, target):
+              allowed = _TRANSITIONS.get(self.state, {})
+              if target not in allowed:
+                  raise InvalidTransition(f"cannot go from {self.state!r} to {target!r}")
+              self.state = target
+              self.history.append(target)
+
+          def pay(self):
+              self._transition("paid")
+
+          def ship(self):
+              self._transition("shipped")
+
+          def deliver(self):
+              self._transition("delivered")
+
+          def cancel(self):
+              self._transition("cancelled")
+  alternate:
+    orders.py: |
+      class InvalidTransition(Exception):
+          pass
+
+
+      class Order:
+          def __init__(self, order_id):
+              self.order_id = order_id
+              self.state = "pending"
+              self.history = ["pending"]
+
+          def pay(self):
+              if self.state != "pending":
+                  raise InvalidTransition(f"cannot pay from {self.state!r}")
+              self.state = "paid"
+              self.history.append("paid")
+
+          def ship(self):
+              if self.state != "paid":
+                  raise InvalidTransition(f"cannot ship from {self.state!r}")
+              self.state = "shipped"
+              self.history.append("shipped")
+
+          def deliver(self):
+              if self.state != "shipped":
+                  raise InvalidTransition(f"cannot deliver from {self.state!r}")
+              self.state = "delivered"
+              self.history.append("delivered")
+
+          def cancel(self):
+              if self.state not in ("pending", "paid"):
+                  raise InvalidTransition(f"cannot cancel from {self.state!r}")
+              self.state = "cancelled"
+              self.history.append("cancelled")
+  wrong:
+    - orders.py: |
+        # BUG: mutates state/history BEFORE checking legality, then
+        # "rolls back" -- except it forgets to roll back .history, and
+        # more importantly the mutate-then-check pattern is fragile: this
+        # version doesn't even roll back .state correctly for terminal-
+        # state re-entry.
+        class InvalidTransition(Exception):
+            pass
+
+
+        _NEXT = {"pending": "paid", "paid": "shipped", "shipped": "delivered"}
+
+
+        class Order:
+            def __init__(self, order_id):
+                self.order_id = order_id
+                self.state = "pending"
+                self.history = ["pending"]
+
+            def _advance(self, expected_current, target):
+                self.state = target
+                self.history.append(target)
+                if expected_current not in _NEXT or _NEXT[expected_current] != target:
+                    raise InvalidTransition(f"cannot go to {target!r}")
+
+            def pay(self):
+                self._advance(self.history[-1] if self.state == "pending" else self.state, "paid")
+
+            def ship(self):
+                self._advance(self.state, "shipped")
+
+            def deliver(self):
+                self._advance(self.state, "delivered")
+
+            def cancel(self):
+                if self.state in ("cancelled", "delivered"):
+                    self.state = "cancelled"
+                    self.history.append("cancelled")
+                    raise InvalidTransition("terminal")
+                self.state = "cancelled"
+                self.history.append("cancelled")
+    - orders.py: |
+        # BUG: legality checked against "has this state ever been
+        # entered/left before" via history membership, not against the
+        # CURRENT state -- allows re-entering the current state (.pay()
+        # twice) as long as the target is somewhere reachable, and allows
+        # leaving a terminal state since it never checks state == terminal.
+        class InvalidTransition(Exception):
+            pass
+
+
+        _ORDER = ["pending", "paid", "shipped", "delivered"]
+
+
+        class Order:
+            def __init__(self, order_id):
+                self.order_id = order_id
+                self.state = "pending"
+                self.history = ["pending"]
+
+            def _forward(self, target):
+                cur_idx = _ORDER.index(self.state) if self.state in _ORDER else -1
+                tgt_idx = _ORDER.index(target) if target in _ORDER else -1
+                if tgt_idx == -1 or tgt_idx < cur_idx:
+                    raise InvalidTransition(f"cannot go to {target!r}")
+                self.state = target
+                self.history.append(target)
+
+            def pay(self):
+                self._forward("paid")
+
+            def ship(self):
+                self._forward("shipped")
+
+            def deliver(self):
+                self._forward("delivered")
+
+            def cancel(self):
+                self.state = "cancelled"
+                self.history.append("cancelled")
+    - orders.py: |
+        # BUG: raises a generic ValueError instead of the documented
+        # InvalidTransition type.
+        class InvalidTransition(Exception):
+            pass
+
+
+        _TRANSITIONS = {
+            "pending": {"paid": "pay", "cancelled": "cancel"},
+            "paid": {"shipped": "ship", "cancelled": "cancel"},
+            "shipped": {"delivered": "deliver"},
+            "delivered": {},
+            "cancelled": {},
+        }
+
+
+        class Order:
+            def __init__(self, order_id):
+                self.order_id = order_id
+                self.state = "pending"
+                self.history = ["pending"]
+
+            def _transition(self, target):
+                allowed = _TRANSITIONS.get(self.state, {})
+                if target not in allowed:
+                    raise ValueError(f"cannot go from {self.state!r} to {target!r}")
+                self.state = target
+                self.history.append(target)
+
+            def pay(self):
+                self._transition("paid")
+
+            def ship(self):
+                self._transition("shipped")
+
+            def deliver(self):
+                self._transition("delivered")
+
+            def cancel(self):
+                self._transition("cancelled")

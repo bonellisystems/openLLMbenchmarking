@@ -1,0 +1,441 @@
+id: py-state-01
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a fixed-capacity WRITE-BACK cache from scratch, in a new file
+  `cache.py`, exposing a class `WriteBackCache(capacity)`.
+
+  Semantics (this is a FIFO write-back cache, distinct from an LRU cache
+  -- pay close attention to what actually reorders eviction priority and
+  what doesn't):
+
+  - `capacity` must be a positive int; `WriteBackCache(0)` or a negative
+    capacity must raise `ValueError` at construction.
+  - `put(key, value)`: stores `value` in memory under `key` and marks that
+    entry DIRTY. If `key` is already present, this UPDATES its value and
+    marks it dirty again, but must NOT change its position in the
+    eviction queue (see below) -- only the entry's ORIGINAL insertion
+    determines eviction order, never a later update.
+  - Eviction queue is strict FIFO BY INSERTION (not by access, and not by
+    update): the OLDEST-INSERTED key still in the cache is the first
+    candidate for eviction. Whenever a `put()` would make the number of
+    in-memory entries exceed `capacity`, the oldest-inserted entry is
+    evicted immediately: if it is currently dirty, its value is written
+    to `self.backend` (a plain `dict` you expose as an attribute,
+    simulating durable storage) BEFORE it is dropped -- a dirty write must
+    never be silently lost. If it is not dirty (already flushed), it is
+    simply dropped.
+  - `get(key)`: returns the entry's current in-memory value; raises
+    `KeyError` if `key` is not currently in the cache (this cache does
+    NOT read through to `self.backend` on a miss). Accessing a key via
+    `get` never changes its eviction position (again: insertion order
+    only).
+  - `is_dirty(key)`: returns `True`/`False` for whether `key`'s in-memory
+    value has been written to `self.backend` yet; raises `KeyError` if
+    `key` is not currently in the cache.
+  - `flush()`: writes every CURRENTLY-dirty entry's value to
+    `self.backend` and clears their dirty flags. Entries stay in the
+    cache (nothing is evicted); non-dirty entries are left untouched.
+
+  An existing file, `session_store.py`, already does
+  `from cache import WriteBackCache` and calls
+  `WriteBackCache(capacity=64)` -- your class's constructor must accept
+  `capacity` as a keyword argument with that exact name.
+
+  Create ONLY `cache.py`. Do not create or edit `session_store.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  session_store.py: |
+    from cache import WriteBackCache
+
+
+    def make_session_cache():
+        """Existing caller: the cache's constructor must accept `capacity`
+        as a keyword argument."""
+        return WriteBackCache(capacity=64)
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _check_run(r, case, want):
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def main():
+        # Constructor validation.
+        for bad in [0, -1]:
+            code = (
+                "import cache\n"
+                "try:\n"
+                f"    cache.WriteBackCache({bad!r})\n"
+                "    print('NO_EXCEPTION')\n"
+                "except ValueError:\n"
+                "    print('ValueError')\n"
+                "except Exception as e:\n"
+                "    print(type(e).__name__)\n"
+            )
+            r = _run(code)
+            _check_run(r, f"WriteBackCache({bad!r})  # invalid capacity", "ValueError")
+
+        # The full multi-op scenario -- state MUST persist across the whole
+        # sequence within one subprocess (a fresh cache per subprocess would
+        # defeat the point). Each `log.append(...)` records one observation;
+        # printed as one big token compared as a single case, so any single
+        # wrong observation anywhere in the sequence fails the whole thing
+        # with the sequence position visible in `actual`.
+        scenario = textwrap.dedent('''
+            import cache as cache_mod
+
+            log = []
+
+
+            def check(label, got, want):
+                log.append(f"{label}={got!r}(want={want!r})" if got != want else f"{label}=OK")
+
+
+            c = cache_mod.WriteBackCache(2)
+            c.put("a", 1)
+            c.put("b", 2)
+            check("after_ab_dirty_a", c.is_dirty("a"), True)
+            check("after_ab_dirty_b", c.is_dirty("b"), True)
+            check("after_ab_backend", dict(c.backend), {})
+
+            c.put("c", 3)  # capacity exceeded -> evict oldest-inserted "a" (dirty) -> flush to backend
+            check("evict_a_backend", dict(c.backend), {"a": 1})
+            try:
+                c.get("a")
+                check("a_evicted", "still present", "KeyError")
+            except KeyError:
+                check("a_evicted", "KeyError", "KeyError")
+            check("get_b_after_evict", c.get("b"), 2)
+            check("get_c_after_evict", c.get("c"), 3)
+
+            c.put("b", 20)  # update existing key -- value changes, dirty stays True, FIFO position UNCHANGED
+            check("b_updated_value", c.get("b"), 20)
+            check("b_still_dirty", c.is_dirty("b"), True)
+
+            c.put("d", 4)  # capacity exceeded again -> must evict "b" (oldest by INSERTION, not by this update) -> flush b=20
+            check("evict_b_backend", dict(c.backend), {"a": 1, "b": 20})
+            try:
+                c.get("b")
+                check("b_evicted", "still present", "KeyError")
+            except KeyError:
+                check("b_evicted", "KeyError", "KeyError")
+            check("get_c_survives", c.get("c"), 3)
+            check("get_d_present", c.get("d"), 4)
+
+            c.flush()  # flushes all currently-dirty entries (c and d), evicts nothing
+            check("after_flush_backend", dict(c.backend), {"a": 1, "b": 20, "c": 3, "d": 4})
+            check("c_not_dirty_after_flush", c.is_dirty("c"), False)
+            check("d_not_dirty_after_flush", c.is_dirty("d"), False)
+            check("get_c_still_present_after_flush", c.get("c"), 3)
+
+            c.put("c", 30)  # re-dirty an existing, already-flushed entry -- FIFO position still unchanged (c is still older than d)
+            check("c_redirtied", c.is_dirty("c"), True)
+
+            c.put("e", 5)  # capacity exceeded -> evict oldest by insertion = "c" (dirty again, value 30) -> flush c=30, NOT c=3
+            check("evict_c_backend", dict(c.backend), {"a": 1, "b": 20, "c": 30, "d": 4})
+            try:
+                c.get("c")
+                check("c_evicted", "still present", "KeyError")
+            except KeyError:
+                check("c_evicted", "KeyError", "KeyError")
+            check("d_not_dirty_never_evicted", c.is_dirty("d"), False)
+            check("get_d_final", c.get("d"), 4)
+            check("get_e_final", c.get("e"), 5)
+
+            try:
+                c.get("nonexistent")
+                check("unknown_key", "still present", "KeyError")
+            except KeyError:
+                check("unknown_key", "KeyError", "KeyError")
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "WriteBackCache full lifecycle scenario (FIFO eviction, dirty tracking, flush)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # session_store.py -- the protected existing caller.
+        r = _run("import session_store\nc = session_store.make_session_cache()\nprint(c.backend)\n")
+        _check_run(r, "session_store.make_session_cache()  # constructor keyword-arg contract", "{}")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [session_store.py, NOTES.md]
+allowed_diff_paths: [cache.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B2 stateful/resource-lifecycle batch) --
+  a bounded write-back cache whose correctness only shows up across a
+  SEQUENCE of `put`/`get`/`flush` calls, not on any single call in
+  isolation ("a solution that only handles the happy single-op path
+  fails" -- the whole point of this category). Deliberately FIFO, not
+  LRU, and the biggest trap is building an LRU cache instead (a far more
+  familiar pattern, see `py-hard-algo-01`/task-14.yaml's own LRU task) --
+  the scenario specifically re-`put`s an existing key (`b`) BETWEEN two
+  evictions and asserts the SUBSEQUENT eviction still picks `b` (the
+  oldest-inserted, not oldest-updated/accessed), which an LRU
+  implementation would get backwards (protecting `b` from eviction
+  because it was "recently touched"). A second load-bearing state
+  interaction: dirty-flag correctness THROUGH a flush-then-redirty cycle
+  -- `c` is flushed (dirty cleared), then re-`put` (dirty re-armed) BEFORE
+  its eventual eviction, so the eventual flush-on-evict must write the
+  NEW value (30), not the stale already-flushed one (3) or skip flushing
+  it at all (treating it as still-clean from the earlier flush).
+
+  Verified empirically (hermetic, host python): the reference passes the
+  full scenario; an LRU-flavored `wrong` fixture (re-`put` DOES move a key
+  to the back of the eviction queue) evicts `c` instead of `b` at the
+  `evict_b_backend` step (backend ends up missing `b`'s write); a `wrong`
+  fixture that never clears the dirty flag on `flush()` (or, conversely,
+  never re-arms it on a later `put`) either double-writes stale data or
+  silently drops the eventual `c=30` write; a `wrong` fixture whose
+  `get()` reads through to `self.backend` on a miss (instead of raising
+  `KeyError`) fails the very first post-eviction `get("a")` check.
+check_fixtures:
+  reference:
+    cache.py: |
+      class WriteBackCache:
+          def __init__(self, capacity):
+              if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:
+                  raise ValueError("capacity must be a positive int")
+              self.capacity = capacity
+              self.backend = {}
+              self._values = {}
+              self._dirty = {}
+              self._order = []  # insertion order, oldest first
+
+          def put(self, key, value):
+              if key not in self._values:
+                  self._order.append(key)
+              self._values[key] = value
+              self._dirty[key] = True
+              while len(self._values) > self.capacity:
+                  self._evict_oldest()
+
+          def _evict_oldest(self):
+              oldest = self._order.pop(0)
+              if self._dirty.get(oldest):
+                  self.backend[oldest] = self._values[oldest]
+              del self._values[oldest]
+              del self._dirty[oldest]
+
+          def get(self, key):
+              if key not in self._values:
+                  raise KeyError(key)
+              return self._values[key]
+
+          def is_dirty(self, key):
+              if key not in self._values:
+                  raise KeyError(key)
+              return self._dirty[key]
+
+          def flush(self):
+              for key in list(self._values):
+                  if self._dirty[key]:
+                      self.backend[key] = self._values[key]
+                      self._dirty[key] = False
+  wrong:
+    - cache.py: |
+        # BUG: LRU semantics -- get() AND put()-on-existing-key both move
+        # the key to the back of the eviction queue, so a recently
+        # updated/accessed key is (wrongly) protected from eviction.
+        class WriteBackCache:
+            def __init__(self, capacity):
+                if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:
+                    raise ValueError("capacity must be a positive int")
+                self.capacity = capacity
+                self.backend = {}
+                self._values = {}
+                self._dirty = {}
+                self._order = []
+
+            def _touch(self, key):
+                if key in self._order:
+                    self._order.remove(key)
+                self._order.append(key)
+
+            def put(self, key, value):
+                self._values[key] = value
+                self._dirty[key] = True
+                self._touch(key)
+                while len(self._values) > self.capacity:
+                    self._evict_oldest()
+
+            def _evict_oldest(self):
+                oldest = self._order.pop(0)
+                if self._dirty.get(oldest):
+                    self.backend[oldest] = self._values[oldest]
+                del self._values[oldest]
+                del self._dirty[oldest]
+
+            def get(self, key):
+                if key not in self._values:
+                    raise KeyError(key)
+                self._touch(key)
+                return self._values[key]
+
+            def is_dirty(self, key):
+                if key not in self._values:
+                    raise KeyError(key)
+                return self._dirty[key]
+
+            def flush(self):
+                for key in list(self._values):
+                    if self._dirty[key]:
+                        self.backend[key] = self._values[key]
+                        self._dirty[key] = False
+    - cache.py: |
+        # BUG: flush() clears dirty flags but a later put() on an
+        # already-flushed key does NOT re-mark it dirty (only brand-new
+        # keys get dirty=True) -- so its eventual eviction silently drops
+        # the update instead of flushing it.
+        class WriteBackCache:
+            def __init__(self, capacity):
+                if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:
+                    raise ValueError("capacity must be a positive int")
+                self.capacity = capacity
+                self.backend = {}
+                self._values = {}
+                self._dirty = {}
+                self._order = []
+
+            def put(self, key, value):
+                is_new = key not in self._values
+                if is_new:
+                    self._order.append(key)
+                    self._dirty[key] = True
+                self._values[key] = value
+                while len(self._values) > self.capacity:
+                    self._evict_oldest()
+
+            def _evict_oldest(self):
+                oldest = self._order.pop(0)
+                if self._dirty.get(oldest):
+                    self.backend[oldest] = self._values[oldest]
+                del self._values[oldest]
+                del self._dirty[oldest]
+
+            def get(self, key):
+                if key not in self._values:
+                    raise KeyError(key)
+                return self._values[key]
+
+            def is_dirty(self, key):
+                if key not in self._values:
+                    raise KeyError(key)
+                return self._dirty[key]
+
+            def flush(self):
+                for key in list(self._values):
+                    if self._dirty[key]:
+                        self.backend[key] = self._values[key]
+                        self._dirty[key] = False
+    - cache.py: |
+        # BUG: get() reads through to self.backend on a miss instead of
+        # raising KeyError -- an evicted key looks like it never left.
+        class WriteBackCache:
+            def __init__(self, capacity):
+                if not isinstance(capacity, int) or isinstance(capacity, bool) or capacity <= 0:
+                    raise ValueError("capacity must be a positive int")
+                self.capacity = capacity
+                self.backend = {}
+                self._values = {}
+                self._dirty = {}
+                self._order = []
+
+            def put(self, key, value):
+                if key not in self._values:
+                    self._order.append(key)
+                self._values[key] = value
+                self._dirty[key] = True
+                while len(self._values) > self.capacity:
+                    self._evict_oldest()
+
+            def _evict_oldest(self):
+                oldest = self._order.pop(0)
+                if self._dirty.get(oldest):
+                    self.backend[oldest] = self._values[oldest]
+                del self._values[oldest]
+                del self._dirty[oldest]
+
+            def get(self, key):
+                if key in self._values:
+                    return self._values[key]
+                if key in self.backend:
+                    return self.backend[key]
+                raise KeyError(key)
+
+            def is_dirty(self, key):
+                if key not in self._values:
+                    raise KeyError(key)
+                return self._dirty[key]
+
+            def flush(self):
+                for key in list(self._values):
+                    if self._dirty[key]:
+                        self.backend[key] = self._values[key]
+                        self._dirty[key] = False

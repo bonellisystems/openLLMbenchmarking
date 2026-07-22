@@ -1,0 +1,445 @@
+id: py-state-03
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a streaming batch aggregator from scratch, in a new file
+  `aggregator.py`, exposing a class `BatchAggregator()`.
+
+  - `add(value)`: records `value` (a number) into the CURRENT batch.
+  - `end_batch()`: closes the current batch and returns a dict
+    `{"count": ..., "sum": ..., "min": ..., "max": ..., "avg": ...}`
+    describing ONLY the values added since the previous `end_batch()`
+    call (or since construction, for the first batch). After returning,
+    the PER-BATCH accumulators (count/sum/min/max for the batch just
+    closed) are reset to empty -- the NEXT batch starts from scratch, with
+    no leftover values, especially no leftover `min`/`max` from the
+    previous batch. If `end_batch()` is called with NO values added since
+    the last boundary (an empty batch), it must raise `ValueError`
+    instead of returning a dict (there's nothing to summarize, and no
+    division-by-zero `avg` should ever be computed or returned).
+  - `grand_count()` / `grand_sum()` / `grand_min()` / `grand_max()`: each
+    returns the corresponding aggregate across EVERY value ever `add()`ed
+    across ALL batches ever closed (and the batch currently in progress) --
+    these must NEVER be reset by `end_batch()`, unlike the per-batch
+    accumulators. On a fresh instance with no `add()` calls yet,
+    `grand_count()` is `0` and `grand_sum()` is `0` (must not raise);
+    `grand_min()`/`grand_max()` on a fresh instance with no data raise
+    `ValueError` (there is no minimum/maximum of an empty set).
+
+  An existing file, `report.py`, already calls `end_batch()` and the
+  grand-total methods together -- must keep working exactly as written.
+
+  Create ONLY `aggregator.py`. Do not create or edit `report.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  report.py: |
+    def batch_report(agg):
+        """Existing caller: closes the current batch and reports it
+        alongside the running grand totals."""
+        b = agg.end_batch()
+        return f"batch: n={b['count']} avg={b['avg']:.2f} | grand: n={agg.grand_count()} sum={agg.grand_sum()}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        scenario = textwrap.dedent('''
+            import aggregator
+
+            log = []
+
+
+            def check(label, got, want):
+                ok = got == want
+                if isinstance(want, float) or isinstance(got, float):
+                    try:
+                        ok = abs(float(got) - float(want)) < 0.005
+                    except (TypeError, ValueError):
+                        ok = False
+                log.append(f"{label}={got!r}(want={want!r})" if not ok else f"{label}=OK")
+
+
+            def expect_value_error(label, fn):
+                try:
+                    fn()
+                    log.append(f"{label}=NO_EXCEPTION(want=ValueError)")
+                except ValueError:
+                    log.append(f"{label}=OK")
+                except Exception as e:
+                    log.append(f"{label}={type(e).__name__}(want=ValueError)")
+
+
+            agg = aggregator.BatchAggregator()
+            check("fresh_grand_count", agg.grand_count(), 0)
+            check("fresh_grand_sum", agg.grand_sum(), 0)
+            expect_value_error("fresh_grand_min_raises", agg.grand_min)
+            expect_value_error("fresh_grand_max_raises", agg.grand_max)
+            expect_value_error("end_batch_with_no_adds_raises", agg.end_batch)
+
+            agg.add(10)
+            agg.add(20)
+            agg.add(30)
+            b1 = agg.end_batch()
+            check("b1_count", b1["count"], 3)
+            check("b1_sum", b1["sum"], 60)
+            check("b1_min", b1["min"], 10)
+            check("b1_max", b1["max"], 30)
+            check("b1_avg", b1["avg"], 20.0)
+
+            expect_value_error("end_batch_immediately_again_raises", agg.end_batch)
+
+            agg.add(5)
+            b2 = agg.end_batch()
+            check("b2_count", b2["count"], 1)
+            check("b2_sum", b2["sum"], 5)
+            check("b2_min_no_stale_leak", b2["min"], 5)
+            check("b2_max_no_stale_leak", b2["max"], 5)
+            check("b2_avg", b2["avg"], 5.0)
+
+            check("grand_count_persists_across_batches", agg.grand_count(), 4)
+            check("grand_sum_persists_across_batches", agg.grand_sum(), 65)
+
+            agg.add(-5)
+            agg.add(100)
+            b3 = agg.end_batch()
+            check("b3_count", b3["count"], 2)
+            check("b3_sum", b3["sum"], 95)
+            check("b3_min", b3["min"], -5)
+            check("b3_max", b3["max"], 100)
+            check("b3_avg", b3["avg"], 47.5)
+
+            check("grand_count_final", agg.grand_count(), 6)
+            check("grand_sum_final", agg.grand_sum(), 160)
+            check("grand_min_final", agg.grand_min(), -5)
+            check("grand_max_final", agg.grand_max(), 100)
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "BatchAggregator full lifecycle scenario (per-batch reset, grand-total persistence, empty-batch guard)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # report.py -- the protected existing caller.
+        r = _run("import aggregator, report\n"
+                  "agg = aggregator.BatchAggregator()\n"
+                  "agg.add(4)\nagg.add(6)\n"
+                  "print(report.batch_report(agg))\n")
+        want = "batch: n=2 avg=5.00 | grand: n=2 sum=10"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case="report.batch_report(agg)", expected=want,
+                  actual=actual, stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case="report.batch_report(agg)", expected=want,
+                  actual=got, stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [report.py, NOTES.md]
+allowed_diff_paths: [aggregator.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B2 stateful/resource-lifecycle batch) --
+  an accumulator with TWO layers of state that must reset on opposite
+  schedules: per-batch (count/sum/min/max), reset at every `end_batch()`
+  boundary, versus grand totals, which must NEVER reset. Traps, each
+  isolating one direction of the mistake:
+  1. STALE min/max leaking across a boundary -- a very natural bug if
+     `min`/`max` are tracked as running values updated via
+     `min(self._min, value)` without re-initializing them to `None`/unset
+     at the START of a new batch; `b2_min_no_stale_leak`/
+     `b2_max_no_stale_leak` specifically follow a HIGH first batch
+     (10-30) with a LOW second batch (just `5`), so a leaked previous
+     `min=10` would wrongly win over the new batch's true min of `5`
+     (min(10, 5) = 5, so *this specific* leak wouldn't actually show --
+     the check is deliberately on `max` too, where a leaked `max=30`
+     WOULD wrongly beat the new batch's true max of `5}` and stay 30).
+  2. The OPPOSITE mistake -- resetting the GRAND totals along with the
+     per-batch ones (e.g. one shared set of counters reused for both
+     purposes) -- caught by `grand_count_persists_across_batches` and
+     `grand_sum_persists_across_batches`, checked right after the second
+     `end_batch()`, when a conflating implementation would have reset
+     grand_count back down to 1 instead of accumulating to 4.
+  3. Missing the empty-batch guard (`end_batch()` called with zero `add()`
+     calls since the last boundary) -- either crashing with
+     `ZeroDivisionError` while computing `avg` instead of raising
+     `ValueError`, or (worse) silently returning a bogus all-zero/None
+     dict.
+
+  Verified empirically (hermetic, host python): the reference passes the
+  full scenario; a `wrong` fixture that never resets per-batch min/max
+  fails `b2_max_no_stale_leak` (`actual` `30`, want `5`); a `wrong`
+  fixture that shares one counter set for both per-batch and grand totals
+  fails `grand_count_persists_across_batches` (`actual` `1`, want `4`); a
+  `wrong` fixture with no empty-batch guard fails
+  `end_batch_immediately_again_raises` with a `ZeroDivisionError` crash
+  (stage `behavior`, reason_code `runtime_error`).
+check_fixtures:
+  reference:
+    aggregator.py: |
+      class BatchAggregator:
+          def __init__(self):
+              self._count = 0
+              self._sum = 0
+              self._min = None
+              self._max = None
+              self._grand_count = 0
+              self._grand_sum = 0
+              self._grand_min = None
+              self._grand_max = None
+
+          def add(self, value):
+              self._count += 1
+              self._sum += value
+              self._min = value if self._min is None else min(self._min, value)
+              self._max = value if self._max is None else max(self._max, value)
+              self._grand_count += 1
+              self._grand_sum += value
+              self._grand_min = value if self._grand_min is None else min(self._grand_min, value)
+              self._grand_max = value if self._grand_max is None else max(self._grand_max, value)
+
+          def end_batch(self):
+              if self._count == 0:
+                  raise ValueError("cannot end an empty batch")
+              result = {
+                  "count": self._count,
+                  "sum": self._sum,
+                  "min": self._min,
+                  "max": self._max,
+                  "avg": self._sum / self._count,
+              }
+              self._count = 0
+              self._sum = 0
+              self._min = None
+              self._max = None
+              return result
+
+          def grand_count(self):
+              return self._grand_count
+
+          def grand_sum(self):
+              return self._grand_sum
+
+          def grand_min(self):
+              if self._grand_min is None:
+                  raise ValueError("no values yet")
+              return self._grand_min
+
+          def grand_max(self):
+              if self._grand_max is None:
+                  raise ValueError("no values yet")
+              return self._grand_max
+  wrong:
+    - aggregator.py: |
+        # BUG: per-batch min/max are never reset at a batch boundary --
+        # they carry over as running lifetime values (identical to the
+        # grand ones), so a later, lower-range batch's max is masked by
+        # an earlier batch's higher max.
+        class BatchAggregator:
+            def __init__(self):
+                self._count = 0
+                self._sum = 0
+                self._min = None
+                self._max = None
+                self._grand_count = 0
+                self._grand_sum = 0
+                self._grand_min = None
+                self._grand_max = None
+
+            def add(self, value):
+                self._count += 1
+                self._sum += value
+                self._min = value if self._min is None else min(self._min, value)
+                self._max = value if self._max is None else max(self._max, value)
+                self._grand_count += 1
+                self._grand_sum += value
+                self._grand_min = value if self._grand_min is None else min(self._grand_min, value)
+                self._grand_max = value if self._grand_max is None else max(self._grand_max, value)
+
+            def end_batch(self):
+                if self._count == 0:
+                    raise ValueError("cannot end an empty batch")
+                result = {
+                    "count": self._count,
+                    "sum": self._sum,
+                    "min": self._min,
+                    "max": self._max,
+                    "avg": self._sum / self._count,
+                }
+                self._count = 0
+                self._sum = 0
+                # BUG: self._min / self._max intentionally NOT reset here.
+                return result
+
+            def grand_count(self):
+                return self._grand_count
+
+            def grand_sum(self):
+                return self._grand_sum
+
+            def grand_min(self):
+                if self._grand_min is None:
+                    raise ValueError("no values yet")
+                return self._grand_min
+
+            def grand_max(self):
+                if self._grand_max is None:
+                    raise ValueError("no values yet")
+                return self._grand_max
+    - aggregator.py: |
+        # BUG: no separate grand-total state at all -- grand_count()/
+        # grand_sum() just report the CURRENT (per-batch) accumulators,
+        # which end_batch() resets, so grand totals wrongly reset too.
+        class BatchAggregator:
+            def __init__(self):
+                self._count = 0
+                self._sum = 0
+                self._min = None
+                self._max = None
+
+            def add(self, value):
+                self._count += 1
+                self._sum += value
+                self._min = value if self._min is None else min(self._min, value)
+                self._max = value if self._max is None else max(self._max, value)
+
+            def end_batch(self):
+                if self._count == 0:
+                    raise ValueError("cannot end an empty batch")
+                result = {
+                    "count": self._count,
+                    "sum": self._sum,
+                    "min": self._min,
+                    "max": self._max,
+                    "avg": self._sum / self._count,
+                }
+                self._count = 0
+                self._sum = 0
+                self._min = None
+                self._max = None
+                return result
+
+            def grand_count(self):
+                return self._count
+
+            def grand_sum(self):
+                return self._sum
+
+            def grand_min(self):
+                if self._min is None:
+                    raise ValueError("no values yet")
+                return self._min
+
+            def grand_max(self):
+                if self._max is None:
+                    raise ValueError("no values yet")
+                return self._max
+    - aggregator.py: |
+        # BUG: no empty-batch guard -- end_batch() on zero adds crashes
+        # with ZeroDivisionError instead of raising ValueError.
+        class BatchAggregator:
+            def __init__(self):
+                self._count = 0
+                self._sum = 0
+                self._min = None
+                self._max = None
+                self._grand_count = 0
+                self._grand_sum = 0
+                self._grand_min = None
+                self._grand_max = None
+
+            def add(self, value):
+                self._count += 1
+                self._sum += value
+                self._min = value if self._min is None else min(self._min, value)
+                self._max = value if self._max is None else max(self._max, value)
+                self._grand_count += 1
+                self._grand_sum += value
+                self._grand_min = value if self._grand_min is None else min(self._grand_min, value)
+                self._grand_max = value if self._grand_max is None else max(self._grand_max, value)
+
+            def end_batch(self):
+                result = {
+                    "count": self._count,
+                    "sum": self._sum,
+                    "min": self._min,
+                    "max": self._max,
+                    "avg": self._sum / self._count,
+                }
+                self._count = 0
+                self._sum = 0
+                self._min = None
+                self._max = None
+                return result
+
+            def grand_count(self):
+                return self._grand_count
+
+            def grand_sum(self):
+                return self._grand_sum
+
+            def grand_min(self):
+                if self._grand_min is None:
+                    raise ValueError("no values yet")
+                return self._grand_min
+
+            def grand_max(self):
+                if self._grand_max is None:
+                    raise ValueError("no values yet")
+                return self._grand_max

@@ -1,0 +1,334 @@
+id: py-feat-06
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small request router, split across 2 files:
+
+  - `router.py` -- the EXISTING engine. `ROUTES` is a dict mapping path ->
+    `(handler_fn, required_role)`. `route(path, required_role=None)` is a
+    decorator: `@route("/x")` registers a handler with no role
+    requirement; `@route("/x", required_role="admin")` registers one that
+    requires the caller's role to match exactly. `handle(path, role,
+    *args)` looks `path` up in `ROUTES` (raising `LookupError` if it isn't
+    registered), and -- ONLY if a `required_role` was registered for that
+    path AND the caller's `role` doesn't match it -- raises
+    `PermissionError` WITHOUT calling the handler at all; otherwise calls
+    `handler_fn(*args)` and returns its result. This enforcement is
+    centralized here; individual handlers are never expected to check
+    roles themselves.
+  - `handlers.py` -- the EXISTING handlers, already registered via the
+    `@route` decorator: `status_handler` (`@route("/status")`, no args,
+    returns `"ok"`) and `profile_handler` (`@route("/profile")`, takes
+    `username`, returns `f"profile: {username}"`).
+
+  Add a new handler, `reset_handler(target)`, to `handlers.py`, registered
+  at path `"/admin/reset"` and requiring role `"admin"` -- use the SAME
+  `@route(...)` decorator mechanism the two existing handlers use (do not
+  invent a separate, handler-internal role check; the router's own
+  `required_role` enforcement is the single place authorization is meant
+  to live). `reset_handler` itself should simply return `f"reset:
+  {target}"` -- it does not need to know anything about roles.
+
+  You may modify ONLY `handlers.py`. Do not create or edit `router.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 14}
+setup_repo:
+  router.py: |
+    ROUTES = {}
+
+
+    def route(path, required_role=None):
+        """Existing decorator: registers the decorated function at `path`
+        in ROUTES, alongside the required role (None = no restriction)."""
+        def deco(fn):
+            ROUTES[path] = (fn, required_role)
+            return fn
+        return deco
+
+
+    def handle(path, role, *args):
+        """Existing engine: centralized authorization. Looks `path` up
+        (LookupError if unregistered); if a required_role was registered
+        and `role` doesn't match it, raises PermissionError WITHOUT
+        calling the handler; otherwise calls it and returns its result."""
+        if path not in ROUTES:
+            raise LookupError(f"no such route: {path}")
+        fn, required_role = ROUTES[path]
+        if required_role is not None and role != required_role:
+            raise PermissionError(f"requires role {required_role}")
+        return fn(*args)
+  handlers.py: |
+    from router import route
+
+
+    @route("/status")
+    def status_handler():
+        return "ok"
+
+
+    @route("/profile")
+    def profile_handler(username):
+        return f"profile: {username}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _check_exact(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _check_type(code, case, want_type_name):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want_type_name, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want_type_name:
+            _emit(False, case=case, expected=want_type_name, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _raises_code(expr):
+        return (
+            "import handlers, router\n"
+            "try:\n"
+            f"    {expr}\n"
+            "    print('NO_EXCEPTION')\n"
+            "except PermissionError:\n"
+            "    print('PermissionError')\n"
+            "except LookupError:\n"
+            "    print('LookupError')\n"
+            "except Exception as e:\n"
+            "    print(type(e).__name__)\n"
+        )
+
+
+    def main():
+        # New route works end-to-end for the admin role.
+        _check_exact(
+            "import handlers, router\nprint(router.handle('/admin/reset', 'admin', 'server1'))\n",
+            "handle('/admin/reset', 'admin', 'server1')", "reset: server1")
+        _check_exact(
+            "import handlers, router\nprint(router.handle('/admin/reset', 'admin', 'db:5'))\n",
+            "handle('/admin/reset', 'admin', 'db:5')  # edge: target itself contains a colon", "reset: db:5")
+
+        # Non-admin caller must be rejected -- and REJECTED VIA THE ROUTER'S
+        # OWN enforcement, not a handler-internal check: confirmed both by
+        # the exception type from handle() itself...
+        _check_type(_raises_code("router.handle('/admin/reset', 'guest', 'server1')"),
+                    "handle('/admin/reset', 'guest', 'server1')  # wrong role", "PermissionError")
+        _check_type(_raises_code("router.handle('/admin/reset', None, 'server1')"),
+                    "handle('/admin/reset', None, 'server1')  # no role at all", "PermissionError")
+
+        # ...AND directly, by confirming the route was registered through
+        # the real @route(..., required_role=...) mechanism (ROUTES itself
+        # carries "admin"), not a bespoke in-handler role check that
+        # would leave ROUTES's required_role slot at None.
+        _check_exact(
+            "import handlers, router\nprint(router.ROUTES['/admin/reset'][1])\n",
+            "router.ROUTES['/admin/reset'][1]  # the registered required_role", "admin")
+
+        # Regression: pre-existing unrestricted routes still work exactly
+        # as before, for any role (including None).
+        _check_exact(
+            "import handlers, router\nprint(router.handle('/status', 'anyone'))\n",
+            "handle('/status', 'anyone')  # regression, no role required", "ok")
+        _check_exact(
+            "import handlers, router\nprint(router.handle('/status', None))\n",
+            "handle('/status', None)  # regression, no role at all", "ok")
+        _check_exact(
+            "import handlers, router\nprint(router.handle('/profile', 'anyone', 'alice'))\n",
+            "handle('/profile', 'anyone', 'alice')  # regression", "profile: alice")
+
+        # Regression: an unregistered path still raises LookupError.
+        _check_type(_raises_code("router.handle('/nope', 'admin')"),
+                    "handle('/nope', 'admin')  # regression, unknown path", "LookupError")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [router.py, NOTES.md]
+allowed_diff_paths: [handlers.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B2 feature-integration batch) -- register a
+  new handler into an existing route/authorization dispatcher, REUSING
+  the centralized enforcement mechanism rather than reimplementing it
+  ad hoc. `router.py` (protected) is the single place role-checking is
+  meant to live: `handle()` consults `ROUTES[path][1]` (the
+  `required_role` an `@route(...)` call recorded) BEFORE ever invoking the
+  handler function. The most direct way this discipline is checked:
+  `router.ROUTES['/admin/reset'][1] == "admin"` is asserted DIRECTLY, not
+  just "does `handle()` reject a bad role" -- a solution that registers
+  the route (`@route("/admin/reset")`) but FORGETS the `required_role`
+  kwarg entirely leaves it wide open to any caller, and fails both the
+  `handle('/admin/reset', 'guest', ...)` case (a `PermissionError` was
+  expected, but the call quietly succeeds instead) AND the direct
+  `ROUTES[...][1]` check (`actual` `None`, want `"admin"`) -- belt and
+  suspenders on the same real security-relevant bug ("forgot to actually
+  restrict the new admin-only route"). Also: since `route`'s signature is
+  `route(path, required_role=None)`, a plausible argument-order slip
+  (`@route("admin", "/admin/reset")`, positionally swapping the two)
+  registers under the wrong PATH entirely, caught by every case that
+  calls `handle('/admin/reset', ...)`, which raises `LookupError` instead
+  of the expected result.
+
+  Verified empirically (hermetic, host python): the reference passes every
+  case; a `wrong` fixture that registers `/admin/reset` with no
+  `required_role` passes the admin-role case but fails
+  `handle('/admin/reset', 'guest', ...)` (`actual` `NO_EXCEPTION`, want
+  `PermissionError`) and the direct `ROUTES[...][1]` check (`actual`
+  `None`); a `wrong` fixture that forgets to register the new route at
+  all fails immediately with `LookupError` on the very first case; a
+  `wrong` fixture with path/required_role positionally swapped fails the
+  same way (route registered under `"admin"`, not `"/admin/reset"`).
+check_fixtures:
+  reference:
+    handlers.py: |
+      from router import route
+
+
+      @route("/status")
+      def status_handler():
+          return "ok"
+
+
+      @route("/profile")
+      def profile_handler(username):
+          return f"profile: {username}"
+
+
+      @route("/admin/reset", required_role="admin")
+      def reset_handler(target):
+          return f"reset: {target}"
+  alternate:
+    handlers.py: |
+      from router import route
+
+
+      @route("/status")
+      def status_handler():
+          return "ok"
+
+
+      @route("/profile")
+      def profile_handler(username):
+          return f"profile: {username}"
+
+
+      def _reset_impl(target):
+          return f"reset: {target}"
+
+
+      reset_handler = route("/admin/reset", "admin")(_reset_impl)
+  wrong:
+    - handlers.py: |
+        from router import route
+
+
+        @route("/status")
+        def status_handler():
+            return "ok"
+
+
+        @route("/profile")
+        def profile_handler(username):
+            return f"profile: {username}"
+
+
+        # BUG: registered the path but forgot the required_role kwarg --
+        # ANY caller (including an unauthenticated/guest role) can now
+        # reach the handler; the router's own enforcement was never told
+        # this route needs restricting.
+        @route("/admin/reset")
+        def reset_handler(target):
+            return f"reset: {target}"
+    - handlers.py: |
+        from router import route
+
+
+        @route("/status")
+        def status_handler():
+            return "ok"
+
+
+        @route("/profile")
+        def profile_handler(username):
+            return f"profile: {username}"
+
+
+        # BUG: handler written but never registered at all.
+        def reset_handler(target):
+            return f"reset: {target}"
+    - handlers.py: |
+        from router import route
+
+
+        @route("/status")
+        def status_handler():
+            return "ok"
+
+
+        @route("/profile")
+        def profile_handler(username):
+            return f"profile: {username}"
+
+
+        # BUG: arguments swapped -- registers under path "admin" with
+        # required_role "/admin/reset" instead of the intended pairing.
+        @route("admin", "/admin/reset")
+        def reset_handler(target):
+            return f"reset: {target}"

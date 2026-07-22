@@ -1,0 +1,364 @@
+id: py-feat-01
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small record-validation pipeline, split across 2 files:
+
+  - `validators.py` -- a list `VALIDATORS` of individual validator
+    functions, each `def v(record: dict) -> list[str]`, returning a LIST
+    of human-readable error strings (empty list if the record passes that
+    one check). Two validators already exist:
+    - `required_field(record)` -- returns `["missing name"]` if
+      `record["name"]` is missing, `None`, or an empty/falsy string,
+      else `[]`.
+    - `positive_amount(record)` -- returns `["amount must be positive"]`
+      if `record.get("amount", 0)` is not a positive number, else `[]`.
+  - `pipeline.py` -- the EXISTING caller, `validate_record(record)`:
+    ```python
+    def validate_record(record):
+        errors = []
+        for v in VALIDATORS:
+            errors.extend(v(record))
+        return errors
+    ```
+    This relies ENTIRELY on every validator in `VALIDATORS` following the
+    contract above: always a LIST of strings, NEVER a bare string, NEVER
+    an exception (even for missing/wrong-type fields), and NEVER a
+    mutation of `record` itself. Must keep working exactly as written.
+
+  Add a new validator, `valid_currency`, to `validators.py`, and register
+  it by appending it to `VALIDATORS` (order relative to the existing two
+  does not matter). Contract: `record["currency"]` must be EXACTLY one of
+  the three strings `"USD"`, `"EUR"`, `"GBP"` (case-SENSITIVE -- `"usd"`
+  is invalid). If `record` has no `"currency"` key at all, or the value is
+  not a string, or it's a string that isn't one of those three exact
+  values, `valid_currency` must return `["invalid currency"]`. It must
+  NEVER raise (not even `KeyError` for a missing key or `TypeError` for a
+  non-string value), and it must return a genuine `list`, never a bare
+  string (a bare string would silently get iterated character-by-character
+  by `pipeline.py`'s `errors.extend(...)`, corrupting the error list
+  instead of failing loudly). It must not mutate `record`.
+
+  You may modify ONLY `validators.py`. Do not create or edit any other
+  file (including `pipeline.py` or `NOTES.md`).
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 240, tokens: 5000, steps: 12}
+setup_repo:
+  validators.py: |
+    def required_field(record):
+        """Contract: record["name"] must be present and a truthy (non-empty)
+        string; NEVER raises, ALWAYS returns a list of error strings."""
+        if not record.get("name"):
+            return ["missing name"]
+        return []
+
+
+    def positive_amount(record):
+        """Contract: record.get("amount", 0) must be a positive number;
+        NEVER raises, ALWAYS returns a list of error strings."""
+        amount = record.get("amount", 0)
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+            return ["amount must be positive"]
+        return []
+
+
+    VALIDATORS = [required_field, positive_amount]
+  pipeline.py: |
+    from validators import VALIDATORS
+
+
+    def validate_record(record):
+        """Existing caller: runs every validator in VALIDATORS against
+        `record` and concatenates their error lists. Relies entirely on
+        each validator in VALIDATORS returning a real list of strings and
+        never raising or mutating `record` -- see validators.py's own
+        docstrings for the exact per-validator contract."""
+        errors = []
+        for v in VALIDATORS:
+            errors.extend(v(record))
+        return errors
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _check(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    # Every record below already passes required_field/positive_amount, so
+    # any discrepancy is isolated to the new valid_currency check -- except
+    # the last two cases, which combine a currency failure with an existing
+    # validator's failure to prove registration didn't disturb the others.
+    # `want` lists are pre-SORTED because the prompt explicitly says
+    # VALIDATORS registration order (relative to the existing two) doesn't
+    # matter -- the oracle sorts the actual output the same way so it
+    # doesn't accidentally pin an order the contract never promised.
+    CURRENCY_CASES = [
+        ({"name": "a", "amount": 10, "currency": "USD"}, []),
+        ({"name": "a", "amount": 10, "currency": "EUR"}, []),
+        ({"name": "a", "amount": 10, "currency": "GBP"}, []),
+        ({"name": "a", "amount": 10, "currency": "CAD"}, ["invalid currency"]),
+        ({"name": "a", "amount": 10}, ["invalid currency"]),
+        ({"name": "a", "amount": 10, "currency": "usd"}, ["invalid currency"]),
+        ({"name": "a", "amount": 10, "currency": 123}, ["invalid currency"]),
+        ({"name": "a", "amount": 10, "currency": None}, ["invalid currency"]),
+        ({"amount": -5, "currency": "EUR"},
+         sorted(["missing name", "amount must be positive"])),
+        ({"name": "", "amount": 10, "currency": "XYZ"},
+         sorted(["missing name", "invalid currency"])),
+    ]
+
+
+    def _check_pipeline():
+        for record, want in CURRENCY_CASES:
+            code = (f"import pipeline\nprint(sorted(pipeline.validate_record({record!r})))\n")
+            case = f"validate_record({record!r})"
+            _check(code, case, str(want))
+
+
+    def _check_no_mutation():
+        # The record dict passed in must come out byte-identical -- a
+        # validator that does e.g. record.setdefault("currency", "USD")
+        # to "fix" a missing key instead of just reporting it would
+        # silently corrupt the caller's own data.
+        record = {"name": "a", "amount": 10}
+        code = (
+            "import pipeline\n"
+            f"record = {record!r}\n"
+            "pipeline.validate_record(record)\n"
+            "print(record == " + repr(record) + ")\n"
+        )
+        case = "validate_record() must not mutate its input record"
+        _check(code, case, "True")
+
+
+    def _check_returns_real_list():
+        # If valid_currency returns a bare string "invalid currency"
+        # instead of ["invalid currency"], errors.extend(...) would add
+        # one character per position -- len() would be 16, not 1.
+        record = {"name": "a", "amount": 10, "currency": "CAD"}
+        code = (
+            "import pipeline\n"
+            f"errs = pipeline.validate_record({record!r})\n"
+            "print(len(errs))\n"
+        )
+        case = "len(validate_record(...)) for a single bad-currency record"
+        _check(code, case, "1")
+
+
+    def main():
+        _check_pipeline()
+        _check_no_mutation()
+        _check_returns_real_list()
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [pipeline.py, NOTES.md]
+allowed_diff_paths: [validators.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B2 feature-integration batch) -- adding a
+  new rule to an EXISTING validation-pipeline registry. `pipeline.py`
+  (protected) is the existing caller: it iterates `VALIDATORS` and
+  `.extend()`s each validator's result, which structurally REQUIRES every
+  entry (including the new one) to return a real `list[str]`, never raise,
+  and never mutate its input -- exactly the "must slot into an existing
+  architecture and respect its patterns" brief. Traps, in increasing
+  subtlety:
+  1. Forgetting to APPEND to `VALIDATORS` at all -- the currency check
+     would simply never run, caught by every non-empty-currency-error
+     case.
+  2. Raising `KeyError`/`TypeError` for a missing/non-string `currency`
+     instead of returning `["invalid currency"]` -- caught by the
+     missing-key and non-str (`123`, `None`) cases via `_classify_crash`.
+  3. Case-INsensitive matching (accepting `"usd"`) -- a very natural
+     "helpful" broadening that is nonetheless wrong per the stated
+     contract; caught by the `"usd"` case.
+  4. Returning a bare string `"invalid currency"` instead of a one-element
+     list -- passes every per-record error-list comparison by coincidence
+     for a SINGLE bad-currency record IF the test only checked
+     `"invalid currency" in str(errors)`, but the `len(errors) == 1` check
+     specifically catches `errors.extend("invalid currency")` silently
+     exploding into 16 one-character entries.
+  5. "Fixing" a missing/invalid currency by mutating the input record
+     (e.g. `record["currency"] = "USD"`) instead of just reporting the
+     error -- caught by the no-mutation check.
+
+  Verified empirically (hermetic, host python): the reference (below)
+  passes every case; a `wrong` fixture that returns a bare string instead
+  of a list fails the `len(errors) == 1` check (`actual` becomes `16`, not
+  `1`); a `wrong` fixture that does case-insensitive matching fails the
+  `"usd"` case; a `wrong` fixture that raises `KeyError` on a missing
+  `currency` key fails with stage `behavior`, reason_code `runtime_error`
+  on that case.
+check_fixtures:
+  reference:
+    validators.py: |
+      def required_field(record):
+          if not record.get("name"):
+              return ["missing name"]
+          return []
+
+
+      def positive_amount(record):
+          amount = record.get("amount", 0)
+          if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+              return ["amount must be positive"]
+          return []
+
+
+      def valid_currency(record):
+          value = record.get("currency")
+          if value in ("USD", "EUR", "GBP"):
+              return []
+          return ["invalid currency"]
+
+
+      VALIDATORS = [required_field, positive_amount, valid_currency]
+  alternate:
+    validators.py: |
+      def required_field(record):
+          if not record.get("name"):
+              return ["missing name"]
+          return []
+
+
+      def positive_amount(record):
+          amount = record.get("amount", 0)
+          if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+              return ["amount must be positive"]
+          return []
+
+
+      _VALID_CURRENCIES = frozenset({"USD", "EUR", "GBP"})
+
+
+      def valid_currency(record):
+          value = record.get("currency")
+          if not isinstance(value, str):
+              return ["invalid currency"]
+          return [] if value in _VALID_CURRENCIES else ["invalid currency"]
+
+
+      VALIDATORS = [valid_currency, required_field, positive_amount]
+  wrong:
+    - validators.py: |
+        def required_field(record):
+            if not record.get("name"):
+                return ["missing name"]
+            return []
+
+
+        def positive_amount(record):
+            amount = record.get("amount", 0)
+            if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+                return ["amount must be positive"]
+            return []
+
+
+        def valid_currency(record):
+            # BUG: bare string, not a list -- errors.extend(...) will
+            # iterate it character-by-character.
+            if record.get("currency") in ("USD", "EUR", "GBP"):
+                return []
+            return "invalid currency"
+
+
+        VALIDATORS = [required_field, positive_amount, valid_currency]
+    - validators.py: |
+        def required_field(record):
+            if not record.get("name"):
+                return ["missing name"]
+            return []
+
+
+        def positive_amount(record):
+            amount = record.get("amount", 0)
+            if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+                return ["amount must be positive"]
+            return []
+
+
+        def valid_currency(record):
+            # BUG: case-insensitive, and crashes on a missing/non-str key
+            # instead of reporting an error.
+            if record["currency"].upper() in ("USD", "EUR", "GBP"):
+                return []
+            return ["invalid currency"]
+
+
+        VALIDATORS = [required_field, positive_amount, valid_currency]
+    - validators.py: |
+        def required_field(record):
+            if not record.get("name"):
+                return ["missing name"]
+            return []
+
+
+        def positive_amount(record):
+            amount = record.get("amount", 0)
+            if not isinstance(amount, (int, float)) or isinstance(amount, bool) or amount <= 0:
+                return ["amount must be positive"]
+            return []
+
+
+        def valid_currency(record):
+            # BUG: registered but never actually appended to VALIDATORS --
+            # a plausible "forgot to wire it in" slip.
+            if record.get("currency") in ("USD", "EUR", "GBP"):
+                return []
+            return ["invalid currency"]
+
+
+        VALIDATORS = [required_field, positive_amount]

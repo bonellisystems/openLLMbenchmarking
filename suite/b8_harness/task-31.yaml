@@ -1,0 +1,364 @@
+id: py-feat-03
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small publish/subscribe event system, split across 3 files:
+
+  - `eventbus.py` -- the EXISTING engine, `EventBus`: `.subscribe(event_type,
+    handler)` appends `handler` to that event type's subscriber list
+    (order preserved, multiple handlers per event type are supported);
+    `.publish(event_type, payload)` calls EVERY subscribed handler for
+    `event_type`, in subscription order, with `payload`, and returns a
+    list of their return values (an unknown `event_type` with no
+    subscribers yields an empty list, never an error).
+  - `handlers.py` -- individual handler functions plus `register_all(bus)`,
+    which wires them up. Two handlers already exist and are already wired:
+    `log_handler(payload)` (subscribed to `"info"`, returns `f"LOG:
+    {payload}"`) and `error_counter(payload)` (subscribed to `"error"`,
+    increments a module-level counter and returns `f"ERROR_COUNT: {n}"`
+    where `n` is the running count).
+  - `app.py` -- the EXISTING caller, `build_app()`: constructs an
+    `EventBus`, calls `register_all(bus)` on it, and returns the bus. Must
+    keep working exactly as written.
+
+  Add a new handler, `alert_handler(payload)`, to `handlers.py`, and
+  subscribe it to the `"error"` event type ALONGSIDE the existing
+  `error_counter` handler (both must fire when `"error"` is published --
+  do not replace or remove `error_counter`'s subscription). Contract:
+  `alert_handler` must RETURN (not print) the string
+  `f"ALERT: {message} (severity={severity})"`, where `message` is
+  `payload.get("message", "")` and `severity` is
+  `payload.get("severity", "unknown")` -- it must never raise, even for a
+  `payload` missing one or both keys (or an empty dict).
+
+  You may modify ONLY `handlers.py`. Do not create or edit `eventbus.py`,
+  `app.py`, or `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 14}
+setup_repo:
+  eventbus.py: |
+    from collections import defaultdict
+
+
+    class EventBus:
+        """Existing pub/sub engine. subscribe() appends to a per-event-type
+        list (subscription order preserved, multiple handlers allowed);
+        publish() calls every subscribed handler in order and collects
+        their RETURN values into a list (an event type with no
+        subscribers returns [], never an error)."""
+
+        def __init__(self):
+            self._subs = defaultdict(list)
+
+        def subscribe(self, event_type, handler):
+            self._subs[event_type].append(handler)
+
+        def publish(self, event_type, payload):
+            return [handler(payload) for handler in self._subs[event_type]]
+  handlers.py: |
+    def log_handler(payload):
+        return f"LOG: {payload}"
+
+
+    _error_count = {"n": 0}
+
+
+    def error_counter(payload):
+        _error_count["n"] += 1
+        return f"ERROR_COUNT: {_error_count['n']}"
+
+
+    def register_all(bus):
+        """Existing wiring: subscribes every handler in this module to its
+        event type. Must keep subscribing log_handler to "info" and
+        error_counter to "error" exactly as today."""
+        bus.subscribe("info", log_handler)
+        bus.subscribe("error", error_counter)
+  app.py: |
+    from eventbus import EventBus
+    from handlers import register_all
+
+
+    def build_app():
+        """Existing caller: builds a fully-wired EventBus via
+        register_all(). Must keep working exactly as written."""
+        bus = EventBus()
+        register_all(bus)
+        return bus
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _check_exact(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _publish_code(event_type, payload):
+        # Each scenario builds a FRESH app (fresh EventBus, fresh
+        # module-level error_counter state, since it's a new subprocess),
+        # publishes ONCE, and prints the result as a SET (order of
+        # multiple handlers for the same event type isn't part of the
+        # contract being tested here, only membership/count) EXCEPT the
+        # "info" case, which has exactly one subscriber and is checked
+        # as an exact list.
+        return (
+            "import app\n"
+            "bus = app.build_app()\n"
+            f"result = bus.publish({event_type!r}, {payload!r})\n"
+            "print(sorted(str(x) for x in result))\n"
+        )
+
+
+    def main():
+        # Regression: "info" untouched, single subscriber, exact list.
+        _check_exact(
+            "import app\nbus = app.build_app()\n"
+            "print(bus.publish('info', 'hi'))\n",
+            "publish('info', 'hi')  # regression, single subscriber", "['LOG: hi']")
+
+        # "error" must now have TWO subscribers: error_counter (unchanged)
+        # and the new alert_handler -- both fire, in a fresh bus each time
+        # so error_counter's count is always 1 in each of these cases.
+        _check_exact(
+            _publish_code("error", {"message": "disk full", "severity": "critical"}),
+            "publish('error', full payload)  # both handlers fire",
+            str(sorted(["ERROR_COUNT: 1", "ALERT: disk full (severity=critical)"])))
+        _check_exact(
+            _publish_code("error", {"message": "oops"}),
+            "publish('error', missing severity)  # defaults to 'unknown'",
+            str(sorted(["ERROR_COUNT: 1", "ALERT: oops (severity=unknown)"])))
+        _check_exact(
+            _publish_code("error", {}),
+            "publish('error', {})  # both keys missing, must not raise",
+            str(sorted(["ERROR_COUNT: 1", "ALERT:  (severity=unknown)"])))
+        _check_exact(
+            _publish_code("error", {"severity": "low"}),
+            "publish('error', missing message)  # defaults to ''",
+            str(sorted(["ERROR_COUNT: 1", "ALERT:  (severity=low)"])))
+
+        # Exactly two handlers fire for "error" -- catches a solution that
+        # only registered alert_handler and dropped error_counter, or vice
+        # versa, or that never actually called bus.subscribe() at all.
+        _check_exact(
+            "import app\nbus = app.build_app()\n"
+            "print(len(bus.publish('error', {'message': 'x', 'severity': 'y'})))\n",
+            "len(publish('error', ...))  # exactly 2 subscribers", "2")
+
+        # Regression: an unregistered event type still returns [], never errors.
+        _check_exact(
+            "import app\nbus = app.build_app()\n"
+            "print(bus.publish('warning', {}))\n",
+            "publish('warning', {})  # regression, no subscribers", "[]")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [eventbus.py, app.py, NOTES.md]
+allowed_diff_paths: [handlers.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B2 feature-integration batch) -- register a
+  new handler into an EXISTING pub/sub dispatcher, coexisting with an
+  already-registered handler for the SAME event type (not a fresh event
+  type with no prior subscribers), which is the real coupling test: the
+  natural-but-wrong move is to `bus.subscribe("error", alert_handler)`
+  by REPLACING the existing `error_counter` wiring rather than adding
+  alongside it (e.g. rewriting `register_all` sloppily and dropping the
+  `error_counter` line), which the `len(...) == 2` and
+  `error_counter`-presence checks both catch. Traps:
+  1. Never calling `bus.subscribe("error", alert_handler)` at all (wrote
+     the handler function but forgot to wire it) -- every `"error"` case
+     shows only 1 result instead of 2.
+  2. Dropping the existing `error_counter` subscription while adding the
+     new one -- same symptom, `len(...) == 1`, but the surviving element
+     is the ALERT string, not the ERROR_COUNT one, so the len-2 check and
+     the exact-set checks both independently catch this (whichever
+     handler is missing).
+  3. `alert_handler` PRINTING instead of RETURNING its message -- `publish`
+     collects return values into a list; a `print`-only handler returns
+     `None` implicitly, so the set comparison shows `'None'` where the
+     ALERT string was expected.
+  4. Crashing on a missing `"message"`/`"severity"` key (e.g. `payload
+     ["message"]` instead of `payload.get("message", "")`) -- caught by
+     the missing-key cases via `_classify_crash`.
+
+  Verified empirically (hermetic, host python): the reference passes every
+  case; a `wrong` fixture where `alert_handler` prints instead of returns
+  fails the full-payload case with `actual` containing `'None'` instead of
+  the ALERT string; a `wrong` fixture that never subscribes
+  `alert_handler` fails the `len(...) == 2` case with `actual` `'1'`; a
+  `wrong` fixture that replaces (rather than adds to) the `"error"`
+  subscription fails the same len-2 case and additionally drops the
+  `ERROR_COUNT` string from the set-comparison cases.
+check_fixtures:
+  reference:
+    handlers.py: |
+      def log_handler(payload):
+          return f"LOG: {payload}"
+
+
+      _error_count = {"n": 0}
+
+
+      def error_counter(payload):
+          _error_count["n"] += 1
+          return f"ERROR_COUNT: {_error_count['n']}"
+
+
+      def alert_handler(payload):
+          message = payload.get("message", "")
+          severity = payload.get("severity", "unknown")
+          return f"ALERT: {message} (severity={severity})"
+
+
+      def register_all(bus):
+          bus.subscribe("info", log_handler)
+          bus.subscribe("error", error_counter)
+          bus.subscribe("error", alert_handler)
+  alternate:
+    handlers.py: |
+      def log_handler(payload):
+          return f"LOG: {payload}"
+
+
+      _error_count = {"n": 0}
+
+
+      def error_counter(payload):
+          _error_count["n"] += 1
+          return f"ERROR_COUNT: {_error_count['n']}"
+
+
+      def _format_alert(message, severity):
+          return f"ALERT: {message} (severity={severity})"
+
+
+      def alert_handler(payload):
+          return _format_alert(payload.get("message") or "", payload.get("severity") or "unknown")
+
+
+      def register_all(bus):
+          bus.subscribe("error", alert_handler)
+          bus.subscribe("info", log_handler)
+          bus.subscribe("error", error_counter)
+  wrong:
+    - handlers.py: |
+        def log_handler(payload):
+            return f"LOG: {payload}"
+
+
+        _error_count = {"n": 0}
+
+
+        def error_counter(payload):
+            _error_count["n"] += 1
+            return f"ERROR_COUNT: {_error_count['n']}"
+
+
+        def alert_handler(payload):
+            # BUG: prints instead of returning.
+            message = payload.get("message", "")
+            severity = payload.get("severity", "unknown")
+            print(f"ALERT: {message} (severity={severity})")
+
+
+        def register_all(bus):
+            bus.subscribe("info", log_handler)
+            bus.subscribe("error", error_counter)
+            bus.subscribe("error", alert_handler)
+    - handlers.py: |
+        def log_handler(payload):
+            return f"LOG: {payload}"
+
+
+        _error_count = {"n": 0}
+
+
+        def error_counter(payload):
+            _error_count["n"] += 1
+            return f"ERROR_COUNT: {_error_count['n']}"
+
+
+        def alert_handler(payload):
+            message = payload.get("message", "")
+            severity = payload.get("severity", "unknown")
+            return f"ALERT: {message} (severity={severity})"
+
+
+        def register_all(bus):
+            # BUG: handler written correctly but never wired up.
+            bus.subscribe("info", log_handler)
+            bus.subscribe("error", error_counter)
+    - handlers.py: |
+        def log_handler(payload):
+            return f"LOG: {payload}"
+
+
+        _error_count = {"n": 0}
+
+
+        def error_counter(payload):
+            _error_count["n"] += 1
+            return f"ERROR_COUNT: {_error_count['n']}"
+
+
+        def alert_handler(payload):
+            # BUG: KeyError on a missing key instead of a default.
+            return f"ALERT: {payload['message']} (severity={payload.get('severity', 'unknown')})"
+
+
+        def register_all(bus):
+            # BUG: replaces (doesn't add to) the "error" subscription.
+            bus.subscribe("info", log_handler)
+            bus.subscribe("error", alert_handler)

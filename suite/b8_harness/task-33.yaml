@@ -1,0 +1,549 @@
+id: py-feat-05
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small shape system, split across 2 files:
+
+  - `shapes.py` -- an abstract base class `Shape` with two abstract
+    methods, `area(self)` and `perimeter(self)`. Two concrete shapes
+    already exist and are correct: `Rectangle(width, height)` and
+    `Circle(radius)`. Both VALIDATE EAGERLY, in `__init__`, raising
+    `ValueError` immediately at construction time if any dimension is not
+    a positive number -- NOT lazily, the first time `area()`/`perimeter()`
+    happens to be called.
+  - `shape_report.py` -- the EXISTING caller: `describe(shape)` (returns
+    `f"{type(shape).__name__}: area={shape.area():.2f},
+    perimeter={shape.perimeter():.2f}"`) and `total_area(shapes)` (returns
+    `sum(s.area() for s in shapes)`). Must keep working exactly as
+    written.
+
+  Add a new concrete shape, `Triangle(a, b, c)` (three side lengths), to
+  `shapes.py`, following the SAME pattern `Rectangle`/`Circle` already
+  use:
+  - `area()` via Heron's formula: `s = (a+b+c)/2`,
+    `area = sqrt(s*(s-a)*(s-b)*(s-c))`.
+  - `perimeter()` is `a+b+c`.
+  - VALIDATE EAGERLY, in `__init__`, exactly like the two existing shapes:
+    raise `ValueError` immediately at construction time -- BEFORE
+    `area()`/`perimeter()` is ever called -- if any side is not a positive
+    number, OR if the three sides don't satisfy the triangle inequality
+    (each side must be strictly less than the sum of the other two; three
+    sides that can't form a real triangle, e.g. `(1, 1, 3)`, are invalid).
+
+  You may modify ONLY `shapes.py`. Do not create or edit `shape_report.py`
+  or `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 14}
+setup_repo:
+  shapes.py: |
+    from abc import ABC, abstractmethod
+    import math
+
+
+    class Shape(ABC):
+        @abstractmethod
+        def area(self):
+            raise NotImplementedError
+
+        @abstractmethod
+        def perimeter(self):
+            raise NotImplementedError
+
+
+    class Rectangle(Shape):
+        def __init__(self, width, height):
+            if not (isinstance(width, (int, float)) and isinstance(height, (int, float))):
+                raise ValueError("width and height must be numbers")
+            if width <= 0 or height <= 0:
+                raise ValueError("width and height must be positive")
+            self.width = width
+            self.height = height
+
+        def area(self):
+            return self.width * self.height
+
+        def perimeter(self):
+            return 2 * (self.width + self.height)
+
+
+    class Circle(Shape):
+        def __init__(self, radius):
+            if not isinstance(radius, (int, float)):
+                raise ValueError("radius must be a number")
+            if radius <= 0:
+                raise ValueError("radius must be positive")
+            self.radius = radius
+
+        def area(self):
+            return math.pi * self.radius ** 2
+
+        def perimeter(self):
+            return 2 * math.pi * self.radius
+  shape_report.py: |
+    def describe(shape):
+        """Existing caller: must keep working for any Shape, including
+        Triangle once it exists."""
+        return f"{type(shape).__name__}: area={shape.area():.2f}, perimeter={shape.perimeter():.2f}"
+
+
+    def total_area(shapes):
+        """Existing caller: sums area() across a mixed list of shapes."""
+        return sum(s.area() for s in shapes)
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _numeric_match(out, want, tol=0.005):
+        try:
+            return abs(float(out) - float(want)) < tol
+        except ValueError:
+            return False
+
+
+    def _check_numeric(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=str(want), actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if not _numeric_match(got, want):
+            _emit(False, case=case, expected=str(want), actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _check_exact(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _check_type(code, case, want_type_name):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want_type_name, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want_type_name:
+            _emit(False, case=case, expected=want_type_name, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _construct_raises_code(expr):
+        # Deliberately does NOT call .area()/.perimeter() -- only
+        # constructs -- to prove validation happens EAGERLY in __init__,
+        # not lazily inside a method.
+        return (
+            "import shapes\n"
+            "try:\n"
+            f"    {expr}\n"
+            "    print('NO_EXCEPTION')\n"
+            "except ValueError:\n"
+            "    print('ValueError')\n"
+            "except Exception as e:\n"
+            "    print(type(e).__name__)\n"
+        )
+
+
+    def main():
+        _check_numeric(
+            "import shapes\nprint(shapes.Triangle(3, 4, 5).area())\n",
+            "Triangle(3, 4, 5).area()  # right triangle", 6.0)
+        _check_numeric(
+            "import shapes\nprint(shapes.Triangle(3, 4, 5).perimeter())\n",
+            "Triangle(3, 4, 5).perimeter()", 12.0)
+        _check_numeric(
+            "import shapes\nprint(shapes.Triangle(2, 2, 2).area())\n",
+            "Triangle(2, 2, 2).area()  # equilateral", 1.7320508)
+        _check_numeric(
+            "import shapes\nprint(shapes.Triangle(2, 2, 2).perimeter())\n",
+            "Triangle(2, 2, 2).perimeter()", 6.0)
+
+        # EAGER validation: raises at CONSTRUCTION, before area()/perimeter()
+        # is ever called.
+        _check_type(_construct_raises_code("shapes.Triangle(1, 1, 3)"),
+                    "Triangle(1, 1, 3)  # violates triangle inequality, construction only", "ValueError")
+        _check_type(_construct_raises_code("shapes.Triangle(-1, 2, 2)"),
+                    "Triangle(-1, 2, 2)  # negative side, construction only", "ValueError")
+        _check_type(_construct_raises_code("shapes.Triangle(0, 2, 2)"),
+                    "Triangle(0, 2, 2)  # zero side, construction only", "ValueError")
+        _check_type(_construct_raises_code("shapes.Triangle(5, 1, 1)"),
+                    "Triangle(5, 1, 1)  # degenerate/impossible, construction only", "ValueError")
+        _check_type(_construct_raises_code("shapes.Triangle(2, 1, 1)"),
+                    "Triangle(2, 1, 1)  # exact boundary (2 == 1+1), STRICT inequality required", "ValueError")
+        _check_type(_construct_raises_code("shapes.Triangle('3', 4, 5)"),
+                    "Triangle('3', 4, 5)  # non-numeric side, must be ValueError not TypeError", "ValueError")
+
+        # describe()/total_area() -- the protected existing callers.
+        _check_exact(
+            "import shapes, shape_report\nprint(shape_report.describe(shapes.Triangle(3, 4, 5)))\n",
+            "shape_report.describe(Triangle(3, 4, 5))", "Triangle: area=6.00, perimeter=12.00")
+        _check_numeric(
+            "import shapes, shape_report\n"
+            "print(shape_report.total_area([shapes.Rectangle(2, 3), shapes.Triangle(3, 4, 5), shapes.Circle(1)]))\n",
+            "shape_report.total_area([Rectangle, Triangle, Circle])", 6 + 6 + 3.14159265)
+
+        # Regression: Rectangle/Circle must still validate correctly --
+        # shapes.py is agent-editable (not hash-protected), so this is the
+        # only thing catching accidental collateral damage while adding
+        # Triangle.
+        _check_type(_construct_raises_code("shapes.Rectangle(-1, 2)"),
+                    "Rectangle(-1, 2)  # regression", "ValueError")
+        _check_type(_construct_raises_code("shapes.Circle(0)"),
+                    "Circle(0)  # regression", "ValueError")
+        _check_numeric(
+            "import shapes\nprint(shapes.Rectangle(2, 3).area())\n",
+            "Rectangle(2, 3).area()  # regression", 6.0)
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [shape_report.py, NOTES.md]
+allowed_diff_paths: [shapes.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B2 feature-integration batch) -- implement
+  a new subclass against an existing ABC, matching not just its ABSTRACT
+  METHOD signatures but an unwritten-but-observable PATTERN the existing
+  concrete classes follow: eager (`__init__`-time) validation rather than
+  lazy (first-method-call-time) validation. The trap is exactly this
+  timing distinction -- deferring the triangle-inequality/positivity check
+  into `area()`/`perimeter()` (e.g. `if self._is_valid(): ... else: raise
+  ValueError(...)` written inside `area()`) would make every case that
+  calls `.area()`/`.perimeter()` on an invalid triangle still correctly
+  raise, but a construction-only check (build the object, never call a
+  method on it) would silently succeed -- exactly what
+  `_construct_raises_code` isolates by deliberately NOT calling either
+  method. Also tests: the triangle inequality itself, STRICT not
+  non-strict -- `(5, 1, 1)` is an outright violation (5 > 1+1) any
+  reasonable check catches, but the load-bearing boundary case is
+  `(2, 1, 1)` (2 == 1+1 exactly, three colinear points, not a real
+  triangle), which only a STRICT `<` (equivalently `>=` on the "invalid"
+  side of the check) rejects -- a non-strict `<=`/`>` variant wrongly
+  accepts it. A separate case, a non-numeric side (`Triangle('3', 4,
+  5)`), isolates the type-check half of validation from the
+  positivity/inequality half: interestingly, a negative or zero side is
+  ALWAYS caught by the strict pairwise-sum inequality alone (a algebraic
+  consequence: if one side is <= 0, at least one of the other two
+  pairwise-sum comparisons is forced to trigger), so positivity checks add
+  no NEW coverage beyond what the inequality already catches for numeric
+  input -- but a non-numeric side bypasses the inequality's own `<`/`>=`
+  comparison with a `TypeError`, not a `ValueError`, unless there's an
+  explicit `isinstance` guard first. Also non-regression on the two
+  pre-existing shapes (since `shapes.py` is agent-editable, not protected,
+  so a clumsy rewrite could break `Rectangle`/`Circle` without tripping
+  any hard-cap check).
+
+  Verified empirically (hermetic, host python): the reference passes every
+  case; a `wrong` fixture that validates lazily (inside `area()`/
+  `perimeter()` rather than `__init__`) passes every case EXCEPT the six
+  construction-only ones, which report `actual` `NO_EXCEPTION`; a `wrong`
+  fixture using a non-strict triangle-inequality check wrongly accepts the
+  `(2, 1, 1)` boundary case at construction (`actual` `NO_EXCEPTION`,
+  want `ValueError`); a `wrong` fixture that drops the `isinstance` type
+  check (but keeps the correct strict inequality) wrongly lets
+  `Triangle('3', 4, 5)` raise `TypeError` instead of `ValueError`.
+check_fixtures:
+  reference:
+    shapes.py: |
+      from abc import ABC, abstractmethod
+      import math
+
+
+      class Shape(ABC):
+          @abstractmethod
+          def area(self):
+              raise NotImplementedError
+
+          @abstractmethod
+          def perimeter(self):
+              raise NotImplementedError
+
+
+      class Rectangle(Shape):
+          def __init__(self, width, height):
+              if not (isinstance(width, (int, float)) and isinstance(height, (int, float))):
+                  raise ValueError("width and height must be numbers")
+              if width <= 0 or height <= 0:
+                  raise ValueError("width and height must be positive")
+              self.width = width
+              self.height = height
+
+          def area(self):
+              return self.width * self.height
+
+          def perimeter(self):
+              return 2 * (self.width + self.height)
+
+
+      class Circle(Shape):
+          def __init__(self, radius):
+              if not isinstance(radius, (int, float)):
+                  raise ValueError("radius must be a number")
+              if radius <= 0:
+                  raise ValueError("radius must be positive")
+              self.radius = radius
+
+          def area(self):
+              return math.pi * self.radius ** 2
+
+          def perimeter(self):
+              return 2 * math.pi * self.radius
+
+
+      class Triangle(Shape):
+          def __init__(self, a, b, c):
+              for side in (a, b, c):
+                  if not isinstance(side, (int, float)) or side <= 0:
+                      raise ValueError("all sides must be positive numbers")
+              if a >= b + c or b >= a + c or c >= a + b:
+                  raise ValueError("sides do not satisfy the triangle inequality")
+              self.a, self.b, self.c = a, b, c
+
+          def area(self):
+              s = (self.a + self.b + self.c) / 2
+              return math.sqrt(s * (s - self.a) * (s - self.b) * (s - self.c))
+
+          def perimeter(self):
+              return self.a + self.b + self.c
+  wrong:
+    - shapes.py: |
+        from abc import ABC, abstractmethod
+        import math
+
+
+        class Shape(ABC):
+            @abstractmethod
+            def area(self):
+                raise NotImplementedError
+
+            @abstractmethod
+            def perimeter(self):
+                raise NotImplementedError
+
+
+        class Rectangle(Shape):
+            def __init__(self, width, height):
+                if not (isinstance(width, (int, float)) and isinstance(height, (int, float))):
+                    raise ValueError("width and height must be numbers")
+                if width <= 0 or height <= 0:
+                    raise ValueError("width and height must be positive")
+                self.width = width
+                self.height = height
+
+            def area(self):
+                return self.width * self.height
+
+            def perimeter(self):
+                return 2 * (self.width + self.height)
+
+
+        class Circle(Shape):
+            def __init__(self, radius):
+                if not isinstance(radius, (int, float)):
+                    raise ValueError("radius must be a number")
+                if radius <= 0:
+                    raise ValueError("radius must be positive")
+                self.radius = radius
+
+            def area(self):
+                return math.pi * self.radius ** 2
+
+            def perimeter(self):
+                return 2 * math.pi * self.radius
+
+
+        class Triangle(Shape):
+            # BUG: validation deferred into area()/perimeter() instead of
+            # happening eagerly in __init__.
+            def __init__(self, a, b, c):
+                self.a, self.b, self.c = a, b, c
+
+            def _validate(self):
+                for side in (self.a, self.b, self.c):
+                    if not isinstance(side, (int, float)) or side <= 0:
+                        raise ValueError("all sides must be positive numbers")
+                if self.a >= self.b + self.c or self.b >= self.a + self.c or self.c >= self.a + self.b:
+                    raise ValueError("sides do not satisfy the triangle inequality")
+
+            def area(self):
+                self._validate()
+                s = (self.a + self.b + self.c) / 2
+                return math.sqrt(s * (s - self.a) * (s - self.b) * (s - self.c))
+
+            def perimeter(self):
+                self._validate()
+                return self.a + self.b + self.c
+    - shapes.py: |
+        from abc import ABC, abstractmethod
+        import math
+
+
+        class Shape(ABC):
+            @abstractmethod
+            def area(self):
+                raise NotImplementedError
+
+            @abstractmethod
+            def perimeter(self):
+                raise NotImplementedError
+
+
+        class Rectangle(Shape):
+            def __init__(self, width, height):
+                if not (isinstance(width, (int, float)) and isinstance(height, (int, float))):
+                    raise ValueError("width and height must be numbers")
+                if width <= 0 or height <= 0:
+                    raise ValueError("width and height must be positive")
+                self.width = width
+                self.height = height
+
+            def area(self):
+                return self.width * self.height
+
+            def perimeter(self):
+                return 2 * (self.width + self.height)
+
+
+        class Circle(Shape):
+            def __init__(self, radius):
+                if not isinstance(radius, (int, float)):
+                    raise ValueError("radius must be a number")
+                if radius <= 0:
+                    raise ValueError("radius must be positive")
+                self.radius = radius
+
+            def area(self):
+                return math.pi * self.radius ** 2
+
+            def perimeter(self):
+                return 2 * math.pi * self.radius
+
+
+        class Triangle(Shape):
+            # BUG: non-strict triangle inequality (<=) wrongly accepts
+            # degenerate "triangles".
+            def __init__(self, a, b, c):
+                for side in (a, b, c):
+                    if not isinstance(side, (int, float)) or side <= 0:
+                        raise ValueError("all sides must be positive numbers")
+                if a > b + c or b > a + c or c > a + b:
+                    raise ValueError("sides do not satisfy the triangle inequality")
+                self.a, self.b, self.c = a, b, c
+
+            def area(self):
+                s = (self.a + self.b + self.c) / 2
+                return math.sqrt(max(0.0, s * (s - self.a) * (s - self.b) * (s - self.c)))
+
+            def perimeter(self):
+                return self.a + self.b + self.c
+    - shapes.py: |
+        from abc import ABC, abstractmethod
+        import math
+
+
+        class Shape(ABC):
+            @abstractmethod
+            def area(self):
+                raise NotImplementedError
+
+            @abstractmethod
+            def perimeter(self):
+                raise NotImplementedError
+
+
+        class Rectangle(Shape):
+            def __init__(self, width, height):
+                if not (isinstance(width, (int, float)) and isinstance(height, (int, float))):
+                    raise ValueError("width and height must be numbers")
+                if width <= 0 or height <= 0:
+                    raise ValueError("width and height must be positive")
+                self.width = width
+                self.height = height
+
+            def area(self):
+                return self.width * self.height
+
+            def perimeter(self):
+                return 2 * (self.width + self.height)
+
+
+        class Circle(Shape):
+            def __init__(self, radius):
+                if not isinstance(radius, (int, float)):
+                    raise ValueError("radius must be a number")
+                if radius <= 0:
+                    raise ValueError("radius must be positive")
+                self.radius = radius
+
+            def area(self):
+                return math.pi * self.radius ** 2
+
+            def perimeter(self):
+                return 2 * math.pi * self.radius
+
+
+        class Triangle(Shape):
+            # BUG: no positivity check at all -- only the triangle
+            # inequality, so a negative/zero side slips through.
+            def __init__(self, a, b, c):
+                if a >= b + c or b >= a + c or c >= a + b:
+                    raise ValueError("sides do not satisfy the triangle inequality")
+                self.a, self.b, self.c = a, b, c
+
+            def area(self):
+                s = (self.a + self.b + self.c) / 2
+                return math.sqrt(s * (s - self.a) * (s - self.b) * (s - self.c))
+
+            def perimeter(self):
+                return self.a + self.b + self.c

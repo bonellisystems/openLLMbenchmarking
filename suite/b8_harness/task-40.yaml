@@ -1,0 +1,446 @@
+id: py-state-06
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a paginated iterator from scratch, in a new file
+  `paginator.py`, exposing a class `PageIterator(fetch_page, page_size=3)`
+  that implements the iterator protocol (`__iter__`/`__next__`).
+
+  `fetch_page(page_index)` is a callable (0-indexed) returning a `list`
+  of up to `page_size` items for that page. Contract:
+
+  - `PageIterator` yields every item from every page, IN ORDER, one item
+    per `next()`/loop iteration.
+  - A page is the LAST page if it returns FEWER than `page_size` items
+    (this includes an EMPTY list, `[]`). After yielding that page's
+    items (if any), further `next()` calls raise `StopIteration` -- and
+    the NEXT page must never be fetched (there's no reason to, the
+    short page already proved it was the last one).
+  - A page returning EXACTLY `page_size` items is NOT automatically the
+    last page -- the FOLLOWING page must still be fetched to find out
+    (it might turn out to be empty, which is itself how the end is
+    discovered).
+  - Each page index is fetched from `fetch_page` AT MOST ONCE ever,
+    no matter how it's used -- cache every page's result the first time
+    it's fetched.
+  - `.reset()`: restarts iteration from the very first item. It must NOT
+    call `fetch_page` again for any page already in the cache -- a
+    `for` loop (or manual `next()` calls) run again after `.reset()`
+    must reproduce the exact same full sequence of items using ONLY
+    already-cached pages, making zero additional `fetch_page` calls, as
+    long as no page beyond what was already fetched is needed again.
+  - Once exhausted (`StopIteration` raised), calling `next()` again must
+    keep raising `StopIteration` (never crash with a different exception,
+    never silently start over, never attempt to fetch a page that was
+    already established not to exist).
+
+  An existing file, `browse.py`, already does `list(PageIterator(fetch_page,
+  page_size))` (relying on the standard iterator protocol via `list()`) --
+  must keep working exactly as written.
+
+  Create ONLY `paginator.py`. Do not create or edit `browse.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 480, tokens: 9000, steps: 20}
+setup_repo:
+  browse.py: |
+    from paginator import PageIterator
+
+
+    def collect_all(fetch_page, page_size=3):
+        """Existing caller: relies on PageIterator implementing the
+        standard __iter__/__next__ protocol well enough for list() to
+        exhaust it fully, in order, exactly once."""
+        return list(PageIterator(fetch_page, page_size))
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        scenario = textwrap.dedent('''
+            from paginator import PageIterator
+
+            log = []
+
+
+            def check(label, got, want):
+                log.append(f"{label}={got!r}(want={want!r})" if got != want else f"{label}=OK")
+
+
+            def make_fetcher(pages):
+                calls = {"n": 0}
+
+                def fetch_page(i):
+                    calls["n"] += 1
+                    if 0 <= i < len(pages):
+                        return list(pages[i])
+                    return []
+
+                return fetch_page, calls
+
+
+            # Scenario A: three full-size pages, last one partial (2 < 3).
+            pagesA = [[1, 2, 3], [4, 5, 6], [7, 8]]
+            fetchA, callsA = make_fetcher(pagesA)
+            itA = PageIterator(fetchA, page_size=3)
+            check("A_item1", next(itA), 1)
+            check("A_item2", next(itA), 2)
+            check("A_item3", next(itA), 3)
+            check("A_item4", next(itA), 4)
+            check("A_item5", next(itA), 5)
+            check("A_item6", next(itA), 6)
+            check("A_item7", next(itA), 7)
+            check("A_item8", next(itA), 8)
+
+            def expect_stop(label, fn):
+                try:
+                    fn()
+                    log.append(f"{label}=NO_STOPITERATION")
+                except StopIteration:
+                    log.append(f"{label}=OK")
+                except Exception as e:
+                    log.append(f"{label}={type(e).__name__}(want=StopIteration)")
+
+            expect_stop("A_exhausted_once", lambda: next(itA))
+            expect_stop("A_exhausted_again_still_stops", lambda: next(itA))
+            check("A_fetch_calls_never_probed_page3", callsA["n"], 3)
+
+            itA.reset()
+            check("A_reset_full_reiterate", list(itA), [1, 2, 3, 4, 5, 6, 7, 8])
+            check("A_fetch_calls_unchanged_after_reset", callsA["n"], 3)
+
+            # Scenario B: reset from mid-stream (not fully exhausted first).
+            pagesB = [[1, 2, 3], [4]]
+            fetchB, callsB = make_fetcher(pagesB)
+            itB = PageIterator(fetchB, page_size=3)
+            check("B_first_item", next(itB), 1)
+            itB.reset()
+            check("B_full_after_reset", list(itB), [1, 2, 3, 4])
+            check("B_fetch_calls_only_two_pages_ever", callsB["n"], 2)
+
+            # Scenario C: the very first page is immediately short (empty).
+            pagesC = []
+            fetchC, callsC = make_fetcher(pagesC)
+            itC = PageIterator(fetchC, page_size=3)
+            check("C_empty_list", list(itC), [])
+            check("C_fetch_calls_only_probed_once", callsC["n"], 1)
+
+            # Scenario D: a page with EXACTLY page_size items must NOT be
+            # assumed last -- the following (empty) page still has to be
+            # probed to discover the true end.
+            pagesD = [[1, 2, 3], [4, 5, 6], []]
+            fetchD, callsD = make_fetcher(pagesD)
+            itD = PageIterator(fetchD, page_size=3)
+            check("D_full_sequence", list(itD), [1, 2, 3, 4, 5, 6])
+            check("D_fetch_calls_probed_the_empty_terminator", callsD["n"], 3)
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "PageIterator full scenario (exhaustion, repeat-exhaustion-safety, reset+cache, page-boundary probing)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # browse.py -- the protected existing caller (standard for-loop /
+        # list() iterator-protocol usage).
+        r = _run(
+            "import browse\n"
+            "def fetch_page(i):\n"
+            "    pages = [[10, 20], [30]]\n"
+            "    return pages[i] if 0 <= i < len(pages) else []\n"
+            "print(browse.collect_all(fetch_page, page_size=2))\n")
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case="browse.collect_all(...)  # protected caller", expected="[10, 20, 30]",
+                  actual=actual, stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "[10, 20, 30]":
+            _emit(False, case="browse.collect_all(...)  # protected caller", expected="[10, 20, 30]",
+                  actual=got, stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [browse.py, NOTES.md]
+allowed_diff_paths: [paginator.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B2 stateful/resource-lifecycle batch) --
+  an iterator whose state must be correct across exhaustion, REPEATED
+  exhaustion (calling `next()` again after `StopIteration`), and restart
+  via `.reset()`, with a caching invariant checked by literally COUNTING
+  calls to the underlying `fetch_page`, not just checking returned items.
+  Per the advisor's guidance for this task, fetch-call-count assertions
+  are only made at STABLE points (full exhaustion, after a completed
+  `reset()`+re-iterate) rather than mid-stream, so a valid
+  lazy-vs-slightly-eager implementation can't trip them by prefetching
+  the next page a little early. Traps:
+  1. Off-by-one on the "is this the last page" rule: assuming a page
+     returning EXACTLY `page_size` items must be followed by fetching the
+     next page ALWAYS (never treating a full page as possibly-last without
+     checking) is actually REQUIRED correctness (scenario D exists
+     specifically to make sure a solution doesn't shortcut this by, e.g.,
+     stopping as soon as a page has fewer than `page_size` items INCLUDING
+     treating a full last real page as terminal without probing the
+     following empty one) -- the opposite mistake, assuming a SHORT page
+     might not be last and probing beyond it anyway, is caught by
+     `A_fetch_calls_never_probed_page3` (`fetch_page(3)` must never be
+     called once page 2, with only 2 items, proved the sequence ends
+     there).
+  2. Exhaustion crashing instead of raising `StopIteration` -- e.g. a
+     flat-list-of-items cache filled lazily by a `_fill_to(target_len)`
+     helper that stops growing once a short/empty page is seen, paired
+     with a `__next__` that indexes into that list UNCONDITIONALLY
+     (`self._items[self._idx]`, no bounds check) -- correctly raises
+     `IndexError` instead of `StopIteration` the moment the true end is
+     reached, caught by `A_exhausted_once` (and, since the bug reproduces
+     on every subsequent call too, `A_exhausted_again_still_stops` as
+     well).
+  3. `.reset()` re-fetching pages already in cache (a solution that resets
+     by constructing a brand-new internal iterator state that forgets the
+     cache exists, rather than rewinding a position pointer over the SAME
+     cache) -- caught by `A_fetch_calls_unchanged_after_reset` and
+     `B_fetch_calls_only_two_pages_ever` (the latter also covers reset
+     from mid-stream, not just post-exhaustion).
+
+  Verified empirically (hermetic, host python): the reference passes the
+  full scenario; a `wrong` fixture that treats ANY page with `page_size`
+  items differently than really checking the FOLLOWING page (stops
+  early after the last full page without probing the terminator) fails
+  scenario D (`D_full_sequence` returns only `[1, 2, 3]` or crashes); a
+  `wrong` fixture whose `__next__` indexes an internal items list without
+  a bounds check fails `A_exhausted_once` with an `IndexError` crash
+  (stage `behavior`, reason_code `runtime_error`) instead of the expected
+  `StopIteration`; a `wrong` fixture whose `reset()`
+  simply reconstructs a fresh iterator (calling `fetch_page` from page 0
+  again instead of reusing the cache) fails
+  `A_fetch_calls_unchanged_after_reset` (`actual` `6`, want `3`).
+check_fixtures:
+  reference:
+    paginator.py: |
+      class PageIterator:
+          def __init__(self, fetch_page, page_size=3):
+              self._fetch_page = fetch_page
+              self._page_size = page_size
+              self._cache = {}
+              self._last_page_index = None  # first page index known to be short/empty
+              self._pos = 0  # absolute item index into the full (cached-so-far) sequence
+
+          def __iter__(self):
+              return self
+
+          def _ensure_page(self, page_index):
+              if page_index in self._cache:
+                  return
+              if self._last_page_index is not None and page_index > self._last_page_index:
+                  return
+              items = list(self._fetch_page(page_index))
+              self._cache[page_index] = items
+              if len(items) < self._page_size and self._last_page_index is None:
+                  self._last_page_index = page_index
+
+          def _total_cached_items(self, up_to_page):
+              return sum(len(self._cache[i]) for i in range(up_to_page + 1) if i in self._cache)
+
+          def __next__(self):
+              page_index = self._pos // self._page_size
+              offset = self._pos % self._page_size
+              self._ensure_page(page_index)
+              page = self._cache.get(page_index, [])
+              if offset >= len(page):
+                  raise StopIteration
+              item = page[offset]
+              self._pos += 1
+              return item
+
+          def reset(self):
+              self._pos = 0
+  alternate:
+    paginator.py: |
+      class PageIterator:
+          def __init__(self, fetch_page, page_size=3):
+              self._fetch_page = fetch_page
+              self._page_size = page_size
+              self._cache = []  # list of page-item-lists, index-aligned
+              self._done = False  # True once a short/empty page has been seen
+              self._pos = 0
+
+          def __iter__(self):
+              return self
+
+          def _fetch_upto(self, page_index):
+              while len(self._cache) <= page_index and not self._done:
+                  items = list(self._fetch_page(len(self._cache)))
+                  self._cache.append(items)
+                  if len(items) < self._page_size:
+                      self._done = True
+
+          def __next__(self):
+              page_index, offset = divmod(self._pos, self._page_size)
+              self._fetch_upto(page_index)
+              if page_index >= len(self._cache) or offset >= len(self._cache[page_index]):
+                  raise StopIteration
+              item = self._cache[page_index][offset]
+              self._pos += 1
+              return item
+
+          def reset(self):
+              self._pos = 0
+  wrong:
+    - paginator.py: |
+        # BUG: treats ANY page with fewer items as terminal but ALSO
+        # stops immediately once a FULL page has been consumed if the
+        # very next fetch call hasn't happened yet -- concretely, this
+        # version pre-decides "last page" using len(items) <= page_size
+        # (always true) AND separately just stops after 2 pages
+        # regardless, never probing a genuine empty terminator page after
+        # a run of full pages.
+        class PageIterator:
+            def __init__(self, fetch_page, page_size=3):
+                self._fetch_page = fetch_page
+                self._page_size = page_size
+                self._cache = []
+                self._pos = 0
+                self._max_pages_to_try = 2  # BUG: arbitrary cap, never adapts
+
+            def __iter__(self):
+                return self
+
+            def _fetch_upto(self, page_index):
+                while len(self._cache) <= page_index and len(self._cache) < self._max_pages_to_try:
+                    items = list(self._fetch_page(len(self._cache)))
+                    self._cache.append(items)
+                    if len(items) < self._page_size:
+                        self._max_pages_to_try = len(self._cache)
+
+            def __next__(self):
+                page_index, offset = divmod(self._pos, self._page_size)
+                self._fetch_upto(page_index)
+                if page_index >= len(self._cache) or offset >= len(self._cache[page_index]):
+                    raise StopIteration
+                item = self._cache[page_index][offset]
+                self._pos += 1
+                return item
+
+            def reset(self):
+                self._pos = 0
+    - paginator.py: |
+        # BUG: builds a flat, already-fetched-items list lazily via
+        # _fill_to(), but __next__ indexes into it WITHOUT checking that
+        # the fill actually reached far enough -- once truly exhausted,
+        # _fill_to() stops adding (since _exhausted is set), but the
+        # unconditional self._items[self._idx] below still runs, crashing
+        # with IndexError instead of raising StopIteration.
+        class PageIterator:
+            def __init__(self, fetch_page, page_size=3):
+                self._fetch_page = fetch_page
+                self._page_size = page_size
+                self._items = []
+                self._exhausted = False
+                self._next_page_to_fetch = 0
+                self._idx = 0
+
+            def __iter__(self):
+                return self
+
+            def _fill_to(self, target_len):
+                while len(self._items) < target_len and not self._exhausted:
+                    page = list(self._fetch_page(self._next_page_to_fetch))
+                    self._next_page_to_fetch += 1
+                    self._items.extend(page)
+                    if len(page) < self._page_size:
+                        self._exhausted = True
+
+            def __next__(self):
+                self._fill_to(self._idx + 1)
+                item = self._items[self._idx]
+                self._idx += 1
+                return item
+
+            def reset(self):
+                self._idx = 0
+    - paginator.py: |
+        # BUG: reset() rebuilds the cache from scratch instead of just
+        # rewinding the position pointer over the existing cache.
+        class PageIterator:
+            def __init__(self, fetch_page, page_size=3):
+                self._fetch_page = fetch_page
+                self._page_size = page_size
+                self._cache = []
+                self._done = False
+                self._pos = 0
+
+            def __iter__(self):
+                return self
+
+            def _fetch_upto(self, page_index):
+                while len(self._cache) <= page_index and not self._done:
+                    items = list(self._fetch_page(len(self._cache)))
+                    self._cache.append(items)
+                    if len(items) < self._page_size:
+                        self._done = True
+
+            def __next__(self):
+                page_index, offset = divmod(self._pos, self._page_size)
+                self._fetch_upto(page_index)
+                if page_index >= len(self._cache) or offset >= len(self._cache[page_index]):
+                    raise StopIteration
+                item = self._cache[page_index][offset]
+                self._pos += 1
+                return item
+
+            def reset(self):
+                self._cache = []
+                self._done = False
+                self._pos = 0

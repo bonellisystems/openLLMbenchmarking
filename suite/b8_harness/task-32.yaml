@@ -1,0 +1,360 @@
+id: py-feat-04
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small task-list system, split across 3 files:
+
+  - `models.py` -- `class Task`, currently `__init__(self, title,
+    done=False)`, storing `self.title`/`self.done`.
+  - `storage.py` -- `serialize(task)` (returns `{"title": ..., "done":
+    ...}`) and `deserialize(d)` (builds a `Task` back from such a dict).
+  - `filters.py` -- the EXISTING caller, ALREADY written against a
+    `Task.priority` attribute that doesn't exist yet:
+    ```python
+    def high_priority_titles(tasks):
+        return [t.title for t in tasks if t.priority <= 2]
+
+    def sort_by_priority(tasks):
+        return sorted(tasks, key=lambda t: t.priority)
+    ```
+    Must keep working exactly as written (do not edit it) -- it is the
+    proof that your changes to the two files below actually flow the new
+    field all the way through.
+
+  Add a `priority` field that flows through all three layers:
+
+  1. `models.py`: `Task.__init__` gains a `priority=3` keyword parameter
+     (1 = most urgent, 5 = least urgent), stored as `self.priority`. It
+     must validate: `priority` must be an `int` (not e.g. a `str` or
+     `float`) in the inclusive range 1-5; any other value raises
+     `ValueError`.
+  2. `storage.py`: `serialize(task)` must include `"priority":
+     task.priority` in its returned dict. `deserialize(d)` must pass
+     `d["priority"]` through to `Task(...)` when the key is present, but
+     for BACKWARD COMPATIBILITY with data saved before this field
+     existed, must default to `3` when `"priority"` is absent from `d`
+     (do not require callers to have already migrated their saved data).
+
+  You may modify ONLY `models.py` and `storage.py`. Do not create or edit
+  `filters.py` or `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 14}
+setup_repo:
+  models.py: |
+    class Task:
+        def __init__(self, title, done=False):
+            self.title = title
+            self.done = done
+  storage.py: |
+    from models import Task
+
+
+    def serialize(task):
+        return {"title": task.title, "done": task.done}
+
+
+    def deserialize(d):
+        return Task(d["title"], d.get("done", False))
+  filters.py: |
+    def high_priority_titles(tasks):
+        """Existing caller: relies on every Task already having an
+        integer .priority (whether via the constructor's default or an
+        explicit value) -- <= 2 counts as "high priority" (1 and 2 are
+        the two highest-urgency levels)."""
+        return [t.title for t in tasks if t.priority <= 2]
+
+
+    def sort_by_priority(tasks):
+        """Existing caller: stable-sorts by priority ascending (1 = most
+        urgent first), relying on every Task having an integer .priority."""
+        return sorted(tasks, key=lambda t: t.priority)
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _check_exact(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _check_type(code, case, want_type_name):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want_type_name, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want_type_name:
+            _emit(False, case=case, expected=want_type_name, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _raises_code(expr):
+        return (
+            "import models\n"
+            "try:\n"
+            f"    {expr}\n"
+            "    print('NO_EXCEPTION')\n"
+            "except ValueError:\n"
+            "    print('ValueError')\n"
+            "except Exception as e:\n"
+            "    print(type(e).__name__)\n"
+        )
+
+
+    def main():
+        # models.py: default, explicit, range/type validation.
+        _check_exact(
+            "import models\nprint(models.Task('x').priority)\n",
+            "Task('x').priority  # default", "3")
+        _check_exact(
+            "import models\nprint(models.Task('x', priority=1).priority)\n",
+            "Task('x', priority=1).priority", "1")
+        _check_type(_raises_code("models.Task('x', priority=0)"),
+                    "Task('x', priority=0)  # below range", "ValueError")
+        _check_type(_raises_code("models.Task('x', priority=6)"),
+                    "Task('x', priority=6)  # above range", "ValueError")
+        _check_type(_raises_code("models.Task('x', priority='1')"),
+                    "Task('x', priority='1')  # wrong type", "ValueError")
+
+        # storage.py: serialize includes priority; deserialize round-trips
+        # AND defaults missing priority to 3 (old saved data).
+        _check_exact(
+            "import models, storage\n"
+            "t = models.Task('t', priority=2)\n"
+            "d = storage.serialize(t)\n"
+            "print(sorted(d.items()))\n",
+            "serialize(Task('t', priority=2))",
+            str(sorted({"title": "t", "done": False, "priority": 2}.items())))
+        _check_exact(
+            "import storage\n"
+            "t = storage.deserialize({'title': 't', 'done': True, 'priority': 4})\n"
+            "print(t.priority)\n",
+            "deserialize({..., 'priority': 4}).priority", "4")
+        _check_exact(
+            "import storage\n"
+            "t = storage.deserialize({'title': 't', 'done': True})\n"
+            "print(t.priority)\n",
+            "deserialize({no priority key}).priority  # backward-compat default", "3")
+        _check_exact(
+            "import models, storage\n"
+            "t = storage.deserialize(storage.serialize(models.Task('t', priority=1)))\n"
+            "print(t.priority)\n",
+            "round-trip serialize/deserialize preserves priority", "1")
+
+        # filters.py: the protected downstream consumer, proving the field
+        # actually flows all the way through.
+        _check_exact(
+            "import models, filters\n"
+            "tasks = [models.Task('a', priority=1), models.Task('b', priority=3), models.Task('c', priority=2)]\n"
+            "print(filters.high_priority_titles(tasks))\n",
+            "filters.high_priority_titles([...])", "['a', 'c']")
+        _check_exact(
+            "import models, filters\n"
+            "tasks = [models.Task('b', priority=5), models.Task('a', priority=1)]\n"
+            "print([t.title for t in filters.sort_by_priority(tasks)])\n",
+            "filters.sort_by_priority([...])", "['a', 'b']")
+        _check_exact(
+            "import models, filters\n"
+            "tasks = [models.Task('z')]\n"
+            "print(filters.high_priority_titles(tasks))\n",
+            "filters.high_priority_titles([Task with default priority])  # 3 is not <= 2", "[]")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [filters.py, NOTES.md]
+allowed_diff_paths: [models.py, storage.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B2 feature-integration batch) -- a field
+  that must flow through 2-3 existing layers (model -> serialization ->
+  a downstream consumer), with a genuine backward-compatibility invariant
+  (`deserialize` on data saved before this field existed must default
+  sensibly, not crash with `KeyError`). `filters.py` is written as though
+  the field ALREADY exists (deliberately -- it models "the rest of the
+  codebase already assumes this field", the realistic shape of adding a
+  field to an existing, in-use model) and is protected so the fix has to
+  happen upstream, in the two files that actually own the field's
+  creation and persistence. Traps:
+  1. Adding `priority` to `models.py` but forgetting `storage.py`'s
+     `serialize`/`deserialize` -- caught by the serialize-dict-contents
+     case and the round-trip case.
+  2. Making `deserialize` require the `"priority"` key (e.g. `d
+     ["priority"]` instead of `d.get("priority", 3)`) -- breaks backward
+     compatibility with old saved dicts; caught by the missing-key
+     default case with a `KeyError` crash (stage `behavior`, reason_code
+     `runtime_error`).
+  3. Skipping range/type validation on the constructor entirely, or only
+     checking range but not type (so `Task('x', priority='1')` silently
+     succeeds instead of raising) -- caught by the three
+     `_raises_code` cases, each isolating a different invalid-input shape.
+  4. Getting the validation right but never actually wiring `.priority`
+     onto `self` (e.g. validating and discarding it) -- caught
+     immediately by the very first default-value case, and definitively
+     by `filters.py`'s two downstream cases.
+
+  Verified empirically (hermetic, host python): the reference passes every
+  case; a `wrong` fixture with no range/type validation at all lets
+  `Task('x', priority=0)` and `Task('x', priority='1')` both construct
+  without raising (`actual` `NO_EXCEPTION`); a `wrong` fixture whose
+  `deserialize` indexes `d["priority"]` directly crashes with `KeyError`
+  on the backward-compat case; a `wrong` fixture whose `serialize` omits
+  the `"priority"` key fails the serialize-dict-contents case with a
+  wrong-output mismatch (the returned dict has only 2 keys, not 3) -- see
+  check_fixtures below for the exact forms.
+check_fixtures:
+  reference:
+    models.py: |
+      class Task:
+          def __init__(self, title, done=False, priority=3):
+              if not isinstance(priority, int) or isinstance(priority, bool) or not (1 <= priority <= 5):
+                  raise ValueError("priority must be an int from 1 to 5")
+              self.title = title
+              self.done = done
+              self.priority = priority
+    storage.py: |
+      from models import Task
+
+
+      def serialize(task):
+          return {"title": task.title, "done": task.done, "priority": task.priority}
+
+
+      def deserialize(d):
+          return Task(d["title"], d.get("done", False), priority=d.get("priority", 3))
+  alternate:
+    models.py: |
+      class Task:
+          def __init__(self, title, done=False, priority=3):
+              self._validate_priority(priority)
+              self.title = title
+              self.done = done
+              self.priority = priority
+
+          @staticmethod
+          def _validate_priority(priority):
+              valid = isinstance(priority, int) and not isinstance(priority, bool) and 1 <= priority <= 5
+              if not valid:
+                  raise ValueError(f"invalid priority: {priority!r}")
+    storage.py: |
+      from models import Task
+
+
+      def serialize(task):
+          d = {"title": task.title, "done": task.done}
+          d["priority"] = task.priority
+          return d
+
+
+      def deserialize(d):
+          priority = d["priority"] if "priority" in d else 3
+          return Task(d["title"], d.get("done", False), priority=priority)
+  wrong:
+    - models.py: |
+        class Task:
+            # BUG: no validation at all -- any value, including the wrong
+            # type, is silently accepted.
+            def __init__(self, title, done=False, priority=3):
+                self.title = title
+                self.done = done
+                self.priority = priority
+      storage.py: |
+        from models import Task
+
+
+        def serialize(task):
+            return {"title": task.title, "done": task.done, "priority": task.priority}
+
+
+        def deserialize(d):
+            return Task(d["title"], d.get("done", False), priority=d.get("priority", 3))
+    - models.py: |
+        class Task:
+            def __init__(self, title, done=False, priority=3):
+                if not isinstance(priority, int) or isinstance(priority, bool) or not (1 <= priority <= 5):
+                    raise ValueError("priority must be an int from 1 to 5")
+                self.title = title
+                self.done = done
+                self.priority = priority
+      storage.py: |
+        from models import Task
+
+
+        def serialize(task):
+            return {"title": task.title, "done": task.done, "priority": task.priority}
+
+
+        def deserialize(d):
+            # BUG: requires the "priority" key, breaking backward
+            # compatibility with data saved before this field existed.
+            return Task(d["title"], d.get("done", False), priority=d["priority"])
+    - models.py: |
+        class Task:
+            def __init__(self, title, done=False, priority=3):
+                if not isinstance(priority, int) or isinstance(priority, bool) or not (1 <= priority <= 5):
+                    raise ValueError("priority must be an int from 1 to 5")
+                self.title = title
+                self.done = done
+                self.priority = priority
+      storage.py: |
+        from models import Task
+
+
+        def serialize(task):
+            # BUG: forgot to include "priority" in the serialized dict.
+            return {"title": task.title, "done": task.done}
+
+
+        def deserialize(d):
+            return Task(d["title"], d.get("done", False), priority=d.get("priority", 3))

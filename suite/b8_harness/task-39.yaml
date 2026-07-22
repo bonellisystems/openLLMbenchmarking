@@ -1,0 +1,525 @@
+id: py-state-05
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a key-value store with NESTED transactions from scratch, in a
+  new file `txstore.py`, exposing:
+
+  - `class NoActiveTransaction(Exception)` -- raised by `commit()`/
+    `rollback()` when there is no open transaction to act on.
+  - `class TransactionalStore()`:
+    - `set(key, value)`: writes `key`/`value` into the CURRENT scope (the
+      innermost open transaction, if any is open, otherwise directly into
+      the base store).
+    - `get(key)`: returns the value MOST-RECENTLY visible for `key` --
+      considering every open transaction layer from innermost to
+      outermost, then the base store. Raises `KeyError` if `key` isn't
+      visible anywhere (never set, or deleted and not since re-set, in
+      every layer that matters).
+    - `delete(key)`: removes `key` from view within the CURRENT scope
+      (innermost open transaction, or the base store if none is open).
+      Raises `KeyError` if `key` isn't currently visible (per `get`'s own
+      visibility rule) at the point `delete` is called.
+    - `begin()`: opens a new, nested transaction layer on top of whatever
+      is currently open (or on top of the base store, for the first
+      transaction). Any number of transactions may be nested.
+    - `commit()`: raises `NoActiveTransaction` if no transaction is open.
+      Otherwise merges the innermost open transaction's changes (both
+      `set`s and `delete`s) DOWN into the layer beneath it (the next
+      transaction out, or the base store if this was the outermost) --
+      after `commit()`, that next layer down reflects exactly what `get`
+      would have returned while the committed transaction was still open.
+    - `rollback()`: raises `NoActiveTransaction` if no transaction is
+      open. Otherwise DISCARDS the innermost open transaction's layer
+      entirely -- every `set`/`delete` made since the matching `begin()`
+      is undone, as if it never happened; the layer beneath it (or the
+      base store) is completely unaffected.
+
+  A `delete()` inside a transaction must be able to hide a value that
+  only exists in an OUTER (still-open) transaction or the base store --
+  and a subsequent `commit()` of that transaction must propagate the
+  deletion outward too.
+
+  An existing file, `cli_txn.py`, already calls `.get()` and relies on it
+  raising `KeyError` (not returning `None`) for a missing key -- must keep
+  working exactly as written.
+
+  Create ONLY `txstore.py`. Do not create or edit `cli_txn.py` or
+  `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 480, tokens: 9000, steps: 20}
+setup_repo:
+  cli_txn.py: |
+    def get_or_default(store, key, default):
+        """Existing caller: relies on store.get() raising KeyError (never
+        returning None) for a key that isn't currently visible."""
+        try:
+            return store.get(key)
+        except KeyError:
+            return default
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        scenario = textwrap.dedent('''
+            import txstore
+
+            log = []
+
+
+            def check(label, got, want):
+                log.append(f"{label}={got!r}(want={want!r})" if got != want else f"{label}=OK")
+
+
+            def expect(label, exc_type, fn):
+                try:
+                    fn()
+                    log.append(f"{label}=NO_EXCEPTION(want={exc_type.__name__})")
+                except exc_type:
+                    log.append(f"{label}=OK")
+                except Exception as e:
+                    log.append(f"{label}={type(e).__name__}(want={exc_type.__name__})")
+
+
+            s = txstore.TransactionalStore()
+            expect("get_missing_key_raises_keyerror", KeyError, lambda: s.get("a"))
+            expect("commit_with_no_txn_raises", txstore.NoActiveTransaction, s.commit)
+            expect("rollback_with_no_txn_raises", txstore.NoActiveTransaction, s.rollback)
+
+            s.set("a", 1)
+            check("base_set_visible", s.get("a"), 1)
+
+            s.begin()
+            s.set("a", 2)
+            check("outer_txn_shadows_base", s.get("a"), 2)
+
+            s.begin()
+            s.set("a", 3)
+            check("inner_txn_shadows_outer", s.get("a"), 3)
+
+            s.rollback()  # discards the INNER txn only
+            check("after_inner_rollback_sees_outer_value", s.get("a"), 2)
+
+            s.set("b", 100)  # still inside the (still-open) outer txn
+            check("b_visible_in_outer_txn", s.get("b"), 100)
+
+            s.rollback()  # discards the OUTER txn entirely
+            check("after_outer_rollback_a_back_to_base", s.get("a"), 1)
+            expect("after_outer_rollback_b_never_existed", KeyError, lambda: s.get("b"))
+
+            s.begin()
+            s.delete("a")  # delete WITHIN a transaction hides the base value
+            expect("delete_in_txn_hides_base_value", KeyError, lambda: s.get("a"))
+
+            s.commit()  # propagates the delete down into the base store for real
+            expect("delete_propagates_to_base_after_commit", KeyError, lambda: s.get("a"))
+
+            s.begin()
+            s.set("c", 5)  # set inside a (still-open) outer txn
+            s.begin()
+            s.delete("c")  # inner txn deletes what the OUTER (uncommitted) txn set
+            expect("inner_delete_of_outer_uncommitted_set", KeyError, lambda: s.get("c"))
+
+            s.commit()  # merges inner (delete c) into the outer layer
+            expect("delete_still_visible_after_inner_commit", KeyError, lambda: s.get("c"))
+
+            s.commit()  # merges outer (delete c, which was never in base) into base
+            expect("delete_still_visible_after_outer_commit", KeyError, lambda: s.get("c"))
+
+            s.set("d", 9)  # no transaction open at all now -- straight to base
+            check("base_set_after_all_txns_closed", s.get("d"), 9)
+
+            s.delete("d")
+            expect("d_gone_after_base_delete", KeyError, lambda: s.get("d"))
+
+            expect("delete_nonexistent_key_raises", KeyError, lambda: s.delete("z"))
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "TransactionalStore full lifecycle scenario (nested begin/commit/rollback, delete visibility)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # cli_txn.py -- the protected existing caller.
+        r = _run("import txstore, cli_txn\n"
+                  "s = txstore.TransactionalStore()\n"
+                  "s.set('k', 7)\n"
+                  "print(cli_txn.get_or_default(s, 'k', -1))\n"
+                  "print(cli_txn.get_or_default(s, 'missing', -1))\n")
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case="cli_txn.get_or_default(...)  # KeyError contract", expected="7\\n-1",
+                  actual=actual, stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != "7\n-1":
+            _emit(False, case="cli_txn.get_or_default(...)  # KeyError contract", expected="7\\n-1",
+                  actual=got, stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [cli_txn.py, NOTES.md]
+allowed_diff_paths: [txstore.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B2 stateful/resource-lifecycle batch) --
+  nested transaction-rollback semantics, the hardest of the six stateful
+  tasks (deliberately: layered scoping + a delete SENTINEL, both required
+  simultaneously). Traps:
+  1. Treating `rollback()` as "undo everything back to the base" instead
+     of "discard only the INNERMOST layer" -- caught by
+     `after_inner_rollback_sees_outer_value` (must still see the OUTER
+     transaction's `a=2`, not the base's `a=1`) immediately followed by
+     `b_visible_in_outer_txn` (the outer transaction must still be OPEN,
+     not also discarded).
+  2. Representing "deleted within this transaction" the same as "never
+     set" (e.g. just `del layer[key]` if present, `pass` otherwise)
+     instead of a real tombstone/sentinel -- a `delete()` on a key that
+     only exists in an OUTER layer or the base has NOTHING to remove from
+     the CURRENT (innermost) layer's own dict, so a naive
+     `if key in layer: del layer[key]` silently no-ops instead of hiding
+     the outer value; caught by `delete_in_txn_hides_base_value`.
+  3. `commit()` merging by naive `dict.update()` without merging deletes
+     too (a plain `update()` only ever ADDS/overwrites keys, it can never
+     make a key disappear from the layer below) -- caught by
+     `delete_propagates_to_base_after_commit` and the doubly-nested
+     `inner_delete_of_outer_uncommitted_set` /
+     `delete_still_visible_after_inner_commit` /
+     `delete_still_visible_after_outer_commit` chain, which requires a
+     delete recorded in the INNERMOST layer to survive two successive
+     merges all the way down to the base.
+
+  Verified empirically (hermetic, host python): the reference passes the
+  full scenario; a `wrong` fixture whose `rollback()` clears the entire
+  transaction stack (not just the innermost layer) fails
+  `b_visible_in_outer_txn` (the outer transaction's own prior `set` is
+  gone too); a `wrong` fixture whose `delete()` is a no-op when the key
+  isn't in the CURRENT layer's own dict fails
+  `delete_in_txn_hides_base_value` (`get("a")` still returns `2` instead
+  of raising `KeyError`); a `wrong` fixture whose `commit()` merges via
+  plain `dict.update()` (dropping tombstones) fails
+  `delete_propagates_to_base_after_commit` (the deleted key reappears from
+  the base store).
+check_fixtures:
+  reference:
+    txstore.py: |
+      class NoActiveTransaction(Exception):
+          pass
+
+
+      _DELETED = object()
+
+
+      class TransactionalStore:
+          def __init__(self):
+              self._base = {}
+              self._layers = []  # each: dict, keys map to a value or _DELETED
+
+          def _current_layer(self):
+              return self._layers[-1] if self._layers else self._base
+
+          def set(self, key, value):
+              self._current_layer()[key] = value
+
+          def get(self, key):
+              for layer in reversed(self._layers):
+                  if key in layer:
+                      value = layer[key]
+                      if value is _DELETED:
+                          raise KeyError(key)
+                      return value
+              if key in self._base:
+                  value = self._base[key]
+                  if value is _DELETED:
+                      raise KeyError(key)
+                  return value
+              raise KeyError(key)
+
+          def delete(self, key):
+              self.get(key)  # raises KeyError if not currently visible
+              self._current_layer()[key] = _DELETED
+
+          def begin(self):
+              self._layers.append({})
+
+          def commit(self):
+              if not self._layers:
+                  raise NoActiveTransaction("no open transaction")
+              top = self._layers.pop()
+              target = self._current_layer()
+              for key, value in top.items():
+                  target[key] = value
+
+          def rollback(self):
+              if not self._layers:
+                  raise NoActiveTransaction("no open transaction")
+              self._layers.pop()
+  alternate:
+    txstore.py: |
+      class NoActiveTransaction(Exception):
+          pass
+
+
+      class _Deleted:
+          pass
+
+
+      _TOMBSTONE = _Deleted()
+
+
+      class TransactionalStore:
+          def __init__(self):
+              self._stack = [{}]  # index 0 is the base store; deeper = more nested
+
+          def _top(self):
+              return self._stack[-1]
+
+          def set(self, key, value):
+              self._top()[key] = value
+
+          def get(self, key):
+              for layer in reversed(self._stack):
+                  if key in layer:
+                      value = layer[key]
+                      if value is _TOMBSTONE:
+                          raise KeyError(key)
+                      return value
+              raise KeyError(key)
+
+          def delete(self, key):
+              self.get(key)
+              self._top()[key] = _TOMBSTONE
+
+          def begin(self):
+              self._stack.append({})
+
+          def commit(self):
+              if len(self._stack) < 2:
+                  raise NoActiveTransaction("no open transaction")
+              top = self._stack.pop()
+              self._stack[-1].update(top)
+
+          def rollback(self):
+              if len(self._stack) < 2:
+                  raise NoActiveTransaction("no open transaction")
+              self._stack.pop()
+  wrong:
+    - txstore.py: |
+        # BUG: rollback() discards the ENTIRE transaction stack, not just
+        # the innermost layer -- a nested rollback wrongly undoes the
+        # still-open outer transaction too.
+        class NoActiveTransaction(Exception):
+            pass
+
+
+        _DELETED = object()
+
+
+        class TransactionalStore:
+            def __init__(self):
+                self._base = {}
+                self._layers = []
+
+            def _current_layer(self):
+                return self._layers[-1] if self._layers else self._base
+
+            def set(self, key, value):
+                self._current_layer()[key] = value
+
+            def get(self, key):
+                for layer in reversed(self._layers):
+                    if key in layer:
+                        value = layer[key]
+                        if value is _DELETED:
+                            raise KeyError(key)
+                        return value
+                if key in self._base:
+                    value = self._base[key]
+                    if value is _DELETED:
+                        raise KeyError(key)
+                    return value
+                raise KeyError(key)
+
+            def delete(self, key):
+                self.get(key)
+                self._current_layer()[key] = _DELETED
+
+            def begin(self):
+                self._layers.append({})
+
+            def commit(self):
+                if not self._layers:
+                    raise NoActiveTransaction("no open transaction")
+                top = self._layers.pop()
+                target = self._current_layer()
+                for key, value in top.items():
+                    target[key] = value
+
+            def rollback(self):
+                if not self._layers:
+                    raise NoActiveTransaction("no open transaction")
+                self._layers = []
+    - txstore.py: |
+        # BUG: delete() only removes the key if it already exists in the
+        # CURRENT layer's own dict -- deleting a value that lives in an
+        # outer layer or the base is a silent no-op instead of hiding it.
+        class NoActiveTransaction(Exception):
+            pass
+
+
+        class TransactionalStore:
+            def __init__(self):
+                self._base = {}
+                self._layers = []
+
+            def _current_layer(self):
+                return self._layers[-1] if self._layers else self._base
+
+            def set(self, key, value):
+                self._current_layer()[key] = value
+
+            def get(self, key):
+                for layer in reversed(self._layers):
+                    if key in layer:
+                        return layer[key]
+                if key in self._base:
+                    return self._base[key]
+                raise KeyError(key)
+
+            def delete(self, key):
+                self.get(key)  # raises KeyError if not currently visible
+                layer = self._current_layer()
+                if key in layer:
+                    del layer[key]
+                # BUG: else-branch missing -- a value only visible from an
+                # outer layer/base is never actually hidden.
+
+            def begin(self):
+                self._layers.append({})
+
+            def commit(self):
+                if not self._layers:
+                    raise NoActiveTransaction("no open transaction")
+                top = self._layers.pop()
+                target = self._current_layer()
+                for key, value in top.items():
+                    target[key] = value
+
+            def rollback(self):
+                if not self._layers:
+                    raise NoActiveTransaction("no open transaction")
+                self._layers.pop()
+    - txstore.py: |
+        # BUG: commit() merges via plain dict.update(), which can only
+        # ADD/overwrite keys -- a delete recorded in the committed layer
+        # (as a sentinel) gets copied down as a literal sentinel VALUE the
+        # first time, but a second commit's update() on an already-
+        # tombstoned key in the base is fine, EXCEPT get() here never
+        # checks for the sentinel in the base store, so a "deleted" key
+        # that reaches the base resurrects as the sentinel object itself
+        # instead of raising KeyError.
+        class NoActiveTransaction(Exception):
+            pass
+
+
+        _DELETED = object()
+
+
+        class TransactionalStore:
+            def __init__(self):
+                self._base = {}
+                self._layers = []
+
+            def _current_layer(self):
+                return self._layers[-1] if self._layers else self._base
+
+            def set(self, key, value):
+                self._current_layer()[key] = value
+
+            def get(self, key):
+                for layer in reversed(self._layers):
+                    if key in layer:
+                        value = layer[key]
+                        if value is _DELETED:
+                            raise KeyError(key)
+                        return value
+                if key in self._base:
+                    return self._base[key]
+                raise KeyError(key)
+
+            def delete(self, key):
+                self.get(key)
+                self._current_layer()[key] = _DELETED
+
+            def begin(self):
+                self._layers.append({})
+
+            def commit(self):
+                if not self._layers:
+                    raise NoActiveTransaction("no open transaction")
+                top = self._layers.pop()
+                target = self._current_layer()
+                target.update(top)
+                # BUG: when target is self._base, a _DELETED sentinel
+                # value now sits in self._base permanently -- but get()'s
+                # base-store branch above ("if key in self._base: return
+                # self._base[key]") returns the SENTINEL OBJECT itself as
+                # if it were a real value, instead of raising KeyError.
+
+            def rollback(self):
+                if not self._layers:
+                    raise NoActiveTransaction("no open transaction")
+                self._layers.pop()

@@ -1,0 +1,515 @@
+id: py-state-04
+shape: from-scratch
+task_version: "1.0.0"
+prompt: |
+  Implement a fixed-size connection pool from scratch, in a new file
+  `pool.py`, exposing:
+
+  - `class PoolExhausted(Exception)` -- raised when `acquire()` is called
+    on a pool with no available connections.
+  - `class Connection` -- has an `.id` attribute (any unique value per
+    connection is fine, e.g. an int index).
+  - `class ConnectionPool(size)` -- pre-creates `size` `Connection`
+    objects at construction. `size` must be a positive int; `size <= 0`
+    raises `ValueError` at construction.
+    - `acquire()`: removes and returns one available `Connection`; raises
+      `PoolExhausted` (leaving the pool's internal counts UNCHANGED) if
+      none are available.
+    - `release(conn)`: returns a previously-acquired `Connection` to the
+      available pool. Raises `ValueError` (leaving counts UNCHANGED) for
+      EITHER of two misuse cases: `conn` was never returned by this
+      pool's `acquire()` at all (a foreign object), OR `conn` IS one of
+      this pool's connections but is not CURRENTLY checked out (a
+      double-release) -- releasing the same connection twice must never
+      be allowed to silently succeed (that would let two callers hold the
+      "same" connection at once).
+    - `available_count()` / `checked_out_count()`: current counts:
+      `available_count() + checked_out_count() == size` must hold at
+      every point.
+    - `connection()`: returns a context manager -- `with pool.connection()
+      as conn:` must `acquire()` on entry and `release()` on exit, EVEN IF
+      the code inside the `with` block raises an exception (the
+      connection must never leak).
+
+  An existing file, `db.py`, already uses `pool.connection()` as a context
+  manager and reads `.id` off the acquired connection -- must keep
+  working exactly as written.
+
+  Create ONLY `pool.py`. Do not create or edit `db.py` or `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 420, tokens: 8000, steps: 18}
+setup_repo:
+  db.py: |
+    def run_query(pool, query):
+        """Existing caller: relies on pool.connection() being a context
+        manager that acquires on entry and ALWAYS releases on exit, and
+        on the yielded object having an .id attribute."""
+        with pool.connection() as conn:
+            return f"ran {query!r} via conn={conn.id}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+    import textwrap
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def main():
+        # Constructor validation.
+        for bad in [0, -1]:
+            code = (
+                "import pool\n"
+                "try:\n"
+                f"    pool.ConnectionPool({bad!r})\n"
+                "    print('NO_EXCEPTION')\n"
+                "except ValueError:\n"
+                "    print('ValueError')\n"
+                "except Exception as e:\n"
+                "    print(type(e).__name__)\n"
+            )
+            r = _run(code)
+            got = r.stdout.strip()
+            if r.returncode != 0 or got != "ValueError":
+                stage, reason_code, actual = ("behavior", "wrong_output", got) if r.returncode == 0 else _classify_crash(r.stderr)
+                _emit(False, case=f"ConnectionPool({bad!r})  # invalid size", expected="ValueError",
+                      actual=actual, stage=stage, reason_code=reason_code)
+
+        scenario = textwrap.dedent('''
+            import pool as pool_mod
+
+            log = []
+
+
+            def check(label, got, want):
+                log.append(f"{label}={got!r}(want={want!r})" if got != want else f"{label}=OK")
+
+
+            def expect(label, exc_type, fn):
+                try:
+                    fn()
+                    log.append(f"{label}=NO_EXCEPTION(want={exc_type.__name__})")
+                except exc_type:
+                    log.append(f"{label}=OK")
+                except Exception as e:
+                    log.append(f"{label}={type(e).__name__}(want={exc_type.__name__})")
+
+
+            p = pool_mod.ConnectionPool(2)
+            check("initial_available", p.available_count(), 2)
+            check("initial_checked_out", p.checked_out_count(), 0)
+
+            c1 = p.acquire()
+            check("after_acquire1_available", p.available_count(), 1)
+            check("after_acquire1_checked_out", p.checked_out_count(), 1)
+
+            c2 = p.acquire()
+            check("after_acquire2_available", p.available_count(), 0)
+            check("after_acquire2_checked_out", p.checked_out_count(), 2)
+
+            expect("acquire_when_exhausted_raises", pool_mod.PoolExhausted, p.acquire)
+            check("counts_unchanged_after_exhausted_acquire_available", p.available_count(), 0)
+            check("counts_unchanged_after_exhausted_acquire_checked_out", p.checked_out_count(), 2)
+
+            p.release(c1)
+            check("after_release1_available", p.available_count(), 1)
+            check("after_release1_checked_out", p.checked_out_count(), 1)
+
+            expect("double_release_raises", ValueError, lambda: p.release(c1))
+            check("counts_unchanged_after_double_release_available", p.available_count(), 1)
+            check("counts_unchanged_after_double_release_checked_out", p.checked_out_count(), 1)
+
+            expect("release_foreign_object_raises", ValueError, lambda: p.release("not-a-connection"))
+            check("counts_unchanged_after_foreign_release_available", p.available_count(), 1)
+
+            p.release(c2)
+            check("after_release_both_available", p.available_count(), 2)
+            check("after_release_both_checked_out", p.checked_out_count(), 0)
+
+            # Context manager: normal exit releases.
+            with p.connection() as c:
+                check("inside_with_checked_out", p.checked_out_count(), 1)
+            check("after_normal_with_checked_out", p.checked_out_count(), 0)
+            check("after_normal_with_available", p.available_count(), 2)
+
+            # Context manager: exception inside the block still releases
+            # (the load-bearing check for this task).
+            try:
+                with p.connection() as c:
+                    check("inside_raising_with_checked_out", p.checked_out_count(), 1)
+                    raise RuntimeError("boom")
+            except RuntimeError:
+                pass
+            check("after_raising_with_checked_out", p.checked_out_count(), 0)
+            check("after_raising_with_available", p.available_count(), 2)
+
+            # Nested context managers exhaust and release correctly.
+            with p.connection() as ca:
+                with p.connection() as cb:
+                    check("nested_both_checked_out", p.checked_out_count(), 2)
+                    expect("nested_exhausted_raises", pool_mod.PoolExhausted, p.acquire)
+                check("after_inner_exit_checked_out", p.checked_out_count(), 1)
+            check("after_outer_exit_checked_out", p.checked_out_count(), 0)
+            check("after_outer_exit_available", p.available_count(), 2)
+
+            print("|".join(log))
+        ''')
+        r = _run(scenario)
+        case = "ConnectionPool full lifecycle scenario (acquire/release invariants, context-manager auto-release-on-exception)"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected="all observations OK", actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        bad = [tok for tok in got.split("|") if not tok.endswith("=OK")]
+        if bad:
+            _emit(False, case=case, expected="all observations OK",
+                  actual="; ".join(bad), stage="behavior", reason_code="wrong_output")
+
+        # db.py -- the protected existing caller.
+        r = _run("import pool, db\n"
+                  "p = pool.ConnectionPool(1)\n"
+                  "print(db.run_query(p, 'SELECT 1'))\n"
+                  "print(p.available_count())\n")
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case="db.run_query(pool, ...)  # protected caller + auto-release", expected="1",
+                  actual=actual, stage=stage, reason_code=reason_code)
+        lines = r.stdout.strip().splitlines()
+        if len(lines) != 2 or "SELECT 1" not in lines[0] or lines[1] != "1":
+            _emit(False, case="db.run_query(pool, ...)  # protected caller + auto-release", expected="2 lines, second == '1'",
+                  actual=r.stdout.strip(), stage="behavior", reason_code="wrong_output")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [db.py, NOTES.md]
+allowed_diff_paths: [pool.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: from-scratch (Wave 4, W4B2 stateful/resource-lifecycle batch) --
+  a resource pool with the classic "must release even on exception" and
+  "must reject a double-release" invariants. The load-bearing checks:
+  1. `__exit__` releasing on the HAPPY path only (a naive
+     `with`-protocol implementation using something like
+     `contextlib.contextmanager` with `yield conn` and a `finally:` that
+     was forgotten, or a hand-rolled `__exit__` that only runs cleanup
+     when no exception occurred) -- caught by
+     `after_raising_with_checked_out`/`after_raising_with_available`,
+     which assert the pool is back to fully-available even though the
+     `with` block raised.
+  2. A double-release silently succeeding (e.g. `release()` implemented
+     as `self._available.append(conn)` with no membership/state check at
+     all) -- this is a real resource-safety bug, not just a formality: a
+     naive list-append implementation would let `available_count()` grow
+     to `2` after releasing the SAME already-available connection twice,
+     and a subsequent `acquire()` could then hand out that one
+     `Connection` object to two different callers simultaneously. Caught
+     directly by `counts_unchanged_after_double_release_available`
+     staying at `1`, not `2`.
+  3. Releasing a foreign object (never returned by THIS pool's
+     `acquire()`) being silently accepted -- caught by
+     `release_foreign_object_raises`.
+
+  Verified empirically (hermetic, host python): the reference passes the
+  full scenario; a `wrong` fixture whose context manager only releases on
+  the happy path fails `after_raising_with_checked_out` (`actual` `1`,
+  want `0` -- the connection leaked); a `wrong` fixture whose `release()`
+  never checks for a double-release fails
+  `counts_unchanged_after_double_release_available` (`actual` `2`, want
+  `1`); a `wrong` fixture whose `release()` accepts any object at all
+  (no membership check) fails `release_foreign_object_raises` with
+  `actual` `NO_EXCEPTION`.
+check_fixtures:
+  reference:
+    pool.py: |
+      import contextlib
+
+
+      class PoolExhausted(Exception):
+          pass
+
+
+      class Connection:
+          def __init__(self, id):
+              self.id = id
+
+
+      class ConnectionPool:
+          def __init__(self, size):
+              if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                  raise ValueError("size must be a positive int")
+              self._all = [Connection(i) for i in range(size)]
+              self._available = list(self._all)
+              self._checked_out = set()
+
+          def acquire(self):
+              if not self._available:
+                  raise PoolExhausted("no available connections")
+              conn = self._available.pop()
+              self._checked_out.add(id(conn))
+              return conn
+
+          def release(self, conn):
+              if id(conn) not in self._checked_out:
+                  raise ValueError("connection was not checked out from this pool")
+              self._checked_out.discard(id(conn))
+              self._available.append(conn)
+
+          def available_count(self):
+              return len(self._available)
+
+          def checked_out_count(self):
+              return len(self._checked_out)
+
+          @contextlib.contextmanager
+          def connection(self):
+              conn = self.acquire()
+              try:
+                  yield conn
+              finally:
+                  self.release(conn)
+  alternate:
+    pool.py: |
+      class PoolExhausted(Exception):
+          pass
+
+
+      class Connection:
+          def __init__(self, id):
+              self.id = id
+
+
+      class _ConnectionContext:
+          def __init__(self, pool):
+              self._pool = pool
+              self._conn = None
+
+          def __enter__(self):
+              self._conn = self._pool.acquire()
+              return self._conn
+
+          def __exit__(self, exc_type, exc, tb):
+              self._pool.release(self._conn)
+              return False
+
+
+      class ConnectionPool:
+          def __init__(self, size):
+              if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                  raise ValueError("size must be a positive int")
+              self._all = [Connection(i) for i in range(size)]
+              self._available = list(self._all)
+              self._checked_out_ids = set()
+
+          def acquire(self):
+              if not self._available:
+                  raise PoolExhausted("no available connections")
+              conn = self._available.pop()
+              self._checked_out_ids.add(id(conn))
+              return conn
+
+          def release(self, conn):
+              if id(conn) not in self._checked_out_ids:
+                  raise ValueError("not a checked-out connection from this pool")
+              self._checked_out_ids.remove(id(conn))
+              self._available.append(conn)
+
+          def available_count(self):
+              return len(self._available)
+
+          def checked_out_count(self):
+              return len(self._checked_out_ids)
+
+          def connection(self):
+              return _ConnectionContext(self)
+  wrong:
+    - pool.py: |
+        # BUG: __exit__ only releases when no exception occurred --
+        # a connection leaks forever if the with-block raises.
+        class PoolExhausted(Exception):
+            pass
+
+
+        class Connection:
+            def __init__(self, id):
+                self.id = id
+
+
+        class _ConnectionContext:
+            def __init__(self, pool):
+                self._pool = pool
+                self._conn = None
+
+            def __enter__(self):
+                self._conn = self._pool.acquire()
+                return self._conn
+
+            def __exit__(self, exc_type, exc, tb):
+                if exc_type is None:
+                    self._pool.release(self._conn)
+                return False
+
+
+        class ConnectionPool:
+            def __init__(self, size):
+                if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                    raise ValueError("size must be a positive int")
+                self._all = [Connection(i) for i in range(size)]
+                self._available = list(self._all)
+                self._checked_out_ids = set()
+
+            def acquire(self):
+                if not self._available:
+                    raise PoolExhausted("no available connections")
+                conn = self._available.pop()
+                self._checked_out_ids.add(id(conn))
+                return conn
+
+            def release(self, conn):
+                if id(conn) not in self._checked_out_ids:
+                    raise ValueError("not a checked-out connection from this pool")
+                self._checked_out_ids.remove(id(conn))
+                self._available.append(conn)
+
+            def available_count(self):
+                return len(self._available)
+
+            def checked_out_count(self):
+                return len(self._checked_out_ids)
+
+            def connection(self):
+                return _ConnectionContext(self)
+    - pool.py: |
+        # BUG: release() never checks whether conn was actually checked
+        # out -- a double-release (or a foreign object with an .id
+        # attribute) is silently accepted, corrupting the pool's counts.
+        import contextlib
+
+
+        class PoolExhausted(Exception):
+            pass
+
+
+        class Connection:
+            def __init__(self, id):
+                self.id = id
+
+
+        class ConnectionPool:
+            def __init__(self, size):
+                if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                    raise ValueError("size must be a positive int")
+                self._all = [Connection(i) for i in range(size)]
+                self._available = list(self._all)
+                self._checked_out = 0
+
+            def acquire(self):
+                if not self._available:
+                    raise PoolExhausted("no available connections")
+                self._checked_out += 1
+                return self._available.pop()
+
+            def release(self, conn):
+                self._available.append(conn)
+                self._checked_out = max(0, self._checked_out - 1)
+
+            def available_count(self):
+                return len(self._available)
+
+            def checked_out_count(self):
+                return self._checked_out
+
+            @contextlib.contextmanager
+            def connection(self):
+                conn = self.acquire()
+                try:
+                    yield conn
+                finally:
+                    self.release(conn)
+    - pool.py: |
+        # BUG: release() checks membership in `_all` (any connection this
+        # pool ever created) rather than "currently checked out" -- so it
+        # rejects nothing as a double-release; ANY of this pool's own
+        # connections can be released arbitrarily many times.
+        import contextlib
+
+
+        class PoolExhausted(Exception):
+            pass
+
+
+        class Connection:
+            def __init__(self, id):
+                self.id = id
+
+
+        class ConnectionPool:
+            def __init__(self, size):
+                if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+                    raise ValueError("size must be a positive int")
+                self._all = [Connection(i) for i in range(size)]
+                self._available = list(self._all)
+
+            def acquire(self):
+                if not self._available:
+                    raise PoolExhausted("no available connections")
+                return self._available.pop()
+
+            def release(self, conn):
+                if conn not in self._all:
+                    raise ValueError("not a connection from this pool")
+                self._available.append(conn)
+
+            def available_count(self):
+                return len(self._available)
+
+            def checked_out_count(self):
+                return len(self._all) - len(self._available)
+
+            @contextlib.contextmanager
+            def connection(self):
+                conn = self.acquire()
+                try:
+                    yield conn
+                finally:
+                    self.release(conn)

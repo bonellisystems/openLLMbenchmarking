@@ -1,0 +1,471 @@
+id: py-feat-02
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small shipping-cost system, split across 3 files:
+
+  - `strategy.py` -- an abstract base class `ShippingStrategy` with one
+    abstract method, `cost(self, weight_kg, distance_km)`. Contract every
+    implementation must follow: raise `ValueError` if `weight_kg` or
+    `distance_km` is negative; otherwise return a non-negative `float`.
+    Two strategies already exist and are correct: `StandardShipping`
+    (`cost = weight_kg * 0.5 + distance_km * 0.01`) and `ExpressShipping`
+    (`cost = weight_kg * 1.2 + distance_km * 0.05 + 5.0`).
+  - `registry.py` -- the EXISTING caller `get_quote(method, weight_kg,
+    distance_km)`: looks `method` up in the `STRATEGIES` dict (currently
+    `{"standard": StandardShipping(), "express": ExpressShipping()}`),
+    raising `KeyError` if `method` isn't registered, else delegating to
+    that strategy's `.cost(...)`.
+  - `cli.py` -- a second EXISTING caller, `quote_line(method, weight_kg,
+    distance_km)`, which calls `registry.get_quote` and formats the
+    result: `f"{method}: ${cost:.2f}"` on success, `f"unknown method:
+    {method}"` on `KeyError`, `f"invalid input: {e}"` on `ValueError`.
+    Must keep working exactly as written.
+
+  Add a new strategy, `EconomyShipping`, to `strategy.py`, following the
+  `ShippingStrategy` contract above: `cost = weight_kg * 0.3 + distance_km
+  * 0.008`, BUT with a $2.00 MINIMUM charge -- if the computed cost is
+  below $2.00, charge $2.00 instead. Register it in `registry.py`'s
+  `STRATEGIES` dict under the exact key `"economy"` so `get_quote("economy",
+  ...)` and (through it) `cli.quote_line("economy", ...)` both work.
+
+  You may modify ONLY `strategy.py` and `registry.py`. Do not create or
+  edit `cli.py` or `NOTES.md`.
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 14}
+setup_repo:
+  strategy.py: |
+    from abc import ABC, abstractmethod
+
+
+    class ShippingStrategy(ABC):
+        """Contract every strategy must follow: raise ValueError if
+        weight_kg or distance_km is negative; otherwise return a
+        non-negative float cost."""
+
+        @abstractmethod
+        def cost(self, weight_kg, distance_km):
+            raise NotImplementedError
+
+
+    class StandardShipping(ShippingStrategy):
+        def cost(self, weight_kg, distance_km):
+            if weight_kg < 0 or distance_km < 0:
+                raise ValueError("weight_kg and distance_km must be non-negative")
+            return weight_kg * 0.5 + distance_km * 0.01
+
+
+    class ExpressShipping(ShippingStrategy):
+        def cost(self, weight_kg, distance_km):
+            if weight_kg < 0 or distance_km < 0:
+                raise ValueError("weight_kg and distance_km must be non-negative")
+            return weight_kg * 1.2 + distance_km * 0.05 + 5.0
+  registry.py: |
+    from strategy import StandardShipping, ExpressShipping
+
+
+    STRATEGIES = {
+        "standard": StandardShipping(),
+        "express": ExpressShipping(),
+    }
+
+
+    def get_quote(method, weight_kg, distance_km):
+        """Existing caller: looks `method` up in STRATEGIES (raises
+        KeyError if not registered), delegates to that strategy's
+        .cost(...) (which may itself raise ValueError on invalid input)."""
+        strategy = STRATEGIES[method]
+        return strategy.cost(weight_kg, distance_km)
+  cli.py: |
+    from registry import get_quote
+
+
+    def quote_line(method, weight_kg, distance_km):
+        """Existing caller: formats a get_quote() result, or a friendly
+        message on the two error types get_quote can raise. Must keep
+        working unchanged."""
+        try:
+            cost = get_quote(method, weight_kg, distance_km)
+        except KeyError:
+            return f"unknown method: {method}"
+        except ValueError as e:
+            return f"invalid input: {e}"
+        else:
+            return f"{method}: ${cost:.2f}"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _numeric_match(out, want, tol=0.005):
+        try:
+            return abs(float(out) - float(want)) < tol
+        except ValueError:
+            return False
+
+
+    def _check_numeric(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=str(want), actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if not _numeric_match(got, want):
+            _emit(False, case=case, expected=str(want), actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _check_exact(code, case, want):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _check_type(code, case, want_type_name):
+        r = _run(code)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want_type_name, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want_type_name:
+            _emit(False, case=case, expected=want_type_name, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+
+    def _raise_type_code(expr):
+        return (
+            "import strategy\n"
+            "try:\n"
+            f"    {expr}\n"
+            "    print('NO_EXCEPTION')\n"
+            "except ValueError:\n"
+            "    print('ValueError')\n"
+            "except Exception as e:\n"
+            "    print(type(e).__name__)\n"
+        )
+
+
+    def main():
+        # EconomyShipping direct behavior: formula, minimum charge, ValueError contract.
+        _check_numeric(
+            "import strategy\nprint(strategy.EconomyShipping().cost(10, 100))\n",
+            "EconomyShipping().cost(10, 100)", 3.8)
+        _check_numeric(
+            "import strategy\nprint(strategy.EconomyShipping().cost(1, 1))\n",
+            "EconomyShipping().cost(1, 1)  # below the $2.00 minimum", 2.0)
+        _check_numeric(
+            "import strategy\nprint(strategy.EconomyShipping().cost(0, 0))\n",
+            "EconomyShipping().cost(0, 0)  # zero cost still floored to the minimum", 2.0)
+        _check_type(
+            _raise_type_code("strategy.EconomyShipping().cost(-1, 10)"),
+            "type(raised) for EconomyShipping().cost(-1, 10)", "ValueError")
+        _check_type(
+            _raise_type_code("strategy.EconomyShipping().cost(10, -1)"),
+            "type(raised) for EconomyShipping().cost(10, -1)", "ValueError")
+
+        # Registered under "economy" and reachable through both existing callers.
+        _check_numeric(
+            "import registry\nprint(registry.get_quote('economy', 10, 100))\n",
+            "registry.get_quote('economy', 10, 100)", 3.8)
+        _check_exact(
+            "import cli\nprint(cli.quote_line('economy', 1, 1))\n",
+            "cli.quote_line('economy', 1, 1)  # floored to the minimum", "economy: $2.00")
+        _check_exact(
+            "import cli\nprint(cli.quote_line('economy', -1, 1))\n",
+            "cli.quote_line('economy', -1, 1)", "invalid input: weight_kg and distance_km must be non-negative")
+
+        # Regression: existing strategies/methods/error paths must still work.
+        _check_exact(
+            "import cli\nprint(cli.quote_line('standard', 10, 100))\n",
+            "cli.quote_line('standard', 10, 100)  # regression", "standard: $6.00")
+        _check_exact(
+            "import cli\nprint(cli.quote_line('express', 10, 100))\n",
+            "cli.quote_line('express', 10, 100)  # regression", "express: $22.00")
+        _check_exact(
+            "import cli\nprint(cli.quote_line('bogus', 1, 1))\n",
+            "cli.quote_line('bogus', 1, 1)  # regression, unknown method", "unknown method: bogus")
+        _check_type(
+            ("import registry\n"
+             "try:\n"
+             "    registry.get_quote('bogus', 1, 1)\n"
+             "    print('NO_EXCEPTION')\n"
+             "except KeyError:\n"
+             "    print('KeyError')\n"
+             "except Exception as e:\n"
+             "    print(type(e).__name__)\n"),
+            "type(raised) for registry.get_quote('bogus', 1, 1)  # regression", "KeyError")
+
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [cli.py, NOTES.md]
+allowed_diff_paths: [strategy.py, registry.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B2 feature-integration batch) -- implement
+  a new subclass against an existing ABC/strategy contract AND register it
+  in an existing factory dict, with a downstream existing caller (`cli.py`,
+  protected) that must keep working through BOTH the new success path and
+  its existing error-formatting paths. Traps:
+  1. Forgetting the $2.00 MINIMUM-charge business rule -- passes a
+     "normal" input like `(10, 100)` (well above the floor) but fails the
+     low-weight/low-distance case, and the true edge `(0, 0)`.
+  2. Omitting the `ValueError`-on-negative-input contract that
+     `StandardShipping`/`ExpressShipping` both already honor -- `cli.py`'s
+     `except ValueError as e: return f"invalid input: {e}"` branch is
+     the ONLY thing standing between a bad input and an unhandled crash
+     surfacing all the way through `cli.quote_line`, so a solution that
+     lets a `TypeError` (e.g. from an unguarded arithmetic op) or no
+     exception at all through fails both the direct type-check case and
+     the `cli.quote_line` regression case.
+  3. Registering under the wrong key (e.g. `"Economy"` or `"eco"`) or
+     forgetting to register at all -- caught by
+     `registry.get_quote('economy', ...)` and the `cli.quote_line`
+     success-path case both raising `KeyError` instead of returning a
+     quote.
+  4. Accidentally breaking `standard`/`express` while editing
+     `registry.py`'s `STRATEGIES` dict (e.g. losing an existing entry) --
+     `strategy.py`/`registry.py` are both agent-editable (not
+     hash-protected, since the agent legitimately needs to touch both), so
+     only the BEHAVIORAL regression checks at the end catch this, same
+     "re-verify every handler, not just the one that changed" rationale as
+     `py-hard-toolheavy-01` (task-16.yaml).
+
+  Verified empirically (hermetic, host python): the reference passes every
+  case; a `wrong` fixture that omits the minimum-charge floor fails
+  `EconomyShipping().cost(1, 1)` (`actual` ~`0.308`, want `2.0`); a
+  `wrong` fixture that skips the negative-input ValueError check fails the
+  direct type-check case with `actual` `NO_EXCEPTION`; a `wrong` fixture
+  that registers under `"eco"` instead of `"economy"` fails
+  `registry.get_quote('economy', ...)` with a `KeyError` crash (stage
+  `behavior`, reason_code `runtime_error`).
+check_fixtures:
+  reference:
+    strategy.py: |
+      from abc import ABC, abstractmethod
+
+
+      class ShippingStrategy(ABC):
+          @abstractmethod
+          def cost(self, weight_kg, distance_km):
+              raise NotImplementedError
+
+
+      class StandardShipping(ShippingStrategy):
+          def cost(self, weight_kg, distance_km):
+              if weight_kg < 0 or distance_km < 0:
+                  raise ValueError("weight_kg and distance_km must be non-negative")
+              return weight_kg * 0.5 + distance_km * 0.01
+
+
+      class ExpressShipping(ShippingStrategy):
+          def cost(self, weight_kg, distance_km):
+              if weight_kg < 0 or distance_km < 0:
+                  raise ValueError("weight_kg and distance_km must be non-negative")
+              return weight_kg * 1.2 + distance_km * 0.05 + 5.0
+
+
+      class EconomyShipping(ShippingStrategy):
+          def cost(self, weight_kg, distance_km):
+              if weight_kg < 0 or distance_km < 0:
+                  raise ValueError("weight_kg and distance_km must be non-negative")
+              computed = weight_kg * 0.3 + distance_km * 0.008
+              return max(computed, 2.0)
+    registry.py: |
+      from strategy import StandardShipping, ExpressShipping, EconomyShipping
+
+
+      STRATEGIES = {
+          "standard": StandardShipping(),
+          "express": ExpressShipping(),
+          "economy": EconomyShipping(),
+      }
+
+
+      def get_quote(method, weight_kg, distance_km):
+          strategy = STRATEGIES[method]
+          return strategy.cost(weight_kg, distance_km)
+  wrong:
+    - strategy.py: |
+        from abc import ABC, abstractmethod
+
+
+        class ShippingStrategy(ABC):
+            @abstractmethod
+            def cost(self, weight_kg, distance_km):
+                raise NotImplementedError
+
+
+        class StandardShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 0.5 + distance_km * 0.01
+
+
+        class ExpressShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 1.2 + distance_km * 0.05 + 5.0
+
+
+        class EconomyShipping(ShippingStrategy):
+            # BUG: no minimum-charge floor.
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 0.3 + distance_km * 0.008
+      registry.py: |
+        from strategy import StandardShipping, ExpressShipping, EconomyShipping
+
+
+        STRATEGIES = {
+            "standard": StandardShipping(),
+            "express": ExpressShipping(),
+            "economy": EconomyShipping(),
+        }
+
+
+        def get_quote(method, weight_kg, distance_km):
+            strategy = STRATEGIES[method]
+            return strategy.cost(weight_kg, distance_km)
+    - strategy.py: |
+        from abc import ABC, abstractmethod
+
+
+        class ShippingStrategy(ABC):
+            @abstractmethod
+            def cost(self, weight_kg, distance_km):
+                raise NotImplementedError
+
+
+        class StandardShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 0.5 + distance_km * 0.01
+
+
+        class ExpressShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 1.2 + distance_km * 0.05 + 5.0
+
+
+        class EconomyShipping(ShippingStrategy):
+            # BUG: no input validation at all -- negative inputs silently
+            # produce a (wrong) number instead of raising ValueError.
+            def cost(self, weight_kg, distance_km):
+                computed = weight_kg * 0.3 + distance_km * 0.008
+                return max(computed, 2.0)
+      registry.py: |
+        from strategy import StandardShipping, ExpressShipping, EconomyShipping
+
+
+        STRATEGIES = {
+            "standard": StandardShipping(),
+            "express": ExpressShipping(),
+            "economy": EconomyShipping(),
+        }
+
+
+        def get_quote(method, weight_kg, distance_km):
+            strategy = STRATEGIES[method]
+            return strategy.cost(weight_kg, distance_km)
+    - strategy.py: |
+        from abc import ABC, abstractmethod
+
+
+        class ShippingStrategy(ABC):
+            @abstractmethod
+            def cost(self, weight_kg, distance_km):
+                raise NotImplementedError
+
+
+        class StandardShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 0.5 + distance_km * 0.01
+
+
+        class ExpressShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                return weight_kg * 1.2 + distance_km * 0.05 + 5.0
+
+
+        class EconomyShipping(ShippingStrategy):
+            def cost(self, weight_kg, distance_km):
+                if weight_kg < 0 or distance_km < 0:
+                    raise ValueError("weight_kg and distance_km must be non-negative")
+                computed = weight_kg * 0.3 + distance_km * 0.008
+                return max(computed, 2.0)
+      registry.py: |
+        # BUG: registered under "eco" instead of the documented "economy" key.
+        from strategy import StandardShipping, ExpressShipping, EconomyShipping
+
+
+        STRATEGIES = {
+            "standard": StandardShipping(),
+            "express": ExpressShipping(),
+            "eco": EconomyShipping(),
+        }
+
+
+        def get_quote(method, weight_kg, distance_km):
+            strategy = STRATEGIES[method]
+            return strategy.cost(weight_kg, distance_km)
