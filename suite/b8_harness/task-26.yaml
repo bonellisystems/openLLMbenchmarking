@@ -1,0 +1,274 @@
+id: py-xmod-04
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo has three files:
+
+  - `normalize.py` -- `normalize_profile(record)`, meant to normalize a
+    user-profile record to the canonical shape `{"name": ..., "email":
+    ...}`. It must accept EITHER the CURRENT schema (`{"name", "email"}`)
+    OR the LEGACY schema (`{"full_name", "email_addr"}`) still emitted by
+    some older data sources still flowing through this pipeline -- when a
+    key is present under EITHER name (even if its value is an empty
+    string), that value must be used; when a field is missing under BOTH
+    names, its canonical value is `None`. If BOTH the new-schema key and
+    the old-schema key are present on the same record, the NEW-schema key
+    takes precedence. The returned dict must contain EXACTLY these two
+    keys -- any other keys present on the input record (of either schema)
+    must NOT appear in the result.
+  - `legacy_importer.py` -- an EXISTING caller elsewhere in this codebase
+    still feeding OLD-schema records through `normalize.normalize_profile`.
+    Must keep working.
+  - `current_importer.py` -- another EXISTING caller feeding NEW-schema
+    records through `normalize.normalize_profile`. Must also keep working.
+
+  `normalize_profile` currently only understands the new schema, so every
+  old-schema record silently comes out with missing `name`/`email` fields.
+  Fix it so it satisfies the full contract described above (both schemas,
+  extra-key stripping, and new-over-old precedence). Only modify
+  `normalize.py` -- do not create or edit any other file (including
+  `legacy_importer.py`, `current_importer.py`, or `NOTES.md`).
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 16}
+setup_repo:
+  normalize.py: |
+    def normalize_profile(record):
+        """Normalize a user-profile record to the canonical shape
+        {"name": ..., "email": ...}. Must accept EITHER the CURRENT schema
+        ({"name", "email"}) OR the LEGACY schema ({"full_name", "email_addr"})
+        still emitted by some older data sources -- when a key is present
+        under EITHER name (even if its value is an empty string), use that
+        value; when a field is missing under BOTH names, its canonical value
+        is None. The returned dict must contain EXACTLY these two keys --
+        any other keys present on the input record (of either schema) must
+        NOT appear in the result."""
+        return {"name": record.get("name"), "email": record.get("email")}
+  legacy_importer.py: |
+    from normalize import normalize_profile
+
+    LEGACY_RECORDS = [
+        {"full_name": "Alice Smith", "email_addr": "alice@example.com"},
+        {"full_name": "Bob Jones", "email_addr": "bob@example.com", "source": "old_crm"},
+    ]
+
+
+    def import_legacy_batch():
+        """Existing integration still feeding old-schema records through the
+        normalizer -- must keep working after any fix to normalize_profile."""
+        return [normalize_profile(r) for r in LEGACY_RECORDS]
+  current_importer.py: |
+    from normalize import normalize_profile
+
+    CURRENT_RECORDS = [
+        {"name": "Carla Diaz", "email": "carla@example.com"},
+        {"name": "Deshawn Lee", "email": "deshawn@example.com", "role": "admin"},
+    ]
+
+
+    def import_current_batch():
+        """Existing integration feeding current-schema records through the
+        normalizer -- must also keep working."""
+        return [normalize_profile(r) for r in CURRENT_RECORDS]
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        """Run generated `code` in a FRESH subprocess -- never `import` any
+        candidate module into THIS process (SUBPROCESS-ISOLATED convention
+        every Python B8 oracle follows: a module-level `sys.exit(0)` in any
+        candidate file can only kill its own throwaway subprocess, leaving
+        no matching stdout, so comparisons below still correctly fail)."""
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _numeric_match(out, want, tol=0.005):
+        try:
+            return abs(float(out) - float(want)) < tol
+        except ValueError:
+            return False
+
+
+    DIRECT_CASES = [
+        ({"name": "X", "email": "y@z.com"}, {"name": "X", "email": "y@z.com"}),
+        ({"full_name": "X", "email_addr": "y@z.com"}, {"name": "X", "email": "y@z.com"}),
+        ({"name": "X", "email": "y@z.com", "age": 30}, {"name": "X", "email": "y@z.com"}),
+        ({"full_name": "X", "email_addr": "y@z.com", "age": 30},
+         {"name": "X", "email": "y@z.com"}),
+        ({"name": "X"}, {"name": "X", "email": None}),
+        ({"full_name": "X"}, {"name": "X", "email": None}),
+        ({}, {"name": None, "email": None}),
+        ({"name": "", "email": "x@example.com"}, {"name": "", "email": "x@example.com"}),
+        ({"full_name": "", "email_addr": "x@example.com"},
+         {"name": "", "email": "x@example.com"}),
+        ({"name": "New", "full_name": "Old", "email": "n@e.com"},
+         {"name": "New", "email": "n@e.com"}),
+        ({"email": "only@e.com"}, {"name": None, "email": "only@e.com"}),
+        ({"email_addr": "only@e.com"}, {"name": None, "email": "only@e.com"}),
+    ]
+
+
+    def main():
+        for record, want_dict in DIRECT_CASES:
+            want = json.dumps(want_dict, sort_keys=True)
+            code = ("import json\nimport normalize\n"
+                    f"print(json.dumps(normalize.normalize_profile({record!r}), sort_keys=True))\n")
+            r = _run(code)
+            case = f"normalize_profile({record!r})"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=want, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != want:
+                _emit(False, case=case, expected=want, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        want_legacy = json.dumps(
+            [{"name": "Alice Smith", "email": "alice@example.com"},
+             {"name": "Bob Jones", "email": "bob@example.com"}], sort_keys=True)
+        code = "import json\nimport legacy_importer\nprint(json.dumps(legacy_importer.import_legacy_batch(), sort_keys=True))\n"
+        r = _run(code)
+        case = "legacy_importer.import_legacy_batch()"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want_legacy, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want_legacy:
+            _emit(False, case=case, expected=want_legacy, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+
+        want_current = json.dumps(
+            [{"name": "Carla Diaz", "email": "carla@example.com"},
+             {"name": "Deshawn Lee", "email": "deshawn@example.com"}], sort_keys=True)
+        code = "import json\nimport current_importer\nprint(json.dumps(current_importer.import_current_batch(), sort_keys=True))\n"
+        r = _run(code)
+        case = "current_importer.import_current_batch()"
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want_current, actual=actual,
+                  stage=stage, reason_code=reason_code)
+        got = r.stdout.strip()
+        if got != want_current:
+            _emit(False, case=case, expected=want_current, actual=got,
+                  stage="behavior", reason_code="wrong_output")
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [legacy_importer.py, current_importer.py, NOTES.md]
+allowed_diff_paths: [normalize.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B1 cross-module-contract batch) --
+  a versioned-schema migration/normalization contract: `normalize_profile`
+  must simultaneously satisfy TWO protected existing callers, one feeding
+  old-schema data (`legacy_importer.py`) and one feeding new-schema data
+  (`current_importer.py`) -- both must keep working, exercising BOTH sides
+  of the contract per the category's brief. `DIRECT_CASES` additionally
+  covers the "present-but-empty-string counts as present" precedence rule
+  and the "extra keys must be stripped" rule independently of either
+  importer.
+
+  Verified empirically: the ORIGINAL unfixed `normalize.py` fails the
+  second direct case (an old-schema-only record) with
+  `{"name": None, "email": None}` (want the actual values) and fails
+  `legacy_importer.import_legacy_batch()` outright.
+  `check_fixtures.wrong[1]` (`record.get("name") or record.get(
+  "full_name")`, using `or` instead of a presence check) fails
+  specifically on the present-but-empty-string case (case 8): an empty
+  `""` name is falsy, so `or` wrongly falls through to the (absent)
+  `full_name` key instead of keeping the explicitly-provided `""`.
+  `check_fixtures.wrong[2]` (renames the legacy keys correctly via
+  `dict.pop` but never strips OTHER unrelated extra keys) fails the
+  extra-key cases (3, 4) and both importer batch checks (`source`/`role`
+  leak into the result).
+check_fixtures:
+  reference:
+    normalize.py: |
+      def normalize_profile(record):
+          name = record.get("name", record.get("full_name"))
+          email = record.get("email", record.get("email_addr"))
+          return {"name": name, "email": email}
+  alternate:
+    normalize.py: |
+      def normalize_profile(record):
+          if "name" in record:
+              name = record["name"]
+          else:
+              name = record.get("full_name")
+          if "email" in record:
+              email = record["email"]
+          else:
+              email = record.get("email_addr")
+          return {"name": name, "email": email}
+  wrong:
+    - normalize.py: |
+        def normalize_profile(record):
+            return {"name": record.get("name"), "email": record.get("email")}
+    - normalize.py: |
+        def normalize_profile(record):
+            name = record.get("name") or record.get("full_name")
+            email = record.get("email") or record.get("email_addr")
+            return {"name": name, "email": email}
+    - normalize.py: |
+        def normalize_profile(record):
+            result = dict(record)
+            if "full_name" in result:
+                result["name"] = result.pop("full_name")
+            if "email_addr" in result:
+                result["email"] = result.pop("email_addr")
+            return result

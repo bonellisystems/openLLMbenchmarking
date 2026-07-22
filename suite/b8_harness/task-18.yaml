@@ -1,0 +1,279 @@
+id: py-brk-02
+shape: multi-file
+task_version: "1.0.0"
+prompt: |
+  The repo is a small garment-catalog pipeline, split across 4 files:
+
+  - `constants.py` -- shared unit-conversion constants.
+  - `convert.py` -- `inches_to_cm(inches)` and `feet_to_cm(feet)`, built on
+    top of `constants.py`'s values.
+  - `garment.py` -- `size_in_cm(size_inches)` and `sleeve_length_cm(feet,
+    extra_inches)`, built on top of `convert.py`.
+  - `catalog.py` -- `format_listing(name, size_inches, sleeve_feet,
+    sleeve_extra_inches)`, the top-level function that builds a catalog
+    listing string, built on top of `garment.py`.
+
+  Every centimeter measurement `catalog.format_listing` (and everything
+  underneath it) produces is slightly off. `convert.py`, `garment.py`, and
+  `catalog.py` are all internally consistent and correctly implement
+  exactly what their own code says -- the actual defect is a single wrong
+  NUMBER, four calls deep from where the wrong output is observed. Find it
+  and fix it. Only modify `constants.py` -- do not create or edit any other
+  file (including `convert.py`, `garment.py`, `catalog.py`, or `NOTES.md`),
+  even if you notice something about one of them you'd otherwise want to
+  change.
+
+  (1 inch is exactly 2.54 centimeters.)
+allowed_tools: [read_file, write_file, list_files, bash_exec]
+budgets: {wall_clock_s: 300, tokens: 6000, steps: 16}
+setup_repo:
+  constants.py: |
+    """Shared unit-conversion constants used throughout the catalog
+    pipeline."""
+
+    CM_PER_INCH = 2.45
+    INCHES_PER_FOOT = 12
+    FEET_PER_YARD = 3
+  convert.py: |
+    from constants import CM_PER_INCH, INCHES_PER_FOOT
+
+
+    def inches_to_cm(inches):
+        """Convert a length in inches to centimeters."""
+        return inches * CM_PER_INCH
+
+
+    def feet_to_cm(feet):
+        """Convert a length in feet to centimeters."""
+        return inches_to_cm(feet * INCHES_PER_FOOT)
+  garment.py: |
+    from convert import inches_to_cm, feet_to_cm
+
+
+    def size_in_cm(size_inches):
+        """A garment's labeled size (in inches) converted to centimeters,
+        rounded to 1 decimal place."""
+        return round(inches_to_cm(size_inches), 1)
+
+
+    def sleeve_length_cm(feet, extra_inches):
+        """A sleeve length given as whole feet plus extra inches, converted
+        to centimeters, rounded to 1 decimal place."""
+        return round(feet_to_cm(feet) + inches_to_cm(extra_inches), 1)
+  catalog.py: |
+    from garment import size_in_cm, sleeve_length_cm
+
+
+    def format_listing(name, size_inches, sleeve_feet, sleeve_extra_inches):
+        """Build a catalog listing line for a garment: its name, its
+        converted size, and its converted sleeve length, both in cm."""
+        size_cm = size_in_cm(size_inches)
+        sleeve_cm = sleeve_length_cm(sleeve_feet, sleeve_extra_inches)
+        return f"{name}: size {size_cm}cm, sleeve {sleeve_cm}cm"
+  NOTES.md: |
+    # Task metadata
+
+    This file is part of the task fixture. Do not edit it.
+oracle_files:
+  oracle_test.py: |
+    import json
+    import subprocess
+    import sys
+
+
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
+    def _run(code):
+        """Run generated `code` in a FRESH subprocess -- never `import` any
+        candidate module into THIS process (SUBPROCESS-ISOLATED convention
+        every Python B8 oracle follows: a module-level `sys.exit(0)` in any
+        candidate file can only kill its own throwaway subprocess, leaving
+        no matching stdout, so comparisons below still correctly fail)."""
+        return subprocess.run([sys.executable, "-c", code], capture_output=True,
+                              text=True, timeout=10)
+
+
+    def _numeric_match(out, want, tol=0.005):
+        try:
+            return abs(float(out) - float(want)) < tol
+        except ValueError:
+            return False
+
+
+    _CM_PER_INCH = 2.54
+    _INCHES_PER_FOOT = 12
+
+
+    def _want_inches_to_cm(inches):
+        return inches * _CM_PER_INCH
+
+
+    def _want_feet_to_cm(feet):
+        return _want_inches_to_cm(feet * _INCHES_PER_FOOT)
+
+
+    def _want_size_in_cm(size_inches):
+        return round(_want_inches_to_cm(size_inches), 1)
+
+
+    def _want_sleeve_length_cm(feet, extra_inches):
+        return round(_want_feet_to_cm(feet) + _want_inches_to_cm(extra_inches), 1)
+
+
+    NUMERIC_CASES = [
+        ("convert.inches_to_cm(10)", "import convert\nprint(convert.inches_to_cm(10))",
+         _want_inches_to_cm(10)),
+        ("convert.inches_to_cm(0)", "import convert\nprint(convert.inches_to_cm(0))",
+         _want_inches_to_cm(0)),
+        ("convert.feet_to_cm(1)", "import convert\nprint(convert.feet_to_cm(1))",
+         _want_feet_to_cm(1)),
+        ("convert.feet_to_cm(3.5)", "import convert\nprint(convert.feet_to_cm(3.5))",
+         _want_feet_to_cm(3.5)),
+        ("garment.size_in_cm(36)", "import garment\nprint(garment.size_in_cm(36))",
+         _want_size_in_cm(36)),
+        ("garment.size_in_cm(15.5)", "import garment\nprint(garment.size_in_cm(15.5))",
+         _want_size_in_cm(15.5)),
+        ("garment.sleeve_length_cm(2, 5)",
+         "import garment\nprint(garment.sleeve_length_cm(2, 5))",
+         _want_sleeve_length_cm(2, 5)),
+    ]
+
+    LISTING_CASES = [
+        ("Shirt", 40, 2, 3),
+        ("Jacket", 44, 2, 8),
+        ("Tee", 18, 0, 0),
+    ]
+
+
+    def _want_listing(name, size_inches, sleeve_feet, sleeve_extra_inches):
+        size_cm = _want_size_in_cm(size_inches)
+        sleeve_cm = _want_sleeve_length_cm(sleeve_feet, sleeve_extra_inches)
+        return f"{name}: size {size_cm}cm, sleeve {sleeve_cm}cm"
+
+
+    def main():
+        for case, code, want in NUMERIC_CASES:
+            r = _run(code)
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=str(want), actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if not _numeric_match(got, want, tol=0.05):
+                _emit(False, case=case, expected=str(want), actual=got,
+                      stage="behavior", reason_code="wrong_output")
+
+        for name, size_inches, sleeve_feet, sleeve_extra_inches in LISTING_CASES:
+            want = _want_listing(name, size_inches, sleeve_feet, sleeve_extra_inches)
+            code = ("import catalog\n"
+                    f"print(catalog.format_listing({name!r}, {size_inches!r}, "
+                    f"{sleeve_feet!r}, {sleeve_extra_inches!r}))\n")
+            r = _run(code)
+            case = f"catalog.format_listing({name!r}, {size_inches}, {sleeve_feet}, {sleeve_extra_inches})"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=want, actual=actual,
+                      stage=stage, reason_code=reason_code)
+            got = r.stdout.strip()
+            if got != want:
+                _emit(False, case=case, expected=want, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+        _emit(True)
+
+
+    if __name__ == "__main__":
+        main()
+protected_paths: [convert.py, garment.py, catalog.py, NOTES.md]
+allowed_diff_paths: [constants.py]
+oracle:
+  type: command
+  argv: ["bash", "-c", "set -e; cp -r /oracle /tmp/work && cd /tmp/work && python3 oracle_test.py"]
+notes: |
+  Shape: multi-file (Wave 4, W4B1 root-cause-localization batch) --
+  the deepest of this batch's chains: a single wrong constant
+  (`CM_PER_INCH = 2.45`, a plausible digit transposition of the correct
+  `2.54`) sits at the BOTTOM of a 4-file call chain (constants -> convert ->
+  garment -> catalog), consumed by three intermediate files that are all
+  individually correct. `FEET_PER_YARD` is a deliberately UNUSED, entirely
+  correct decoy constant in the same file, included so a fix isn't
+  mistakenly "helped along" by touching something irrelevant. Every layer
+  is re-verified behaviorally (not just the top-level `catalog.
+  format_listing`) for defense in depth, mirroring py-hard-toolheavy-01's
+  "re-check every handler" rationale.
+
+  Verified empirically: the ORIGINAL unfixed constant fails the very first
+  case, `convert.inches_to_cm(10)` -> `24.5` (want `25.4`); `check_fixtures.
+  wrong[1]` (`CM_PER_INCH = 25.4`, a plausible cm/mm unit-confusion
+  overcorrection -- exactly 10x too large) fails just as clearly, proving
+  the oracle isn't merely checking "changed from 2.45".
+check_fixtures:
+  reference:
+    constants.py: |
+      """Shared unit-conversion constants used throughout the catalog
+      pipeline."""
+
+      CM_PER_INCH = 2.54
+      INCHES_PER_FOOT = 12
+      FEET_PER_YARD = 3
+  alternate:
+    constants.py: |
+      """Shared unit-conversion constants used throughout the catalog
+      pipeline."""
+
+      CM_PER_INCH = 127 / 50  # == 2.54
+      INCHES_PER_FOOT = 12
+      FEET_PER_YARD = 3
+  wrong:
+    - constants.py: |
+        """Shared unit-conversion constants used throughout the catalog
+        pipeline."""
+
+        CM_PER_INCH = 2.45
+        INCHES_PER_FOOT = 12
+        FEET_PER_YARD = 3
+    - constants.py: |
+        """Shared unit-conversion constants used throughout the catalog
+        pipeline."""
+
+        CM_PER_INCH = 25.4
+        INCHES_PER_FOOT = 12
+        FEET_PER_YARD = 3
