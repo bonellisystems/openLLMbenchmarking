@@ -23,7 +23,7 @@ _One row per (battery, source_suite) present -- a battery whose rows span more t
 | B6 | B6 Agentic Coding (deterministic + judged correctness not yet wired) | suite-v2.0.0 | 480 | complete (all roster models present) |
 | B7 | B7 Harness/Config Sensitivity Matrix (deterministic) | suite-v2.0.0 | 1280 | complete (all roster models present) |
 
-Total rows loaded: **9096** (across every source_suite shard read)
+Total rows loaded: **9396** (across every source_suite shard read)
 
 ### B1 judging progress
 
@@ -293,19 +293,21 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 
 ## 5. B8 Harness Canary (real-harness completion + subagent-spawn canary)
 
-Per-`(model, harness)` completion proportion as RAW k/N + a Wilson 95% confidence interval (`llmtest.harness.stats.wilson`, z=1.96) -- never a smoothed point-probability claim at small N (spec 2.8) -- plus median steps/tokens, the subagent-spawn canary (spec 2.7: `not_applicable` honored for harnesses with no delegation primitive, never a false 0%), and a first-failure-class distribution (populated from `results/b8_classifications-<suite_version>.jsonl` when `scripts/classify_b8_local.py` has been run for this suite -- see the note below the table).
+Per-`(model, harness)` completion proportion as RAW k/N + a Wilson 95% confidence interval (`llmtest.harness.stats.wilson`, z=1.96) -- never a smoothed point-probability claim at small N (spec 2.8) -- plus median steps/tokens, the subagent-spawn canary (spec 2.7: `not_applicable` honored for harnesses with no delegation primitive, never a false 0%), and a first-failure-class distribution (populated from `results/b8_classifications-<suite_version>.jsonl` when `scripts/classify_b8_local.py` has been run for this suite -- see the note below the table). `infra-error` runs (HARNESS/serving-layer failures -- endpoint unreachable etc.; the model never got a fair chance) are EXCLUDED from k/N, the Wilson interval, and every per-replicate signal, never counted as model failures; the `Infra-excluded` column reports how many such runs were dropped per cell (attempted = eligible N + Infra-excluded), so the exclusion is transparent rather than silent.
 
-_source_suite: `suite-v2.1.0` (25 rows, 1 (model,harness) group(s))_
+_source_suite: `suite-v2.1.0` (325 rows, 2 (model,harness) group(s))_
 
-| Model | Harness | Completion k/N | Wilson 95% CI | Per-replicate outcomes | Median steps | Median tokens | Subagent canary |
-|---|---|---|---|---|---|---|---|
-| gpt-oss-20b | opencode | 24/25 | [80.5%, 99.3%] | [P, P, P, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, P, P, P, P] | 5.0 | 14837.0 | 0/25 (0%) spawned |
+| Model | Harness | Completion k/N | Infra-excluded | Wilson 95% CI | Per-replicate outcomes | Median steps | Median tokens | Subagent canary |
+|---|---|---|---|---|---|---|---|---|
+| gemma-4-26b-a4b-mxfp4 | opencode | 120/210 | 0 | [50.4%, 63.6%] | [P, F, P, P, P, P, F, P, P, F, F, F, P, P, F, P, P, F, P, P, P, P, P, P, P, P, P, F, F, F, F, F, P, F, F, F, F, P, F, P, F, F, F, P, F, P, P, P, P, F, F, P, P, F, F, F, P, P, P, P, P, P, P, P, P, F, P, P, F, P, F, F, F, F, F, F, F, F, F, P, P, F, P, F, F, P, P, P, P, P, P, P, F, P, P, F, F, F, P, P, F, P, P, P, P, P, F, P, P, P, P, F, P, F, F, P, F, F, F, F, P, F, P, P, F, P, P, F, P, P, P, P, P, P, P, P, F, F, F, F, F, P, P, P, P, P, P, P, P, P, P, P, F, P, F, F, F, F, P, F, F, F, F, P, F, P, F, P, F, F, P, P, P, P, P, F, F, P, P, F, F, P, P, P, P, P, P, P, P, P, F, P, P, P, F, F, F, F, F, F, F, F, F, P, F, P, P, P, P, F] | 5.0 | 51665.5 | 0/210 (0%) spawned |
+| gpt-oss-20b | opencode | 99/115 | 0 | [78.6%, 91.3%] | [P, P, P, P, P, P, P, P, P, P, P, P, P, P, P, F, F, P, P, F, P, P, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, F, P, F, F, P, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, P, P, F, P, F, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, F, P, F, P, P, P, P, P, P, P, P, F, P, P, P, F, P, P, P, P, P, P, P, P, P, F, P, P, P] | 8.0 | 14005.0 | 0/115 (0%) spawned |
 
 **First-failure-class distribution (failed rows only)**
 
-| Model | Harness | class a | class b | class c | class d | class unknown | (unclassified) |
-|---|---|---|---|---|---|---|---|
-| gpt-oss-20b | opencode | 0 | 0 | 0 | 1 | 0 | 0 |
+| Model | Harness | class a | class b | class c | class d | class e | class unknown | (unclassified) |
+|---|---|---|---|---|---|---|---|---|
+| gemma-4-26b-a4b-mxfp4 | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 90 |
+| gpt-oss-20b | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 16 |
 
 _First-failure-class distribution is DISPLAY ONLY -- actually running `llmtest.harness.failure_class.classify_first_failure` -- run via `scripts/classify_b8_local.py` (task-b8classify) -- POPULATES this distribution: since B8's row schema has no room for the full `Trace` a classifier needs (only summary `metrics`), the classify pass reads each failed row's persisted Trace (`response_meta.trace_ref`, written by `llmtest.batteries.b8_harness.execute()`) and appends its verdict to the sibling, append-only store `results/b8_classifications-<suite_version>.jsonl` (row_id keyed) rather than mutating the row itself (row_id is content-derived and `Store.append()` is a structural no-op on an existing row_id -- see that module's docstring). This function reads that sibling store (`_load_b8_classifications`) and fills in `metrics['first_failure_class']` wherever a row's own metrics don't already carry it; a failed row falls into `(unclassified)` only when neither source has a verdict for it yet (classify pass not run, or still in progress). Wilson 95% CI uses `llmtest.harness.stats.wilson` (z=1.96); k/N and the ordered per-replicate outcome list are always shown alongside it -- never a single blended probability at these small (N>=5) replicate counts._
 
