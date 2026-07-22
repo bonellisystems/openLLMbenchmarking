@@ -151,6 +151,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "merge the per-model shards at report time. plan() "
                         "resume/--force dedup reads this same dir, so per-model "
                         "replicate counting stays correct.")
+    p.add_argument("--task-form", default="dev",
+                   choices=["dev", "confirmatory", "anchor"],
+                   help="Which sealed task set to run. 'dev' uses b8.tasks "
+                        "(the exploratory 23); 'confirmatory'/'anchor' swap in "
+                        "b8.tasks_confirmatory / b8.tasks_anchor as the plan() "
+                        "allowlist. plan() only emits tasks in b8.tasks, so "
+                        "running the sealed confirmatory form requires this.")
     return p
 
 
@@ -159,6 +166,13 @@ def main(argv=None) -> int:
 
     cfg = load_config(ROOT)
     b8cfg = cfg.suite["b8"]
+    if args.task_form != "dev":
+        # plan() filters to the b8.tasks allowlist; swap in the sealed form's
+        # list so plan() emits (and --task can match) the confirmatory/anchor
+        # tasks, which are NOT in b8.tasks.
+        b8cfg["tasks"] = list(b8cfg[f"tasks_{args.task_form}"])
+        print(f"run_b8_local: task-form={args.task_form!r} -> "
+              f"{len(b8cfg['tasks'])} tasks as the plan() allowlist")
     base_url = _normalize_base_url(args.endpoint_url)
     print(f"run_b8_local: endpoint base_url resolved to {base_url!r} "
           f"(from --endpoint-url {args.endpoint_url!r})")
