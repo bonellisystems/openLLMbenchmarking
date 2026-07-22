@@ -320,6 +320,15 @@ class OpenCodeAdapter(HarnessAdapter):
             # cross-run hygiene.
             self._opencode_home_dir = Path(
                 tempfile.mkdtemp(prefix="llmtest-b8-ochome-"))
+            # LINUX containment fix: mkdtemp is root-owned mode 0700 (the run
+            # process is root on the datacenter box), but the container runs
+            # as --user node (uid 1000) and must mkdir bin/, write opencode.db,
+            # etc. INSIDE this bind-mounted opencode-home. Without world-write
+            # OpenCode/bun dies instantly (`EACCES: mkdir .../opencode/bin`).
+            # On Docker Desktop the VM masked host ownership; native Linux
+            # exposes it. 0777 on the dir is the minimal fix (files within
+            # keep their own perms; the config this adapter writes stays 0644).
+            os.chmod(self._opencode_home_dir, 0o777)
             self.db_path = self._opencode_home_dir / "opencode.db"
             self._config_path = self._opencode_home_dir / _CONTAINER_CONFIG_FILENAME
         else:
