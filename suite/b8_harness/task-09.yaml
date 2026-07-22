@@ -1,6 +1,6 @@
 id: py-multifile-01
 shape: multi-file
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The repo has three files:
 
@@ -34,8 +34,50 @@ setup_repo:
     print(fmt_result(multiply(3, 4)))
 oracle_files:
   oracle_test.py: |
+    import json
     import subprocess
     import sys
+
+
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
 
 
     def _run(argv):
@@ -51,22 +93,23 @@ oracle_files:
                               text=True, timeout=10)
 
 
-    def main():
-        r = _run(["main.py"])
+    def _check(argv, case, want):
+        r = _run(argv)
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
         got = r.stdout.strip()
-        if got != "Result: 12":
-            print(f"FAIL: main.py -> {got!r} (want 'Result: 12'); "
-                  f"exit={r.returncode} stderr={r.stderr.strip()!r}")
-            sys.exit(1)
+        if got != want:
+            _emit(False, case=case, expected=want, actual=got,
+                  stage="behavior", reason_code="wrong_output")
 
-        r2 = _run(["-c", "import calc\nprint(calc.multiply(6, 7))\n"])
-        got2 = r2.stdout.strip()
-        if got2 != "42":
-            print(f"FAIL: calc.multiply(6, 7) -> {got2!r} (want '42'); "
-                  f"exit={r2.returncode} stderr={r2.stderr.strip()!r}")
-            sys.exit(1)
 
-        print("PASS")
+    def main():
+        _check(["main.py"], "main.py", "Result: 12")
+        _check(["-c", "import calc\nprint(calc.multiply(6, 7))\n"],
+              "calc.multiply(6, 7)", "42")
+        _emit(True)
 
 
     if __name__ == "__main__":
@@ -103,3 +146,13 @@ notes: |
   lives in `oracle_files`, never written into the agent's workspace by
   `materialize_repo` -- nothing for the agent to read and overfit against.
   Stdlib only (`subprocess`, `sys`) -- no pytest.
+
+  MACHINE-READABLE RESULT (Wave 3a, task_version 1.0.0 -> 1.1.0): see
+  `suite/b8_harness/_schema.md`'s Wave 3a section for the full
+  `{"pass","stage","reason_code","case","expected","actual","exit_status"}`
+  convention and closed vocabulary -- same `_emit`/`_classify_crash`
+  pattern as py-bugfix-01/task-06.yaml. This task has TWO discrete checks
+  per run (`main.py`'s output, then `calc.multiply(6, 7)` directly) rather
+  than a `CASES` loop; each is its own `_check(argv, case, want)` call, so
+  either failure still reports its OWN `case`/`expected`/`actual`, not a
+  merged/ambiguous one.

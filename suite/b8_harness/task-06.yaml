@@ -1,6 +1,6 @@
 id: py-bugfix-01
 shape: bugfix
-task_version: "1.1.0"
+task_version: "1.2.0"
 prompt: |
   The following Python file is supposed to compute and print a summary of a
   list of numbers, but it is broken. Symptom: importing/running it
@@ -37,6 +37,7 @@ setup_repo:
     This file is part of the task fixture. Do not edit it.
 oracle_files:
   oracle_test.py: |
+    import json
     import subprocess
     import sys
 
@@ -44,6 +45,47 @@ oracle_files:
         ([2, 4, 6], "summary: avg=4.00"),
         ([10, 20], "summary: avg=15.00"),
     ]
+
+
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
 
 
     def _run(nums):
@@ -63,12 +105,16 @@ oracle_files:
     def main():
         for nums, want in CASES:
             r = _run(nums)
+            case = f"summarize({nums})"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=want, actual=actual,
+                      stage=stage, reason_code=reason_code)
             got = r.stdout.strip()
             if got != want:
-                print(f"FAIL: summarize({nums}) -> {got!r} (want {want!r}); "
-                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
-                sys.exit(1)
-        print("PASS")
+                _emit(False, case=case, expected=want, actual=got,
+                      stage="behavior", reason_code="wrong_output")
+        _emit(True)
 
 
     if __name__ == "__main__":
@@ -123,3 +169,20 @@ notes: |
 
   `NOTES.md` is the agent-VISIBLE protected file exercising the hash-cap
   (Design Decision #1a) -- a real, hash-capped fixture, not a placeholder.
+
+  MACHINE-READABLE RESULT (Wave 3a, task_version 1.1.0 -> 1.2.0, "make the
+  completion scorer DEFENSIBLE" -- codex review: "avoid free-form stderr as
+  the authoritative explanation"): the oracle now prints ONE JSON result
+  line as the LAST line of stdout (`{"pass", "stage", "reason_code",
+  "case", "expected", "actual", "exit_status"}`, see
+  `suite/b8_harness/_schema.md`'s Wave 3a section for the full closed
+  vocabulary), in addition to the unchanged human-readable PASS/FAIL line.
+  `llmtest.harness.tasks.run_oracle` parses it into `det_checks.oracle`'s
+  structured fields and derives a clean `detail` string FROM those fields
+  (not from raw stdout/stderr). A candidate subprocess that exits nonzero
+  before producing comparable output is now also classified into a
+  `compile`/`import`/`behavior` stage + `syntax_error`/`import_error`/
+  `runtime_error` reason code (`_classify_crash`) rather than falling into
+  the same generic wrong-output bucket as a clean run with the wrong
+  answer -- this task's planted bug (a `SyntaxError`) is the canonical
+  `compile` example.

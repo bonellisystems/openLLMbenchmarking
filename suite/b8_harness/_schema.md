@@ -174,9 +174,12 @@ corrected, three-category version that closes this.
 
 ## Anti-gaming semantics (`run_oracle`)
 
-`run_oracle(task, workspace) -> (completed: bool, detail: str)` runs, in
-strict order, against the POST-RUN workspace (which only ever contained
-`setup_repo` paths — never `oracle_files`):
+`run_oracle(task, workspace) -> OracleResult` runs, in strict order, against
+the POST-RUN workspace (which only ever contained `setup_repo` paths — never
+`oracle_files`). `OracleResult` (Wave 3a) unpacks exactly like the original
+`(completed: bool, detail: str)` 2-tuple via `__iter__` — every example below
+that writes `(False, "...")` is that 2-tuple view; see "Machine-readable
+oracle result (Wave 3a)" below for its additive structured fields.
 
 1. **Protected-file hash check (hard cap).** Every `protected_paths` entry
    (an agent-VISIBLE file) is hashed and compared to the value computed
@@ -185,18 +188,165 @@ strict order, against the POST-RUN workspace (which only ever contained
    the behavioral oracle would otherwise pass. This is what stops a model
    from editing a fixture it isn't supposed to touch to force a pass.
    Never touches Docker.
-2. **Diff constraint (hard cap).** Every file in the workspace that differs
-   from `setup_repo` (or is new) and is not in `allowed_diff_paths` (nor
-   `protected_paths`, already covered by step 1) -> `(False,
-   "out-of-bounds edit: <path>")`. Never touches Docker.
-3. **Behavioral oracle, with re-injection.** Only once (1) and (2) both
-   pass: `task.oracle_files` are written into a PRIVATE copy of the
+2. **Tamper detection (hard cap, Wave 3a).** Three checks over
+   `task.setup_repo`, each catching a way to dodge the diff-constraint
+   below rather than satisfy it:
+   - **Deletion.** Any `setup_repo` path that is MISSING from the
+     workspace and not in `allowed_diff_paths` -> `(False,
+     "protected/setup file deleted: <path>")`. The diff-constraint walk
+     only ever inspects files that still exist, so an outright deletion
+     was otherwise invisible to it.
+   - **Type/mode change.** Any `setup_repo` path silently replaced by a
+     DIRECTORY -> `(False, "setup file replaced with a directory:
+     <path>")`. An *empty* replacement directory in particular produces
+     neither a content diff nor a deletion hit, so it needs its own check.
+   - **Disallowed symlink.** A symlink anywhere in the workspace at a path
+     not in `allowed_diff_paths`/`protected_paths` -> `(False,
+     "disallowed symlink: <path>")` — for both symlinked FILES and
+     symlinked DIRECTORIES (a symlinked directory is still never
+     traversed/descended into on the host, matching `Sandbox.
+     snapshot_workspace`'s own symlink-safety precedent; it is now
+     *reported*, not silently pruned). A symlink at an already-allowed
+     path is left alone — no manifest opts a path into "symlinks
+     permitted" today, so this is simply "not on the disallow list", not
+     an explicit allow mechanism.
+   Never touches Docker.
+3. **Diff constraint (hard cap).** Every remaining file in the workspace
+   that differs from `setup_repo` (or is new) and is not in
+   `allowed_diff_paths` (nor `protected_paths`, already covered by step 1)
+   -> `(False, "out-of-bounds edit: <path>")`. Never touches Docker.
+4. **Behavioral oracle, with re-injection.** Only once (1)–(3) all pass:
+   `task.oracle_files` are written into a PRIVATE copy of the
    (already-validated) workspace — the agent's own `workspace` is never
    touched — and `task.oracle` runs against THAT copy via
    `Sandbox.hidden_validate`, in a throwaway, read-only container outside
-   the agent's reach. Its `(bool, detail)` is returned as-is.
+   the agent's reach. `run_oracle` then scans the oracle's own stdout for
+   the machine-readable JSON result line (below); when present, it
+   populates `OracleResult`'s structured fields and DERIVES `detail` from
+   them (not from `hidden_validate`'s raw `exit=... stdout=...
+   stderr=...` dump). When absent (an older/broken oracle — every one of
+   the 5 bash placeholder manifests, task-01..05.yaml, included), `detail`
+   falls back to `hidden_validate`'s own value, unchanged.
 
-Steps 1–2 need no Docker at all (pure hash/file comparisons); step 3 does.
+Steps 1–3 need no Docker at all (pure hash/file/type comparisons); step 4
+does.
+
+## Machine-readable oracle result (Wave 3a)
+
+Codex review (B8 validity program): "Make oracle output machine-readable:
+stage, reason code, failing case, expected, actual, exit status. Avoid
+free-form stderr as the authoritative explanation." Every real Python
+oracle (`task-06..16.yaml`, ids `py-*`/`py-hard-*`) now prints, in addition
+to its original human-readable `PASS`/`FAIL: ...` line (unchanged, kept for
+local debugging), exactly ONE JSON object as the LAST line of stdout:
+
+```json
+{"pass": false, "stage": "behavior", "reason_code": "wrong_output",
+ "case": "letter_grade(90)", "expected": "A", "actual": "B",
+ "exit_status": 1}
+```
+
+`run_oracle` (via `_parse_oracle_json_result`) scans stdout from the LAST
+line backward for the first line that parses as a JSON object with a
+boolean `pass` key — tolerating a trailing blank line or stray output after
+it, and never mistaking an unrelated JSON-shaped debug line for the real
+result (it must carry a boolean `pass`). When found, the structured fields
+land on a row's `det_checks.oracle` as ADDITIVE keys alongside the original
+`pass`/`detail` — the shape stays fully backward compatible with the Wave-1b
+first-failure classifier (`llmtest.harness.failure_class`), which only ever
+reads `det_checks.oracle.detail`.
+
+**Fields:**
+
+| Field         | Type          | Meaning                                                                 |
+|---------------|---------------|--------------------------------------------------------------------------|
+| `pass`        | bool          | Required. The oracle's own verdict for this run.                        |
+| `stage`       | str \| null   | Which pipeline stage the result reflects (closed vocabulary below).     |
+| `reason_code` | str \| null   | Why it failed (closed vocabulary below); `null` on a pass.              |
+| `case`        | str \| null   | Human-readable description of the specific failing (or last) check.     |
+| `expected`    | str \| null   | The expected value/output for `case`.                                  |
+| `actual`      | str \| null   | The candidate's actual value/output for `case` — see BOUNDING below.    |
+| `exit_status` | int           | The oracle process's own exit code (0 pass / 1 fail, by convention).    |
+
+**Stage vocabulary (closed):** `compile` (the candidate failed to parse —
+`SyntaxError`/`IndentationError`), `import` (failed to import —
+`ModuleNotFoundError`/`ImportError`), `behavior` (ran fine; the check
+itself passed or failed on ordinary/edge input alike — this suite does not
+distinguish "edge" from "behavior" as a separate stage; see the note
+below). `edge` is a RESERVED, not-yet-emitted stage value: a future
+manifest's oracle is free to tag a mismatch on a specifically-designated
+edge-case input as `stage: "edge"` instead of `"behavior"` if that
+distinction is worth making for a given task — none of the 11 real Python
+oracles do this today (deciding which of many cases counts as "the edge
+one" would be an editorial judgment call per task, not a mechanical
+translation of the existing FAIL text), but `run_oracle`'s parser accepts
+any string here, not just this closed list.
+
+**Reason-code vocabulary (closed, for the 4 the 11 oracles emit today):**
+`syntax_error` (stage `compile`), `import_error` (stage `import`),
+`runtime_error` (stage `behavior` — the candidate raised an uncaught
+exception from inside an otherwise-normal call, e.g. an `IndexError`),
+`wrong_output` (stage `behavior` — the candidate ran fine and printed
+something, but it didn't match), `non_numeric_output` (stage `behavior`,
+`py-hard-multifile-01`/task-15.yaml only — the candidate's output couldn't
+even be parsed as a number where one was expected). Like `stage`, this is
+a documented AUTHORING convention, not a runtime-enforced enum:
+`run_oracle` passes through whatever string an oracle emits, so a Wave-4
+task is free to introduce a new, more specific reason code without a
+`llmtest/harness/tasks.py` change — keep any new code small, closed, and
+documented here (or in the manifest's own `notes:`) rather than
+proliferating one-off strings per task.
+
+**`case`/`expected` vs `actual` — trust boundary.** `case` and `expected`
+are always ORACLE-AUTHORED text (fixed at manifest-authoring time, drawn
+from the oracle's own `CASES` list) — never candidate-controlled. `actual`
+is the ONE field that can embed the CANDIDATE's own output (whatever the
+solution under test printed). `run_oracle` truncates it to
+`_ACTUAL_TRUNCATE_CHARS` (200) characters, with a trailing `...<TRUNCATED n
+more chars>` marker, BEFORE deriving `detail` from it — so neither an
+oversized nor a hostile-content `actual` can reach the Wave-1b classifier's
+TRUSTED "Oracle rejection detail" evidence section unbounded. This
+truncation happens in `run_oracle` itself (the trusted layer that builds
+`det_checks.oracle`), not merely trusted to each oracle_test.py at the
+source — one choke point that can't be forgotten per-task as Wave 4 adds
+~40-50 more manifests.
+
+**Fallback (malformed/absent JSON).** An oracle that prints no parseable
+JSON line at all — every one of the 5 bash placeholder manifests
+(task-01..05.yaml), which predate this convention, or any future broken
+oracle — never crashes `run_oracle`: `detail` falls back to `hidden_
+validate`'s original free-form `exit=... stdout=... stderr=...` string,
+unchanged from pre-Wave-3a, and every structured field (`stage`,
+`reason_code`, `case`, `expected`, `actual`) stays `None`/absent from
+`det_checks.oracle`.
+
+**Authoring pattern for a new oracle (Wave 4).** Every one of `task-
+06..16.yaml`'s `oracle_test.py` shares the same small, stdlib-only,
+duplicated-per-file helper pair (never imported from a shared module — the
+oracle runs in an isolated `/oracle`-mounted container with nothing else
+available):
+
+```python
+def _classify_crash(stderr):
+    """(stage, reason_code, actual) for a candidate subprocess that
+    exited nonzero before producing usable stdout."""
+    ...
+
+def _emit(passed, *, case=None, expected=None, actual=None,
+          stage="behavior", reason_code=None):
+    """Prints the human PASS/FAIL line, THEN the JSON result line, THEN
+    sys.exit()s with the matching status."""
+    ...
+```
+
+Each case loop calls `_run(...)` (a FRESH `subprocess.run([sys.executable,
+...])`, per the SUBPROCESS-ISOLATED convention every Python oracle already
+follows — never `import`ing the candidate into the checker's own process),
+checks `r.returncode != 0` first (classify via `_classify_crash` and
+`_emit` a `compile`/`import`/`behavior` failure), then compares
+`r.stdout.strip()` against the expected value (`_emit` a `wrong_output`
+failure on mismatch). A genuinely correct solution over every case reaches
+`_emit(True)` at the end.
 
 ## Example (abbreviated)
 

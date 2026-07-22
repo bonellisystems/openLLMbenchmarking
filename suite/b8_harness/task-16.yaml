@@ -1,6 +1,6 @@
 id: py-hard-toolheavy-01
 shape: tool-heavy
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The repo is a small grade-reporting system, split across 5 files:
 
@@ -101,6 +101,7 @@ setup_repo:
     This file is part of the task fixture. Do not edit it.
 oracle_files:
   oracle_test.py: |
+    import json
     import subprocess
     import sys
 
@@ -126,6 +127,47 @@ oracle_files:
     ]
 
 
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
     def _run(code):
         """Run generated `code` in a FRESH subprocess -- never `import`
         any of these modules into THIS process (see py-multifile-01's
@@ -144,16 +186,26 @@ oracle_files:
             return False
 
 
+    def _check_run(r, case, want):
+        """Shared crash/mismatch handling for one numeric or exact-string
+        sub-check -- `_emit`s and exits on any failure, returns normally
+        (nothing) when the check passes."""
+        if r.returncode != 0:
+            stage, reason_code, actual = _classify_crash(r.stderr)
+            _emit(False, case=case, expected=want, actual=actual,
+                  stage=stage, reason_code=reason_code)
+
+
     def _check_average():
         for scores, want in AVERAGE_CASES:
             code = f"import stats\nprint(stats.average({scores!r}))\n"
             r = _run(code)
+            case = f"stats.average({scores!r})"
+            _check_run(r, case, str(want))
             got = r.stdout.strip()
             if not _numeric_match(got, want):
-                print(f"FAIL: stats.average({scores!r}) -> {got!r} (want {want!r}); "
-                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
-                return False
-        return True
+                _emit(False, case=case, expected=str(want), actual=got,
+                      stage="behavior", reason_code="wrong_output")
 
 
     def _check_curve():
@@ -161,25 +213,24 @@ oracle_files:
             code = (f"import curve\nprint(curve.apply_curve({score!r}, {class_average!r}, "
                     f"{target_average!r}))\n")
             r = _run(code)
+            case = f"curve.apply_curve({score!r}, {class_average!r}, {target_average!r})"
+            _check_run(r, case, str(want))
             got = r.stdout.strip()
             if not _numeric_match(got, want):
-                print(f"FAIL: curve.apply_curve({score!r}, {class_average!r}, "
-                      f"{target_average!r}) -> {got!r} (want {want!r}); "
-                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
-                return False
-        return True
+                _emit(False, case=case, expected=str(want), actual=got,
+                      stage="behavior", reason_code="wrong_output")
 
 
     def _check_grades():
         for score, want in GRADE_CASES:
             code = f"import letter_grade\nprint(letter_grade.letter_grade({score!r}))\n"
             r = _run(code)
+            case = f"letter_grade.letter_grade({score!r})"
+            _check_run(r, case, want)
             got = r.stdout.strip()
             if got != want:
-                print(f"FAIL: letter_grade.letter_grade({score!r}) -> {got!r} "
-                      f"(want {want!r}); exit={r.returncode} stderr={r.stderr.strip()!r}")
-                return False
-        return True
+                _emit(False, case=case, expected=want, actual=got,
+                      stage="behavior", reason_code="wrong_output")
 
 
     def main():
@@ -188,13 +239,10 @@ oracle_files:
         # py-toolheavy-01's rationale for re-verifying every handler, not
         # just the one that was supposed to change) -- but the REAL fix
         # target is letter_grade(), checked last and most thoroughly.
-        if not _check_average():
-            sys.exit(1)
-        if not _check_curve():
-            sys.exit(1)
-        if not _check_grades():
-            sys.exit(1)
-        print("PASS")
+        _check_average()
+        _check_curve()
+        _check_grades()
+        _emit(True)
 
 
     if __name__ == "__main__":
@@ -260,3 +308,13 @@ notes: |
   same rationale py-toolheavy-01 gives for re-checking every handler.
   `NOTES.md` is the agent-VISIBLE protected fixture exercising the
   hash-cap, same convention as every other manifest.
+
+  MACHINE-READABLE RESULT (Wave 3a, task_version 1.0.0 -> 1.1.0): see
+  `suite/b8_harness/_schema.md`'s Wave 3a section for the full
+  `{"pass","stage","reason_code","case","expected","actual","exit_status"}`
+  convention and closed vocabulary -- same `_emit`/`_classify_crash`
+  pattern as py-bugfix-01/task-06.yaml. This task's THREE check functions
+  (`_check_average`/`_check_curve`/`_check_grades`) each `_emit` their own
+  `case`/`expected`/`actual` on failure via the shared `_check_run` crash
+  helper, so a failure in ANY of the three (not just the real fix target,
+  `letter_grade`) is still individually diagnosable.

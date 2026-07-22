@@ -378,8 +378,13 @@ class B8Harness(Battery):
         # is inert for every caller that predates this key.
         oracle_image = (b8cfg.get("sandbox") or {}).get("oracle_image")
         run_oracle_fn = _resolve_run_oracle(ctx)
-        completed, oracle_detail = run_oracle_fn(task, workspace, root=root,
-                                                 oracle_image=oracle_image)
+        oracle_result = run_oracle_fn(task, workspace, root=root, oracle_image=oracle_image)
+        # `oracle_result` unpacks like the legacy `(completed, detail)`
+        # 2-tuple regardless of whether it's the real llmtest.harness.tasks.
+        # OracleResult (Wave 3a) or a bare 2-tuple test double (every
+        # injected `ctx.b8_run_oracle` -- see _resolve_run_oracle) --
+        # OracleResult.__iter__ yields exactly those two values.
+        completed, oracle_detail = oracle_result
 
         # -- Budget enforcement + the scoring contract (Wave 1a, B8 -------
         # measurement-validity: codex/kimi strategy review) ---------------
@@ -458,6 +463,25 @@ class B8Harness(Battery):
 
         condition = _full_condition(order, harness_name, task.id, attempt_id, exec_sha)
 
+        # Wave 3a (B8 measurement-validity, "make the completion scorer
+        # DEFENSIBLE"): additive structured fields on top of the existing
+        # pass/detail shape, read via getattr(..., None) rather than direct
+        # attribute access -- `oracle_result` is the real
+        # llmtest.harness.tasks.OracleResult only for the real run_oracle;
+        # every injected `ctx.b8_run_oracle` test double (a bare (bool,
+        # str) 2-tuple -- see _resolve_run_oracle) has none of these
+        # attributes and degrades to "no structured fields" rather than
+        # raising. Only added when present (None omitted, not stored as an
+        # explicit null) -- det_checks.oracle keeps its exact pre-Wave-3a
+        # {"pass", "detail"} shape whenever no structured data exists,
+        # which is every row scored by a bash placeholder manifest
+        # (task-01..05.yaml) or an injected test double.
+        oracle_det_checks = {"pass": completed, "detail": oracle_detail}
+        for _key in ("stage", "reason_code", "case", "expected", "actual"):
+            _val = getattr(oracle_result, _key, None)
+            if _val is not None:
+                oracle_det_checks[_key] = _val
+
         row = schema.ResultRow.new(
             suite_version=suite_version, model_id=item.model_id,
             hf_repo=model.get("hf_repo", ""), quant_file=model.get("quant_file", ""),
@@ -472,7 +496,7 @@ class B8Harness(Battery):
             # oracle timeout) on every completion=False row -- Task 8
             # (first-failure classification) reads this, not just the bare
             # completed bool in metrics below.
-            det_checks={"oracle": {"pass": completed, "detail": oracle_detail}},
+            det_checks={"oracle": oracle_det_checks},
             metrics={
                 "completion": completed_final,
                 "steps": trace.steps,

@@ -12,6 +12,7 @@ constructs a Sandbox).
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -636,15 +637,24 @@ def test_run_oracle_false_on_out_of_bounds_edit(tmp_path):
 
 def test_run_oracle_diff_constraint_does_not_traverse_symlinked_dir(tmp_path):
     """The diff-constraint walk reads the agent-controlled workspace on the
-    HOST, so it must not descend into a symlinked directory -- mirrors the
+    HOST, so it must not DESCEND into a symlinked directory -- mirrors the
     exact traversal Sandbox.snapshot_workspace already guards against
-    (Task 2 precedent). Paired with a real, unrelated out-of-bounds file
-    (sneaky.sh) so this stays deterministic and Docker-free: under the
-    (fixed) symlink-safe walk, `linked_dir` is pruned before descent and
-    never appears in the failure reason at all; under the old
-    `Path.rglob`-based walk it would have been traversed and reported
-    first (sorts before "sneaky.sh"), leaking the host directory's
-    existence/content into `detail`."""
+    (Task 2 precedent): `Path.rglob` has no way in Python 3.10 to stop
+    descending into a symlinked directory, which is exactly why this walk
+    doesn't use it either. Paired with a real, unrelated out-of-bounds file
+    (sneaky.sh) so this stays deterministic and Docker-free.
+
+    Wave 3a fix: a disallowed symlinked directory is no longer silently
+    pruned-and-ignored (the pre-Wave-3a "LIMITATION (documented, not
+    fixed)" this test originally proved) -- it is now REPORTED, by name,
+    as a `"disallowed symlink: linked_dir"` tamper failure, found and
+    returned BEFORE the walk ever reaches `sneaky.sh` (dirs are checked
+    before files at each os.walk level). The security property under test
+    is unchanged and, if anything, strengthened: the symlink is still
+    never TRAVERSED (no descent into it, ever, on the host), so neither
+    the outside directory's existence details nor its content can leak
+    into `detail` -- only the symlink's OWN path within the workspace
+    (`linked_dir`) is named."""
     outside_dir = tmp_path / "outside_dir"
     outside_dir.mkdir()
     (outside_dir / "outside_file.txt").write_text("SECRET-HOST-CONTENT")
@@ -657,9 +667,9 @@ def test_run_oracle_diff_constraint_does_not_traverse_symlinked_dir(tmp_path):
 
     completed, detail = t.run_oracle(task, ws)
     assert completed is False
-    assert "sneaky.sh" in detail
+    assert "disallowed symlink" in detail
+    assert "linked_dir" in detail
     assert "SECRET-HOST-CONTENT" not in detail
-    assert "linked_dir" not in detail
     assert "outside_file" not in detail
 
 
@@ -1252,3 +1262,348 @@ def test_run_oracle_false_for_hard_toolheavy_decoy_tamper_even_with_correct_fix(
     assert completed is False
     assert "protected" in detail.lower()
     assert "curve.py" in detail
+
+
+# -- Wave 3a: machine-readable oracle results + tamper detection ------------
+# "Make the completion scorer DEFENSIBLE": (1) the oracle's own JSON result
+# line parses into det_checks.oracle's structured fields (stage/reason_code/
+# case/expected/actual), with `actual` bounded and a clean `detail` derived
+# from the structured fields rather than raw stdout/stderr; (2) the
+# diff-constraint now also catches deletions, disallowed symlinks, and
+# setup-file type changes -- gaps the pre-Wave-3a walk (which only ever
+# inspected files that still EXIST, unchanged) could not see at all.
+
+
+def test_oracle_result_unpacks_like_the_legacy_two_tuple():
+    """`OracleResult.__iter__` is the whole backward-compat mechanism this
+    wave relies on -- pin it directly, not just via every call site that
+    happens to exercise it."""
+    result = t.OracleResult(pass_=False, detail="out-of-bounds edit: x",
+                            stage="behavior", reason_code="wrong_output",
+                            case="f(1)", expected="2", actual="3")
+    completed, detail = result
+    assert completed is False
+    assert detail == "out-of-bounds edit: x"
+    assert result.stage == "behavior"
+    assert result.reason_code == "wrong_output"
+
+
+def test_parse_oracle_json_result_finds_last_json_line():
+    stdout = "some noise\nFAIL: f(1) -> 3 (want 2)\n" + \
+             '{"pass": false, "stage": "behavior", "reason_code": "wrong_output", ' \
+             '"case": "f(1)", "expected": "2", "actual": "3", "exit_status": 1}\n'
+    parsed = t._parse_oracle_json_result(stdout)
+    assert parsed == {"pass": False, "stage": "behavior", "reason_code": "wrong_output",
+                      "case": "f(1)", "expected": "2", "actual": "3", "exit_status": 1}
+
+
+def test_parse_oracle_json_result_tolerates_trailing_blank_line():
+    stdout = '{"pass": true}\n\n'
+    assert t._parse_oracle_json_result(stdout) == {"pass": True}
+
+
+def test_parse_oracle_json_result_returns_none_for_no_json():
+    assert t._parse_oracle_json_result("PASS\n") is None
+    assert t._parse_oracle_json_result("") is None
+    assert t._parse_oracle_json_result(None) is None
+
+
+def test_parse_oracle_json_result_ignores_json_without_bool_pass_key():
+    """A coincidentally JSON-shaped debug line with no boolean `pass` key
+    is not mistaken for the real result -- requiring the `pass` key (and
+    that it's specifically a bool, not e.g. the string "true") is the
+    guard against that."""
+    assert t._parse_oracle_json_result('{"note": "just some debug json"}\n') is None
+    assert t._parse_oracle_json_result('{"pass": "true"}\n') is None
+
+
+def test_oracle_result_from_validation_malformed_json_falls_back_gracefully(monkeypatch):
+    """The 5 bash placeholder manifests (task-01..05.yaml) predate the
+    Wave 3a JSON convention and never will emit it -- `run_oracle` must not
+    crash on their stdout, and must fall back to the EXACT pre-Wave-3a
+    `ValidateResult.detail` shape (the free-form `exit=... stdout=...
+    stderr=...` dump), with every structured field left `None`."""
+    from llmtest.harness.sandbox import ValidateResult
+    vr = ValidateResult(True, "exit=0 stdout='PASS\\n' stderr=''", stdout="PASS\n")
+    result = t._oracle_result_from_validation(vr)
+    assert result.pass_ is True
+    assert result.detail == vr.detail
+    assert result.stage is None
+    assert result.reason_code is None
+    assert result.case is None
+    assert result.expected is None
+    assert result.actual is None
+
+
+def test_oracle_result_from_validation_no_stdout_falls_back_gracefully():
+    """`ValidateResult.stdout=None` (callable oracle, timeout, or a
+    pre-oracle setup failure -- see that dataclass's docstring) must not
+    crash the JSON scan either."""
+    from llmtest.harness.sandbox import ValidateResult
+    vr = ValidateResult(False, "oracle timeout: exceeded wall-clock budget (...)", stdout=None)
+    result = t._oracle_result_from_validation(vr)
+    assert result.pass_ is False
+    assert result.detail == vr.detail
+    assert result.stage is None
+
+
+def test_oracle_result_from_validation_parses_pass_and_derives_clean_detail():
+    from llmtest.harness.sandbox import ValidateResult
+    stdout = ('PASS\n'
+              '{"pass": true, "stage": "behavior", "reason_code": null, '
+              '"case": null, "expected": null, "actual": null, "exit_status": 0}\n')
+    vr = ValidateResult(True, f"exit=0 stdout={stdout!r} stderr=''", stdout=stdout)
+    result = t._oracle_result_from_validation(vr)
+    assert result.pass_ is True
+    assert result.detail == "PASS"
+    assert result.stage == "behavior"
+    assert result.reason_code is None
+
+
+def test_oracle_result_from_validation_parses_fail_and_bounds_actual():
+    """`actual` (a candidate's own printed output, per the schema) is
+    truncated to `_ACTUAL_TRUNCATE_CHARS`, and the derived `detail` is
+    built from the ALREADY-bounded value -- never the raw, unbounded one."""
+    from llmtest.harness.sandbox import ValidateResult
+    long_actual = "Z" * 500
+    stdout = ('FAIL: f(1) -> ... (want 2)\n' +
+             json.dumps({"pass": False, "stage": "behavior", "reason_code": "wrong_output",
+                        "case": "f(1)", "expected": "2", "actual": long_actual,
+                        "exit_status": 1}) + "\n")
+    vr = ValidateResult(False, f"exit=1 stdout={stdout!r} stderr=''", stdout=stdout)
+    result = t._oracle_result_from_validation(vr)
+    assert result.pass_ is False
+    assert result.stage == "behavior"
+    assert result.reason_code == "wrong_output"
+    assert len(result.actual) <= len("Z" * 200) + len("...<TRUNCATED 300 more chars>")
+    assert result.actual.endswith("<TRUNCATED 300 more chars>")
+    # detail is derived FROM the bounded actual, not the raw 500-char one.
+    assert long_actual not in result.detail
+    assert "TRUNCATED" in result.detail
+
+
+def test_truncate_leaves_short_text_unchanged():
+    assert t._truncate("short") == "short"
+
+
+# -- run_oracle: new tamper checks (deletion / disallowed symlink / type --
+# change), no Docker needed for any of these -- they're all hard-cap
+# checks step (c) never reaches.
+
+
+def _write_third_category_manifest(task_dir: Path) -> None:
+    """A manifest with a setup_repo path (`readonly_helper.sh`) that is
+    NEITHER `protected_paths` NOR `allowed_diff_paths` -- every one of the
+    16 real manifests happens to fully partition setup_repo between those
+    two categories, so this THIRD category (exercised by the new Wave 3a
+    deletion/type-change checks below) needs a synthetic manifest to prove
+    it's covered at all."""
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "task-01.yaml").write_text("""\
+id: edit-99
+shape: edit
+task_version: "1.0.0"
+prompt: "do a thing"
+allowed_tools: [read_file, write_file]
+budgets: {wall_clock_s: 60, tokens: 500, steps: 4}
+setup_repo:
+  main.sh: |
+    echo hi
+  notes.txt: |
+    protected, agent-visible
+  readonly_helper.sh: |
+    echo helper
+oracle_files:
+  oracle_test.sh: |
+    echo PASS
+protected_paths: [notes.txt]
+allowed_diff_paths: [main.sh]
+oracle:
+  type: command
+  argv: ["bash", "-c", "cp -r /oracle /tmp/work && cd /tmp/work && bash oracle_test.sh"]
+""", encoding="utf-8")
+
+
+def test_run_oracle_false_on_setup_file_deleted(tmp_path):
+    """Deletion detection: a setup_repo path that is neither protected nor
+    diff-allowed, simply removed from the post-run workspace, must be
+    caught -- pre-Wave-3a, the os.walk-based diff-constraint only ever
+    inspected files that still EXIST, so an outright deletion was
+    invisible to it."""
+    _write_third_category_manifest(tmp_path / "suite" / "b8_harness")
+    task = t.load_b8_tasks(tmp_path)[0]
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "readonly_helper.sh").unlink()
+
+    completed, detail = t.run_oracle(task, ws)
+    assert completed is False
+    assert "deleted" in detail.lower()
+    assert "readonly_helper.sh" in detail
+
+
+def test_run_oracle_deletion_check_exempts_allowed_diff_paths(tmp_path):
+    """The flip side: deleting an `allowed_diff_paths` member is NOT a
+    deletion-tamper failure by itself (a from-scratch deliverable may
+    legitimately never get written) -- it falls through to whatever the
+    rest of the pipeline says (here, no other files changed, so it's still
+    schema-clean up to the behavioral oracle, which this test doesn't
+    reach)."""
+    _write_third_category_manifest(tmp_path / "suite" / "b8_harness")
+    task = t.load_b8_tasks(tmp_path)[0]
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "main.sh").unlink()   # main.sh IS in allowed_diff_paths
+
+    completed, detail = t.run_oracle(task, ws)
+    # Must NOT be rejected for "deleted" -- whatever run_oracle ultimately
+    # decides (it will go on to try the behavioral oracle, which may fail
+    # for its own reasons), the deletion-tamper message must never appear.
+    assert "deleted" not in detail.lower()
+
+
+def test_run_oracle_false_on_setup_file_replaced_with_directory(tmp_path):
+    """Type/mode change: an EMPTY directory silently replacing a
+    setup_repo file produces neither a content diff (nothing under it to
+    walk) nor a deletion-check hit (the path still exists) -- it needs its
+    own explicit check."""
+    _write_third_category_manifest(tmp_path / "suite" / "b8_harness")
+    task = t.load_b8_tasks(tmp_path)[0]
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "readonly_helper.sh").unlink()
+    (ws / "readonly_helper.sh").mkdir()
+
+    completed, detail = t.run_oracle(task, ws)
+    assert completed is False
+    assert "directory" in detail.lower()
+    assert "readonly_helper.sh" in detail
+
+
+def test_run_oracle_false_on_disallowed_symlink_at_file_path(tmp_path):
+    """Disallowed-symlink detection (file path, not a directory -- the
+    directory case is covered by
+    test_run_oracle_diff_constraint_does_not_traverse_symlinked_dir
+    above): a symlink planted at a path that is neither protected nor
+    diff-allowed must be flagged BY NAME, not silently skipped the way the
+    pre-Wave-3a walk treated every symlinked file."""
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    try:
+        os.symlink(str(ws / "stats.sh"), ws / "sneaky_link.sh")
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"os.symlink not permitted on this host: {e!r}")
+
+    completed, detail = t.run_oracle(task, ws)
+    assert completed is False
+    assert "disallowed symlink" in detail.lower()
+    assert "sneaky_link.sh" in detail
+
+
+def test_run_oracle_symlink_at_allowed_diff_path_not_flagged_as_disallowed(tmp_path):
+    """The flip side: a symlink planted AT an `allowed_diff_paths` path is
+    not itself flagged as a disallowed-symlink tamper (no manifest today
+    opts a path INTO symlink-permitted status explicitly, so this is
+    simply "not on the disallow list") -- whatever happens next (the
+    behavioral oracle almost certainly still fails on it) is a separate
+    concern from tamper detection."""
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    other = ws / "NOTES.md"
+    try:
+        os.remove(ws / "stats.sh")
+        os.symlink(str(other), ws / "stats.sh")   # stats.sh IS allowed_diff
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"os.symlink not permitted on this host: {e!r}")
+
+    completed, detail = t.run_oracle(task, ws)
+    assert "disallowed symlink" not in detail.lower()
+
+
+# -- Wave 3a: real python:3.11-slim round-trip (needs Docker) ---------------
+
+
+@requires_docker
+def test_run_oracle_correct_solution_yields_structured_pass(tmp_path):
+    task = _load("py-bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    (ws / "stats.py").write_bytes(
+        _CORRECT_SOLUTIONS["py-bugfix-01"]["stats.py"].encode("utf-8"))
+
+    result = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert result.pass_ is True
+    assert result.detail == "PASS"
+    assert result.stage == "behavior"
+    assert result.reason_code is None
+
+
+@requires_docker
+def test_run_oracle_wrong_solution_yields_structured_fail_with_bounded_actual(tmp_path):
+    """The end-to-end proof (real container, real oracle_test.py, real
+    run_oracle) that a wrong solution's det_checks.oracle carries
+    structured, USEFUL fields -- not just a bare `False` -- and that a
+    candidate solution printing well over `_ACTUAL_TRUNCATE_CHARS` worth
+    of output has `actual` genuinely bounded, not merely usually-short."""
+    task = _load("py-bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    long_wrong = (
+        "def average(nums):\n"
+        "    total = sum(nums)\n"
+        "    return total / len(nums)\n\n"
+        "def summarize(nums):\n"
+        f"    return {'Z' * 500!r}\n"
+    )
+    (ws / "stats.py").write_bytes(long_wrong.encode("utf-8"))
+
+    result = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert result.pass_ is False
+    assert result.stage == "behavior"
+    assert result.reason_code == "wrong_output"
+    assert result.case == "summarize([2, 4, 6])"
+    assert result.expected == "summary: avg=4.00"
+    assert len(result.actual) <= t._ACTUAL_TRUNCATE_CHARS + len("...<TRUNCATED 300 more chars>")
+    assert "TRUNCATED" in result.actual
+    assert "FAIL:" in result.detail
+    assert "TRUNCATED" in result.detail
+
+
+@requires_docker
+def test_run_oracle_crashed_solution_yields_compile_stage(tmp_path):
+    """The unfixed py-bugfix-01 workspace (the planted SyntaxError, never
+    touched) -- the canonical `compile`-stage/`syntax_error` case."""
+    task = _load("py-bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)   # bug left in place -- stats.py has a SyntaxError
+
+    result = t.run_oracle(task, ws, oracle_image="python:3.11-slim")
+    assert result.pass_ is False
+    assert result.stage == "compile"
+    assert result.reason_code == "syntax_error"
+
+
+@requires_docker
+def test_run_oracle_bash_placeholder_manifest_falls_back_to_free_form_detail(tmp_path):
+    """The 5 bash placeholder manifests (task-01..05.yaml) predate the
+    Wave 3a JSON convention and never will emit the JSON result line --
+    real, end-to-end proof (not just the hermetic
+    test_oracle_result_from_validation_malformed_json_falls_back_gracefully
+    above) that `run_oracle` still scores them correctly, with every
+    structured field left `None`."""
+    task = _load("bugfix-01")
+    ws = tmp_path / "ws"
+    t.materialize_repo(task, ws)
+    fixed = task.setup_repo["stats.sh"].replace(
+        "    echo $((sum / $#))\n\nsummarize",
+        "    echo $((sum / $#))\n}\n\nsummarize",
+    )
+    (ws / "stats.sh").write_bytes(fixed.encode("utf-8"))
+
+    result = t.run_oracle(task, ws)
+    assert result.pass_ is True
+    assert result.stage is None
+    assert result.reason_code is None
+    assert result.case is None

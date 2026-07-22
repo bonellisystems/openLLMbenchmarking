@@ -1,6 +1,6 @@
 id: py-hard-multifile-01
 shape: multi-file
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The repo has three files implementing a small checkout system:
 
@@ -73,6 +73,7 @@ setup_repo:
     This file is part of the task fixture. Do not edit it.
 oracle_files:
   oracle_test.py: |
+    import json
     import subprocess
     import sys
 
@@ -100,6 +101,47 @@ oracle_files:
         return round((subtotal - flat_discount) * (1 + tax_rate), 2)
 
 
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
+
+
     def _run(items, flat_discount, tax_rate):
         """Build a real Cart and call the CANDIDATE `checkout_total` in a
         FRESH subprocess -- never imported into this checker's own
@@ -122,24 +164,25 @@ oracle_files:
         for items, flat_discount, tax_rate in CASES:
             want = _expected(items, flat_discount, tax_rate)
             r = _run(items, flat_discount, tax_rate)
+            case = f"checkout_total(items={items}, discount={flat_discount}, tax={tax_rate})"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=str(want), actual=actual,
+                      stage=stage, reason_code=reason_code)
             out = r.stdout.strip()
             try:
                 got = float(out)
             except ValueError:
-                print(f"FAIL: checkout_total(items={items}, discount={flat_discount}, "
-                      f"tax={tax_rate}) -> non-numeric output {out!r}; "
-                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
-                sys.exit(1)
+                _emit(False, case=case, expected=str(want), actual=out,
+                      stage="behavior", reason_code="non_numeric_output")
             # Tolerant float compare (not exact string equality): rounding a
             # currency amount to 2dp can print as "16.2" not "16.20", and
             # binary-float noise at the 1e-9 level must not fail an
             # otherwise-correct solution.
             if abs(got - want) >= 0.005:
-                print(f"FAIL: checkout_total(items={items}, discount={flat_discount}, "
-                      f"tax={tax_rate}) -> {got!r} (want {want!r}); "
-                      f"exit={r.returncode} stderr={r.stderr.strip()!r}")
-                sys.exit(1)
-        print("PASS")
+                _emit(False, case=case, expected=str(want), actual=str(got),
+                      stage="behavior", reason_code="wrong_output")
+        _emit(True)
 
 
     if __name__ == "__main__":
@@ -213,3 +256,13 @@ notes: |
   "fix" the wrong file and still pass; only `checkout.py` is in
   `allowed_diff_paths`. `NOTES.md` is the agent-VISIBLE protected fixture
   exercising the hash-cap, same convention as every other manifest.
+
+  MACHINE-READABLE RESULT (Wave 3a, task_version 1.0.0 -> 1.1.0): see
+  `suite/b8_harness/_schema.md`'s Wave 3a section for the full
+  `{"pass","stage","reason_code","case","expected","actual","exit_status"}`
+  convention and closed vocabulary -- same `_emit`/`_classify_crash`
+  pattern as py-bugfix-01/task-06.yaml. This task's THIRD, task-specific
+  reason code, `non_numeric_output` (stage `behavior`), covers the
+  pre-existing "candidate printed something that isn't a float at all"
+  branch -- distinct from `wrong_output` (a numeric answer, just the wrong
+  one) and from a `compile`/`import`-stage crash.

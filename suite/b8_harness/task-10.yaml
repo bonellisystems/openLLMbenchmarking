@@ -1,6 +1,6 @@
 id: py-toolheavy-01
 shape: tool-heavy
-task_version: "1.0.0"
+task_version: "1.1.0"
 prompt: |
   The repo has 5 Python modules -- `handler_alpha.py`, `handler_bravo.py`,
   `handler_charlie.py`, `handler_delta.py`, `handler_echo.py` -- each
@@ -45,12 +45,54 @@ setup_repo:
     This file is part of the task fixture. Do not edit it.
 oracle_files:
   oracle_test.py: |
+    import json
     import subprocess
     import sys
 
     HANDLERS = ["handler_alpha", "handler_bravo", "handler_charlie",
                 "handler_delta", "handler_echo"]
     CASES = [0, 1, 2, 5, 10, -3]
+
+
+    def _classify_crash(stderr):
+        """Best-effort (stage, reason_code, actual) classification for a
+        candidate subprocess that exited nonzero before producing usable
+        stdout -- inspects stderr TEXT only. Falls back to the generic
+        "behavior"/"runtime_error" bucket for anything not recognized
+        (e.g. an uncaught exception raised from inside a normal call, not
+        at import/parse time) rather than guessing further."""
+        text = stderr or ""
+        if "SyntaxError" in text or "IndentationError" in text:
+            stage, reason_code = "compile", "syntax_error"
+        elif "ModuleNotFoundError" in text or "ImportError" in text:
+            stage, reason_code = "import", "import_error"
+        else:
+            stage, reason_code = "behavior", "runtime_error"
+        tail = text.strip().splitlines()
+        return stage, reason_code, (tail[-1] if tail else "(no stderr)")
+
+
+    def _emit(passed, *, case=None, expected=None, actual=None,
+              stage="behavior", reason_code=None):
+        """Print the human-readable PASS/FAIL line (unchanged, kept for
+        local debugging), THEN the ONE machine-readable JSON result line
+        -- the B8 oracle convention (Wave 3a; see llmtest/harness/tasks.py's
+        run_oracle, which parses the LAST JSON line of stdout into
+        det_checks.oracle's structured fields, falling back to this human
+        line only when no JSON parses). `actual` may embed
+        candidate-controlled output; run_oracle independently bounds it
+        before it reaches trusted classifier evidence."""
+        exit_status = 0 if passed else 1
+        if passed:
+            print("PASS")
+        else:
+            print(f"FAIL: {case} -> {actual!r} (want {expected!r})")
+        print(json.dumps({
+            "pass": bool(passed), "stage": stage, "reason_code": reason_code,
+            "case": case, "expected": expected, "actual": actual,
+            "exit_status": exit_status,
+        }))
+        sys.exit(exit_status)
 
 
     def _run(module):
@@ -70,15 +112,19 @@ oracle_files:
 
     def main():
         want_lines = [str(x * 2 + 1) for x in CASES]
+        want = str(want_lines)
         for module in HANDLERS:
             r = _run(module)
+            case = f"{module}.transform over {CASES}"
+            if r.returncode != 0:
+                stage, reason_code, actual = _classify_crash(r.stderr)
+                _emit(False, case=case, expected=want, actual=actual,
+                      stage=stage, reason_code=reason_code)
             got_lines = r.stdout.strip().splitlines()
             if got_lines != want_lines:
-                print(f"FAIL: {module}.transform over {CASES} -> {got_lines!r} "
-                      f"(want {want_lines!r}); exit={r.returncode} "
-                      f"stderr={r.stderr.strip()!r}")
-                sys.exit(1)
-        print("PASS")
+                _emit(False, case=case, expected=want, actual=str(got_lines),
+                      stage="behavior", reason_code="wrong_output")
+        _emit(True)
 
 
     if __name__ == "__main__":
@@ -116,3 +162,12 @@ notes: |
   genuine behavioral check on top of the hash-cap. `oracle_test.py` lives
   in `oracle_files`, never written into the agent's workspace. Stdlib
   only (`subprocess`, `sys`) -- no pytest.
+
+  MACHINE-READABLE RESULT (Wave 3a, task_version 1.0.0 -> 1.1.0): see
+  `suite/b8_harness/_schema.md`'s Wave 3a section for the full
+  `{"pass","stage","reason_code","case","expected","actual","exit_status"}`
+  convention and closed vocabulary -- same `_emit`/`_classify_crash`
+  pattern as py-bugfix-01/task-06.yaml, adapted so each `case` names the
+  WHOLE handler-over-CASES check (`"handler_bravo.transform over [0, 1,
+  2, 5, 10, -3]"`) and `expected`/`actual` are the stringified output
+  LISTS, not a single scalar.

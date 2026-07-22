@@ -70,6 +70,7 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -152,6 +153,36 @@ def copy_real_files(src: str | Path, dst: str | Path) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(full.read_bytes())
     return dst
+
+
+@dataclass
+class ValidateResult:
+    """`Sandbox.hidden_validate`'s return value (Wave 3a, B8
+    measurement-validity: "make the completion scorer DEFENSIBLE").
+    Iterable-dataclass, not a plain tuple: `__iter__` yields exactly `(ok,
+    detail)`, so every existing `ok, detail = sbx.hidden_validate(...)`
+    call site (every test in tests/test_harness_sandbox.py,
+    `llmtest.harness.tasks.run_oracle`) keeps working completely
+    unchanged -- tuple-unpacking (`a, b = x`) works against ANY 2-item
+    iterable, not just an actual `tuple`.
+
+    `stdout` (additive, default `None`) is the oracle command's raw,
+    UN-repr'd stdout -- populated only when the command-oracle path
+    actually ran a subprocess to a normal (non-timeout) completion; `None`
+    for the callable-oracle path, a wall-clock timeout, or a pre-oracle
+    setup failure, none of which have a meaningful process stdout to
+    offer. This exists so `llmtest.harness.tasks.run_oracle` can scan the
+    oracle's own stdout for the B8 oracle's machine-readable JSON result
+    line (see `_schema.md`'s Wave 3a convention) without having to
+    re-parse it back out of `detail`'s already-`repr()`-embedded copy
+    (`detail` embeds `stdout` via `f"...stdout={r.stdout!r}..."`, which is
+    lossy/ambiguous to un-repr reliably)."""
+    ok: bool
+    detail: str
+    stdout: str | None = None
+
+    def __iter__(self):
+        return iter((self.ok, self.detail))
 
 
 class Sandbox:
@@ -278,7 +309,7 @@ class Sandbox:
     # -- hidden (anti-gaming) validation ------------------------------------
 
     def hidden_validate(self, oracle, workspace: str | Path, *,
-                         timeout: float | None = None) -> tuple[bool, str]:
+                         timeout: float | None = None) -> ValidateResult:
         """Run `oracle` against a FRESH, READ-ONLY COPY of `workspace`,
         mounted OUTSIDE the agent's writable area -- so nothing the agent
         did to its own `/workspace` mount (or any process it left running)
@@ -338,6 +369,16 @@ class Sandbox:
         than raising -- consistent with the callable-oracle path below:
         an oracle failure is a validation result, not a crash.
 
+        Returns a `ValidateResult` (Wave 3a), not a plain tuple -- it
+        unpacks exactly like the legacy `(ok, detail)` 2-tuple via
+        `__iter__` (see that dataclass's own docstring), so this is a
+        behavior-preserving change for every existing caller. The
+        command-oracle path also populates `ValidateResult.stdout` with
+        the oracle's raw, un-repr'd stdout (`None` on every other path --
+        callable oracle, timeout, or a copy-setup failure) so
+        `llmtest.harness.tasks.run_oracle` can scan it for the B8 oracle's
+        machine-readable JSON result line.
+
         Deliberately decoupled from any `B8Task` type -- that type doesn't
         exist yet (Task 3). Task 3's oracle wiring is expected to build a
         command list or callable and call this method.
@@ -352,8 +393,8 @@ class Sandbox:
                     try:
                         ok, detail = oracle(copy_root)
                     except Exception as e:  # noqa: BLE001 - oracle failure is a validation result, not a crash
-                        return False, f"oracle callable raised: {e!r}"
-                    return bool(ok), str(detail)
+                        return ValidateResult(False, f"oracle callable raised: {e!r}")
+                    return ValidateResult(bool(ok), str(detail))
 
                 container_name = f"llmtest-b8-oracle-{uuid.uuid4().hex[:12]}"
                 container_cmd = (["timeout", "-s", "KILL", str(int(timeout))]
@@ -381,7 +422,8 @@ class Sandbox:
                     cleanup_status = self._force_remove_oracle_container(container_name)
 
                 if timed_out:
-                    return False, f"oracle timeout: exceeded wall-clock budget ({cleanup_status})"
+                    return ValidateResult(
+                        False, f"oracle timeout: exceeded wall-clock budget ({cleanup_status})")
                 detail = f"exit={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}"
                 if r.returncode in (124, 137):
                     # 124: coreutils `timeout` itself killed the oracle command
@@ -389,13 +431,15 @@ class Sandbox:
                     # 137 = 128+SIGKILL(9): the container's PID 1 (the `timeout`
                     # process) was killed with SIGKILL and that propagated as
                     # the container's own exit code. Either way, the
-                    # in-container wall-clock bound fired.
-                    return False, f"oracle timeout: {detail}"
-                return r.returncode == 0, detail
+                    # in-container wall-clock bound fired. No `stdout=` here
+                    # either -- the oracle never ran to a normal completion,
+                    # so there is no meaningful JSON result line to look for.
+                    return ValidateResult(False, f"oracle timeout: {detail}")
+                return ValidateResult(r.returncode == 0, detail, stdout=r.stdout)
         except Exception as e:  # noqa: BLE001 - any pre-oracle setup failure (e.g. an
             # unsupported file type tripping copytree) is a validation
             # result, not a crash -- mirrors the callable-oracle handling above.
-            return False, f"hidden_validate setup failed: {e!r}"
+            return ValidateResult(False, f"hidden_validate setup failed: {e!r}")
 
     def _force_remove_oracle_container(self, name: str) -> str:
         """Force-remove the throwaway oracle container by NAME and verify
