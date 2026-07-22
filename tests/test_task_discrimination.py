@@ -54,8 +54,6 @@ def _docker_available() -> bool:
 
 requires_docker = pytest.mark.skipif(not _docker_available(), reason="Docker not reachable")
 
-ROOT = None  # set below, mirrors test_harness_tasks.py's module-level ROOT
-
 
 def _root():
     from pathlib import Path
