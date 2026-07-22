@@ -306,8 +306,8 @@ _source_suite: `suite-v2.1.0` (325 rows, 2 (model,harness) group(s))_
 
 | Model | Harness | class a | class b | class c | class d | class e | class unknown | (unclassified) |
 |---|---|---|---|---|---|---|---|---|
-| gemma-4-26b-a4b-mxfp4 | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 90 |
-| gpt-oss-20b | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 16 |
+| gemma-4-26b-a4b-mxfp4 | opencode | 0 | 15 | 9 | 0 | 66 | 0 | 0 |
+| gpt-oss-20b | opencode | 0 | 1 | 8 | 0 | 7 | 0 | 0 |
 
 _First-failure-class distribution is DISPLAY ONLY -- actually running `llmtest.harness.failure_class.classify_first_failure` -- run via `scripts/classify_b8_local.py` (task-b8classify) -- POPULATES this distribution: since B8's row schema has no room for the full `Trace` a classifier needs (only summary `metrics`), the classify pass reads each failed row's persisted Trace (`response_meta.trace_ref`, written by `llmtest.batteries.b8_harness.execute()`) and appends its verdict to the sibling, append-only store `results/b8_classifications-<suite_version>.jsonl` (row_id keyed) rather than mutating the row itself (row_id is content-derived and `Store.append()` is a structural no-op on an existing row_id -- see that module's docstring). This function reads that sibling store (`_load_b8_classifications`) and fills in `metrics['first_failure_class']` wherever a row's own metrics don't already carry it; a failed row falls into `(unclassified)` only when neither source has a verdict for it yet (classify pass not run, or still in progress). Wilson 95% CI uses `llmtest.harness.stats.wilson` (z=1.96); k/N and the ordered per-replicate outcome list are always shown alongside it -- never a single blended probability at these small (N>=5) replicate counts._
 
