@@ -17,9 +17,9 @@ HF="${HF:-$B8_ROOT/venv/bin/hf}"   # huggingface_hub 1.x CLI (huggingface-cli do
 mkdir -p "$MODELS"
 
 GPT_OSS_REPO="${GPT_OSS_REPO:-ggml-org/gpt-oss-20b-GGUF}"   # GGUF repo (llama.cpp org); openai/gpt-oss-20b is safetensors, NOT gguf
-GPT_OSS_PATTERN="${GPT_OSS_PATTERN:-*mxfp4*.gguf}"
+GPT_OSS_PATTERN="${GPT_OSS_PATTERN:-*.gguf}"     # single file gpt-oss-20b-MXFP4.gguf (hf --include is CASE-SENSITIVE, so *mxfp4* misses it)
 GEMMA_REPO="${GEMMA_REPO:-unsloth/gemma-4-26B-A4B-it-qat-GGUF}"
-GEMMA_PATTERN="${GEMMA_PATTERN:-*mxfp4*.gguf}"   # falls back to Q4_0 if none
+GEMMA_PATTERN="${GEMMA_PATTERN:-gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf}"   # the MAIN model (UD-Q4_K_XL); repo also has MTP-draft + mmproj .gguf that must NOT be picked
 
 # link_largest <subdir> <stable-name>: point <stable-name> at the biggest .gguf
 link_largest () {
@@ -40,7 +40,7 @@ link_largest "$MODELS/gpt-oss-20b-src" gpt-oss-20b.gguf
 echo "== gemma-4-26b-a4b  ($GEMMA_REPO :: $GEMMA_PATTERN) =="
 "$HF" download "$GEMMA_REPO" --include "$GEMMA_PATTERN" \
     --local-dir "$MODELS/gemma-4-26b-src" || \
-  "$HF" download "$GEMMA_REPO" --include "*Q4_0*.gguf" --local-dir "$MODELS/gemma-4-26b-src"
+  "$HF" download "$GEMMA_REPO" --include "*UD-Q4*.gguf" --local-dir "$MODELS/gemma-4-26b-src"  # fallback: a UD quant, NOT the MTP/mmproj .gguf
 link_largest "$MODELS/gemma-4-26b-src" gemma-4-26b-a4b.gguf
 
 echo "models ready:"; ls -lL "$MODELS"/*.gguf
