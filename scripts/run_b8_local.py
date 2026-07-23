@@ -173,6 +173,13 @@ def main(argv=None) -> int:
         b8cfg["tasks"] = list(b8cfg[f"tasks_{args.task_form}"])
         print(f"run_b8_local: task-form={args.task_form!r} -> "
               f"{len(b8cfg['tasks'])} tasks as the plan() allowlist")
+    if args.model and args.model not in b8cfg["models"]:
+        # plan() only crosses models in b8.models; inject a not-yet-listed
+        # model so a live run can expand B8 coverage to it (the served GGUF
+        # must actually be this model). Restricts the plan to it alone.
+        b8cfg["models"] = [args.model]
+        print(f"run_b8_local: injected model {args.model!r} (not in b8.models) "
+              f"as the sole planned model")
     base_url = _normalize_base_url(args.endpoint_url)
     print(f"run_b8_local: endpoint base_url resolved to {base_url!r} "
           f"(from --endpoint-url {args.endpoint_url!r})")
