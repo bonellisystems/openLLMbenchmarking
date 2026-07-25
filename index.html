@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local LLM Test Bench — coverage, scores &amp; gaps</title>
+<style>
+:root{
+  --bg:#0a0e14; --panel:#111823; --panel-2:#0d1420; --line:#243244; --line-soft:#1b2430;
+  --ink:#e8eef6; --ink-dim:#8697aa; --ink-faint:#5a6b7d;
+  --accent:#4c9aff; --accent-soft:rgba(76,154,255,.14); --accent-line:rgba(76,154,255,.5);
+  --s-lo:#e05248; --s-mid:#d9a83a; --s-hi:#46b95a;
+  --sev-crit:#e05248; --sev-high:#e0813a; --sev-med:#d9a83a; --sev-low:#6d8299;
+  --gap-ink:#556475;
+  --shadow:0 1px 0 rgba(255,255,255,.03), 0 8px 24px -12px rgba(0,0,0,.6);
+  --mono:ui-monospace,"Cascadia Code","SF Mono","Segoe UI Mono",Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --r:8px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:19px;margin:0;font-weight:650;letter-spacing:-.01em}
+h2{font-size:14px;margin:0 0 2px;font-weight:650;letter-spacing:.01em}
+h3{font-size:12px;margin:18px 0 8px;font-weight:650;color:var(--ink-dim);
+  text-transform:uppercase;letter-spacing:.07em}
+.dim{color:var(--ink-dim);font-weight:400}
+.faint{color:var(--ink-faint)}
+header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.sub{color:var(--ink-dim);font-size:12.5px;margin:2px 0 20px;max-width:76ch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);margin:16px 0;overflow:hidden}
+.panel-h{padding:12px 16px;border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.panel-h .why{color:var(--ink-faint);font-size:11.5px}
+.panel-b{padding:14px 16px}
+/* ---------- stat tiles ---------- */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:0 0 4px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px}
+.stat .v{font-family:var(--mono);font-size:21px;font-weight:600;letter-spacing:-.02em}
+.stat .k{color:var(--ink-faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+/* ---------- tables ---------- */
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+thead th{color:var(--ink-faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+  font-weight:650;white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:2}
+tbody tr:last-child td{border-bottom:0}
+.matrix th.sortable{cursor:pointer;user-select:none}
+.matrix th.sortable:hover{color:var(--ink)}
+.matrix th.active{color:var(--accent)}
+.matrix td.model{font-family:var(--mono);font-size:12px;white-space:nowrap}
+.matrix td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+.cell{display:inline-block;min-width:52px;text-align:right;padding:2px 6px;border-radius:5px;
+  font-family:var(--mono);font-size:12px}
+.cell.gap{color:var(--gap-ink);background:transparent;font-style:italic;min-width:0}
+tr.row{cursor:pointer}
+tr.row:hover td{background:rgba(255,255,255,.022)}
+tr.row.on td{background:var(--accent-soft)}
+tr.row.on td.model{box-shadow:inset 2px 0 0 var(--accent)}
+.cov{font-family:var(--mono);color:var(--ink-faint);font-size:11px}
+/* ---------- magnitude bars (single hue = magnitude, not identity) ---------- */
+.bar{position:relative;height:16px;background:var(--line-soft);border-radius:4px;overflow:hidden;min-width:80px}
+.bar>span{position:absolute;left:0;top:0;bottom:0;background:var(--accent);
+  border-radius:0 4px 4px 0;box-shadow:0 0 0 2px var(--panel) inset}
+.bar.warn>span{background:var(--s-mid)}
+.bar.bad>span{background:var(--s-lo)}
+.barval{font-family:var(--mono);font-size:12px;white-space:nowrap}
+/* ---------- status chips: icon + word, never colour alone ---------- */
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 7px;
+  border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.chip .ic{font-size:11px;line-height:1}
+.chip.pass{color:var(--s-hi);border-color:rgba(70,185,90,.4)}
+.chip.partial{color:var(--s-mid);border-color:rgba(217,168,58,.4)}
+.chip.fail{color:var(--s-lo);border-color:rgba(224,82,72,.4)}
+.chip.none{color:var(--gap-ink)}
+/* ---------- gaps ---------- */
+.gap-item{border-left:3px solid var(--line);padding:11px 0 11px 13px;margin:0 0 3px}
+.gap-item.critical{border-left-color:var(--sev-crit)}
+.gap-item.high{border-left-color:var(--sev-high)}
+.gap-item.medium{border-left-color:var(--sev-med)}
+.gap-item.low{border-left-color:var(--sev-low)}
+.gap-item h4{margin:0 0 4px;font-size:13px;font-weight:650;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sev{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;padding:1.5px 6px;
+  border-radius:4px;border:1px solid currentColor;font-weight:700}
+.sev.critical{color:var(--sev-crit)} .sev.high{color:var(--sev-high)}
+.sev.medium{color:var(--sev-med)} .sev.low{color:var(--sev-low)}
+.gap-item p{margin:0;color:var(--ink-dim);font-size:12.5px;max-width:96ch}
+.gap-item .fix{margin-top:5px;font-size:12px;color:var(--ink-faint)}
+.gap-item .fix b{color:var(--ink-dim);font-weight:600}
+/* ---------- detail / drill-down ---------- */
+.detail{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.dcard{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:6px;padding:11px 12px}
+.dcard h5{margin:0 0 8px;font-size:11px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.06em}
+.dcard .row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12px}
+.dcard .row span:first-child{color:var(--ink-dim)}
+.dcard .row span:last-child{font-family:var(--mono)}
+.empty{color:var(--ink-faint);font-size:12.5px;font-style:italic}
+/* ---------- misc ---------- */
+details.gloss{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:0;margin:16px 0;box-shadow:var(--shadow)}
+details.gloss>summary{padding:12px 16px;cursor:pointer;font-weight:650;font-size:13px;list-style:none}
+details.gloss>summary::-webkit-details-marker{display:none}
+details.gloss>summary::before{content:"▸ ";color:var(--accent)}
+details.gloss[open]>summary::before{content:"▾ "}
+details.gloss .panel-b{border-top:1px solid var(--line-soft)}
+.gl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;align-items:start}
+.gl dt{font-family:var(--mono);font-size:12px;color:var(--accent);white-space:nowrap}
+.gl dd{margin:0;color:var(--ink-dim);font-size:12.5px}
+.gl dd b{color:var(--ink);font-weight:600}
+.note{color:var(--ink-faint);font-size:12px;max-width:100ch;margin:10px 0 0}
+.tag{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-faint)}
+.legend-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;color:var(--ink-faint);font-size:11px}
+.sw{display:inline-block;width:22px;height:9px;border-radius:3px;vertical-align:middle;margin-right:5px}
+footer{color:var(--ink-faint);font-size:11.5px;margin-top:34px;border-top:1px solid var(--line-soft);padding-top:14px}
+code{font-family:var(--mono);font-size:11.5px;background:var(--panel-2);padding:1px 5px;
+  border-radius:4px;border:1px solid var(--line-soft)}
+.tip{position:fixed;z-index:99;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:#05080d;border:1px solid var(--line);border-radius:6px;padding:8px 10px;
+  font-size:11.5px;max-width:340px;color:var(--ink);box-shadow:0 10px 30px -8px #000}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Local LLM Test Bench <span class="dim">— coverage, scores &amp; gaps</span></h1>
+  <span class="tag" id="gen"></span>
+</header>
+<p class="sub">Eight batteries across a local-model roster. Click any column header to sort;
+click a row to expand that model's sub-scores. Read the <b>Known gaps</b> panel before drawing
+conclusions — several things people assume are measured here are <em>not</em>.</p>
+
+<div class="stats" id="stats"></div>
+
+<details class="gloss" id="gloss">
+  <summary>What each battery actually measures</summary>
+  <div class="panel-b"><dl class="gl" id="glossbody"></dl></div>
+</details>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Coverage matrix</h2>
+    <span class="why">every model × every battery — blank means not run, not zero</span>
+  </div>
+  <div class="panel-b" style="padding:0;overflow-x:auto">
+    <table class="matrix" id="matrix"></table>
+  </div>
+  <div class="panel-b" style="border-top:1px solid var(--line-soft)">
+    <div class="legend-row">
+      <span><span class="sw" style="background:var(--s-hi)"></span>strong</span>
+      <span><span class="sw" style="background:var(--s-mid)"></span>mid</span>
+      <span><span class="sw" style="background:var(--s-lo)"></span>weak</span>
+      <span><span class="sw" style="background:var(--line-soft)"></span><i>not run</i></span>
+      <span class="faint">colour = value within that battery's own range; each battery has its own unit</span>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="detailpanel">
+  <div class="panel-h"><h2 id="detailtitle">Model detail</h2>
+    <span class="why">click a row above to inspect its sub-scores</span></div>
+  <div class="panel-b"><div class="detail" id="detail"></div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Speculative decoding — the throughput the suite doesn't show</h2>
+    <span class="why">lossless (temp-0 output is byte-identical) · zero VRAM cost · prism llama.cpp fork</span>
+  </div>
+  <div class="panel-b">
+    <p class="note" id="specnote" style="margin-top:0"></p>
+    <h3>n-gram spec-decode on EDIT / rewrite work <span class="dim">— <code>--spec-type ngram-mod</code></span></h3>
+    <table id="ngram"></table>
+    <h3>The same feature on the suite's B5 arm <span class="dim">— fresh generation</span></h3>
+    <table id="b5arms"></table>
+    <h3><code>--spec-ngram-mod-n-match</code> tuning</h3>
+    <table id="nmatch"></table>
+    <h3>MTP draft heads <span class="dim">— multi-token prediction</span></h3>
+    <table id="mtp"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Game / graphical builds</h2>
+    <span class="why">one-shot browser games — specified in the v2.1 design, never built as a battery</span>
+  </div>
+  <div class="panel-b">
+    <p class="note" style="margin-top:0">These are <b>ad-hoc laptop results from sessions 5–6</b>, graded by
+    blind code review on a bare one-line prompt — not a scored battery, no replicates, only 6 models.
+    Treat them as anecdotes, not measurements.</p>
+    <h3>Snake &amp; Tetris — what actually got built</h3>
+    <table id="games"></table>
+    <h3>The roster that was specified but never implemented</h3>
+    <table id="gamesplanned"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Known gaps — what these numbers do NOT cover</h2>
+    <span class="why">read this before ranking anything</span>
+  </div>
+  <div class="panel-b" id="gaps"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h"><h2>Caveats that change how you read the table</h2></div>
+  <div class="panel-b" id="caveats"></div>
+</div>
+
+<footer id="foot"></footer>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = /* build */ {"generated_from": "llmtest-v2 results shards + labelled session constants", "phases": [{"id": "B1", "name": "Business Scorecard", "unit": "/10", "kind": "judged", "blurb": "15 business units x 8 tasks x 3 reps, scored 0-10 by a blinded 3-judge panel (Claude Fable-5 / GPT-5.6-sol / Gemini 3.1 Pro) against per-unit rubrics with CAL-strong/CAL-weak calibration anchors in every packet.", "sub": "by business unit"}, {"id": "B2", "name": "Tool Calling", "unit": "%", "kind": "deterministic", "blurb": "Can the model emit a well-formed tool call: correct schema, right tool selected, argument shapes valid. This is a FORMATION floor, not agentic skill - most models score ~100% and it cannot detect delegation failures.", "sub": null}, {"id": "B3", "name": "Hallucination Resistance", "unit": "%", "kind": "deterministic", "blurb": "Unanswerable / trick / false-premise prompts. Scores the 'correct' signal: did it refuse or hedge instead of fabricating. Note the 300-token answer budget starves reasoning models, which spend it on hidden thinking.", "sub": null}, {"id": "B4", "name": "Long-Context Retrieval", "unit": "%", "kind": "deterministic", "blurb": "Needle-in-a-haystack recall across a context-length sweep (16k -> 256k). Arms are pruned per model by VRAM fit, so 100B+ models legitimately get zero arms on a single card.", "sub": null}, {"id": "B5", "name": "Serving Throughput", "unit": "t/s", "kind": "deterministic", "blurb": "Decode tokens/sec on the datacenter box, with a speculative-decoding on/off arm. IMPORTANT: this arm generates fresh text, where n-gram spec-decode cannot help - see the Speculative Decoding panel for the edit-workload numbers.", "sub": null}, {"id": "B6", "name": "Agentic Coding", "unit": "%", "kind": "deterministic", "blurb": "10 tasks: 5 from-scratch (is_prime, word-count CLI, backup.sh, debounce, SQL) and 5 planted-bug fixes. Deterministic checks only - the judged quality axis is built but not yet run. Does NOT include the game builds (see Game Builds panel).", "sub": "by coding track"}, {"id": "B7", "name": "Reproducibility", "unit": "%", "kind": "deterministic", "blurb": "Same prompt across a config matrix (system prompt / temperature / tool format / spec-decode). Reports how often the deterministic signals agree with the baseline cell - i.e. how much the answer moves when harness settings move.", "sub": null}, {"id": "B8", "name": "Agentic Harness", "unit": "%", "kind": "deterministic", "blurb": "Real OpenCode agent in a disposable container: 23 sealed Python tasks across break-fix / cross-module / feature / stateful / build / robustness, scored by a hidden oracle. SINGLE-AGENT ONLY - no task requires spawning a subagent.", "sub": "by task category"}], "models": ["agents-a1-35b", "bonsai-ternary-27b", "gemma-4-26b-a4b", "gemma-4-31b-dense", "glm-4.5-air", "gpt-oss-120b", "gpt-oss-20b", "granite-4.1-30b", "laguna-s-2.1", "llama-4-scout", "nemotron-3-nano-30b", "ornith-1.0-35b", "ornith-1.0-9b", "qwen3-235b", "qwen3-coder-30b", "qwen3.6-27b-dense", "qwen3.6-35b-a3b"], "matrix": {"agents-a1-35b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 93, "display": "93%"}]}, "B3": {"tested": true, "n": 39, "score": 62, "display": "62%", "sub": []}, "B4": {"tested": true, "n": 7, "score": 19, "display": "19%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 212, "display": "212 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 62, "display": "62%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.7, "display": "6.7", "sub": []}, "B8": {"tested": true, "n": 69, "score": 90, "display": "90%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 93, "display": "93%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 100, "display": "100%"}]}}, "bonsai-ternary-27b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 93, "display": "93%"}]}, "B3": {"tested": true, "n": 39, "score": 74, "display": "74%", "sub": []}, "B4": {"tested": true, "n": 28, "score": 37, "display": "37%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 109, "display": "109 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 72, "display": "72%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.8, "display": "6.8", "sub": []}, "B8": {"tested": true, "n": 69, "score": 83, "display": "83%", "sub": [{"name": "break-fix", "score": 89, "display": "89%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 93, "display": "93%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 56, "display": "56%"}]}}, "gemma-4-26b-a4b": {"B2": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 87, "display": "87%", "sub": [{"name": "bug-fix", "score": 73, "display": "73%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 62, "display": "62%", "sub": []}, "B4": {"tested": true, "n": 14, "score": 43, "display": "43%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 204, "display": "204 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 94, "display": "94%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 7.2, "display": "7.2", "sub": []}, "B8": {"tested": true, "n": 300, "score": 59, "display": "59%", "sub": [{"name": "break-fix", "score": 91, "display": "91%"}, {"name": "build/migration", "score": 42, "display": "42%"}, {"name": "cross-module", "score": 50, "display": "50%"}, {"name": "feature", "score": 78, "display": "78%"}, {"name": "hard", "score": 75, "display": "75%"}, {"name": "robustness", "score": 27, "display": "27%"}, {"name": "stateful", "score": 47, "display": "47%"}]}}, "gemma-4-31b-dense": {"B2": {"tested": true, "n": 27, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "bug-fix", "score": 87, "display": "87%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 77, "display": "77%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 68, "display": "68%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 58, "display": "58 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 7.4, "display": "7.4", "sub": []}, "B8": {"tested": true, "n": 69, "score": 91, "display": "91%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 100, "display": "100%"}]}}, "glm-4.5-air": {"B2": {"tested": true, "n": 27, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 38, "display": "38%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 74, "display": "74%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 92, "display": "92 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 98, "display": "98%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.3, "display": "6.3", "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "gpt-oss-120b": {"B2": {"tested": true, "n": 27, "score": 81, "display": "81%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 73, "display": "73%", "sub": [{"name": "bug-fix", "score": 47, "display": "47%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 38, "display": "38%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 100, "display": "100%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 178, "display": "178 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 86, "display": "86%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.6, "display": "6.6", "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "gpt-oss-20b": {"B2": {"tested": true, "n": 30, "score": 90, "display": "90%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 83, "display": "83%", "sub": [{"name": "bug-fix", "score": 67, "display": "67%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 33, "display": "33%", "sub": []}, "B4": {"tested": true, "n": 14, "score": 95, "display": "95%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 245, "display": "245 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 83, "display": "83%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.0, "display": "6.0", "sub": []}, "B8": {"tested": true, "n": 205, "score": 86, "display": "86%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 83, "display": "83%"}, {"name": "cross-module", "score": 93, "display": "93%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 96, "display": "96%"}, {"name": "robustness", "score": 73, "display": "73%"}, {"name": "stateful", "score": 60, "display": "60%"}]}}, "granite-4.1-30b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 51, "display": "51%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 100, "display": "100%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 61, "display": "61 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 91, "display": "91%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.4, "display": "6.4", "sub": []}, "B8": {"tested": true, "n": 69, "score": 68, "display": "68%", "sub": [{"name": "break-fix", "score": 89, "display": "89%"}, {"name": "build/migration", "score": 44, "display": "44%"}, {"name": "cross-module", "score": 67, "display": "67%"}, {"name": "feature", "score": 56, "display": "56%"}, {"name": "hard", "score": 80, "display": "80%"}, {"name": "robustness", "score": 67, "display": "67%"}, {"name": "stateful", "score": 67, "display": "67%"}]}}, "laguna-s-2.1": {"B2": {"tested": true, "n": 30, "score": 90, "display": "90%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 44, "display": "44%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.1, "display": "6.1", "sub": [{"name": "operations", "score": 7.2, "display": "7.2"}, {"name": "data_analytics", "score": 7.1, "display": "7.1"}, {"name": "hr_people_ops", "score": 6.9, "display": "6.9"}, {"name": "finance", "score": 6.7, "display": "6.7"}, {"name": "sales", "score": 6.5, "display": "6.5"}, {"name": "marketing", "score": 6.4, "display": "6.4"}, {"name": "seo", "score": 6.3, "display": "6.3"}, {"name": "helpdesk", "score": 6.3, "display": "6.3"}, {"name": "outreach", "score": 6.1, "display": "6.1"}, {"name": "knowledge_mgmt", "score": 6.1, "display": "6.1"}, {"name": "coding", "score": 6.1, "display": "6.1"}, {"name": "project_mgmt", "score": 5.7, "display": "5.7"}, {"name": "cybersecurity", "score": 5.6, "display": "5.6"}, {"name": "legal_compliance", "score": 5.0, "display": "5.0"}, {"name": "it_infra", "score": 3.9, "display": "3.9"}]}, "B4": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B5": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B7": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "llama-4-scout": {"B2": {"tested": true, "n": 18, "score": 33, "display": "33%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 90, "display": "90%", "sub": [{"name": "bug-fix", "score": 80, "display": "80%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 56, "display": "56%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 87, "display": "87%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 86, "display": "86 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 5.6, "display": "5.6", "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "nemotron-3-nano-30b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 83, "display": "83%", "sub": [{"name": "bug-fix", "score": 67, "display": "67%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 33, "display": "33%", "sub": []}, "B4": {"tested": true, "n": 7, "score": 95, "display": "95%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 284, "display": "284 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 88, "display": "88%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 5.9, "display": "5.9", "sub": []}, "B8": {"tested": true, "n": 69, "score": 88, "display": "88%", "sub": [{"name": "break-fix", "score": 89, "display": "89%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 78, "display": "78%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 100, "display": "100%"}, {"name": "stateful", "score": 89, "display": "89%"}]}}, "ornith-1.0-35b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 93, "display": "93%"}]}, "B3": {"tested": true, "n": 39, "score": 69, "display": "69%", "sub": []}, "B4": {"tested": true, "n": 7, "score": 38, "display": "38%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 209, "display": "209 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 92, "display": "92%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 7.4, "display": "7.4", "sub": []}, "B8": {"tested": true, "n": 69, "score": 93, "display": "93%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 89, "display": "89%"}, {"name": "stateful", "score": 100, "display": "100%"}]}}, "ornith-1.0-9b": {"B2": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 74, "display": "74%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 24, "display": "24%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 130, "display": "130 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 81, "display": "81%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 6.7, "display": "6.7", "sub": []}, "B8": {"tested": true, "n": 69, "score": 81, "display": "81%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 78, "display": "78%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 93, "display": "93%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 56, "display": "56%"}]}}, "qwen3-235b": {"B2": {"tested": true, "n": 27, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 79, "display": "79%", "sub": []}, "B4": {"tested": true, "n": 28, "score": 100, "display": "100%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 58, "display": "58 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 94, "display": "94%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 7.2, "display": "7.2", "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "qwen3-coder-30b": {"B2": {"tested": true, "n": 30, "score": 80, "display": "80%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 62, "display": "62%", "sub": []}, "B4": {"tested": true, "n": 7, "score": 100, "display": "100%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 207, "display": "207 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 5.0, "display": "5.0", "sub": []}, "B8": {"tested": true, "n": 69, "score": 68, "display": "68%", "sub": [{"name": "break-fix", "score": 78, "display": "78%"}, {"name": "build/migration", "score": 0, "display": "0%"}, {"name": "cross-module", "score": 78, "display": "78%"}, {"name": "feature", "score": 89, "display": "89%"}, {"name": "hard", "score": 80, "display": "80%"}, {"name": "robustness", "score": 67, "display": "67%"}, {"name": "stateful", "score": 78, "display": "78%"}]}}, "qwen3.6-27b-dense": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}]}, "B3": {"tested": true, "n": 39, "score": 72, "display": "72%", "sub": []}, "B4": {"tested": true, "n": 21, "score": 40, "display": "40%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 58, "display": "58 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 80, "display": "80%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 7.6, "display": "7.6", "sub": []}, "B8": {"tested": true, "n": 69, "score": 83, "display": "83%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 67, "display": "67%"}, {"name": "cross-module", "score": 78, "display": "78%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 87, "display": "87%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 67, "display": "67%"}]}}, "qwen3.6-35b-a3b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": []}, "B6": {"tested": true, "n": 30, "score": 83, "display": "83%", "sub": [{"name": "bug-fix", "score": 73, "display": "73%"}, {"name": "from-scratch", "score": 93, "display": "93%"}]}, "B3": {"tested": true, "n": 39, "score": 69, "display": "69%", "sub": []}, "B4": {"tested": true, "n": 84, "score": 42, "display": "42%", "sub": []}, "B5": {"tested": true, "n": 4, "score": 225, "display": "225 t/s", "sub": []}, "B7": {"tested": true, "n": 64, "score": 83, "display": "83%", "sub": []}, "B1": {"tested": true, "n": 360, "score": 7.3, "display": "7.3", "sub": []}, "B8": {"tested": true, "n": 69, "score": 94, "display": "94%", "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 78, "display": "78%"}, {"name": "cross-module", "score": 89, "display": "89%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 100, "display": "100%"}, {"name": "stateful", "score": 89, "display": "89%"}]}}}, "ngram_edit": [{"model": "granite-4.1-30b", "base": 31.9, "ngram": 385.8, "note": "hybrid Mamba ~29B near-dense - biggest measured", "speedup": 12.09}, {"model": "qwen3.6-27b-dense", "base": 31.0, "ngram": 273.0, "note": "slow dense model gains the most per accepted draft", "speedup": 8.81}, {"model": "gemma-4-26b-a4b", "base": 125.0, "ngram": 682.0, "note": "MoE A4B - fastest absolute edit throughput", "speedup": 5.46}, {"model": "gpt-oss-20b", "base": 153.0, "ngram": 655.0, "note": "", "speedup": 4.28}, {"model": "ornith-1.0-35b", "base": 153.0, "ngram": 596.0, "note": "MXFP4 A3B", "speedup": 3.9}, {"model": "nemotron-3-nano-30b", "base": 194.5, "ngram": 621.6, "note": "hybrid Mamba MoE", "speedup": 3.2}, {"model": "qwen3.6-35b-a3b", "base": 174.0, "ngram": 340.0, "note": "gains least - matches fewer exact n-grams", "speedup": 1.95}], "ngram_control": {"model": "gemma-4 (from-scratch control)", "base": 158.0, "ngram": 258.0, "note": "NOT an edit task - novel code still self-repeats enough for ~1.6x", "speedup": 1.63}, "ngram_nmatch": [{"n": 8, "speedup": 0.0, "note": "SLOWER than no spec-decode - never go below 16"}, {"n": 16, "speedup": 3.9, "note": "floor"}, {"n": 24, "speedup": 4.98, "note": "default"}, {"n": 32, "speedup": 5.46, "note": "best for edit-heavy work"}, {"n": 48, "speedup": 5.4, "note": "plateau"}], "b5_spec_arms": {"nemotron-3-nano-30b": {"off": 292.1, "ngram": 284.1, "speedup": 0.97}, "qwen3.6-35b-a3b": {"off": 226.4, "ngram": 224.6, "speedup": 0.99}, "qwen3.6-27b-dense": {"off": 58.5, "ngram": 58.5, "speedup": 1.0}, "qwen3-coder-30b": {"off": 206.6, "ngram": 207.1, "speedup": 1.0}, "ornith-1.0-35b": {"off": 210.0, "ngram": 209.2, "speedup": 1.0}, "granite-4.1-30b": {"off": 60.6, "ngram": 60.6, "speedup": 1.0}, "agents-a1-35b": {"off": 208.1, "ngram": 212.2, "speedup": 1.02}, "bonsai-ternary-27b": {"off": 110.2, "ngram": 109.1, "speedup": 0.99}, "gpt-oss-20b": {"off": 244.4, "ngram": 245.2, "speedup": 1.0}, "ornith-1.0-9b": {"off": 129.8, "ngram": 129.8, "speedup": 1.0}, "gemma-4-26b-a4b": {"off": 203.1, "ngram": 204.4, "speedup": 1.01}, "gpt-oss-120b": {"off": 177.5, "ngram": 177.6, "speedup": 1.0}, "llama-4-scout": {"off": 85.3, "ngram": 86.0, "speedup": 1.01}, "glm-4.5-air": {"off": 91.9, "ngram": 91.9, "speedup": 1.0}, "gemma-4-31b-dense": {"off": 57.3, "ngram": 57.8, "speedup": 1.01}, "qwen3-235b": {"off": 57.7, "ngram": 57.7, "speedup": 1.0}}, "mtp": [{"config": "gemma-4-31b-dense + separate mtp-*.gguf draft (prism fork)", "base": 68.0, "with": 173.0, "verdict": "works", "note": "2.55x lossless - use --spec-draft-model, NOT the embedded head"}, {"config": "qwen3.6-27b-MTP embedded head, --spec-type draft-mtp", "base": 30.1, "with": 6.0, "verdict": "dead-end", "note": "0.20x = 5x SLOWER; head loads but has ~zero acceptance"}, {"config": "qwen3.6-27b-MTP under Ollama", "base": 31.0, "with": 31.3, "verdict": "inert", "note": "draft head never engaged - Ollama exposes no --spec-type"}], "games_historical": [{"model": "ornith-1.0-35b", "snake": "pass", "snake_note": "clean", "tetris": "partial", "tetris_note": "richest build (hold/ghost/7-bag); 1 edge bug - forces invalid rotation when no wall-kick fits"}, {"model": "gemma-4-26b-a4b", "snake": "pass", "snake_note": "clean", "tetris": "partial", "tetris_note": "plays correctly but game-over does not halt - re-arms the rAF loop it just cancelled"}, {"model": "bonsai-ternary-27b", "snake": "pass", "snake_note": "clean, most polished (particles, screen-shake, mobile d-pad)", "tetris": "partial", "tetris_note": "great logic (7-bag, wall-kicks); 2 render bugs - falling piece never drawn, bevel covers board"}, {"model": "qwen3.6-27b-dense", "snake": "pass", "snake_note": "clean", "tetris": "pass", "tetris_note": "1 harmless issue"}, {"model": "qwen3.6-27b-mtp", "snake": "pass", "snake_note": "clean", "tetris": "partial", "tetris_note": "buggy sample"}, {"model": "bonsai-1bit-27b", "snake": "fail", "snake_note": "dead loop - per-frame dt vs 150ms tick, tickAccum unused, snake never advances", "tetris": "fail", "tetris_note": "crashes on start - SHAPES_keys typo for SHAPES_KEYS; drop timer also dead"}], "games_planned": [{"game": "Snake", "state": "ad-hoc only"}, {"game": "Tetris", "state": "ad-hoc only"}, {"game": "Arkanoid", "state": "not built"}, {"game": "Flappy Bird", "state": "not built"}, {"game": "Doodle Jump (procgen platforms)", "state": "not built"}, {"game": "Asteroids (procgen field, splitting rocks)", "state": "not built"}, {"game": "Tiny roguelike (procgen dungeon)", "state": "not built"}, {"game": "fly.pieter-style 3D flight sim (Three.js, procgen city, single HTML file)", "state": "not built"}], "gaps": [{"sev": "critical", "title": "Subagent delegation is measured by NOTHING", "detail": "Every B8 row for every model records subagent_spawned = 'no' (verified across all 1,000+ rows): none of the 23 tasks requires delegating to a subagent, so the subagent canary never fires. qwen3.6-35b-a3b tops B8 at 94% on SINGLE-AGENT coding while being separately known to FAIL delegation - it makes zero Task calls and confabulates having delegated. gpt-oss-* and gemma-4-* handle delegation. None of that behaviour is captured in any battery. Do not read B8 as a delegation ranking.", "fix": "Add B8 tasks that only pass via a spawned subagent, and score the canary."}, {"sev": "high", "title": "Game / graphical builds are not a battery", "detail": "B6 is is_prime, a word-count CLI, backup.sh, debounce, one SQL query and 5 planted bugs. The game roster (Snake, Tetris, Arkanoid, Flappy Bird, Doodle Jump, Asteroids, roguelike, fly.pieter-style 3D sim) is written into the v2.1 design spec but was never implemented, so no model has a scored game result. Snake and Tetris have ad-hoc session-5/6 verdicts for 6 models only.", "fix": "Implement the spec'd one-shot roster with the playability/feature/bug rubric."}, {"sev": "high", "title": "The suite under-reports speculative decoding", "detail": "B5's spec-decode arm measures ~1.00x for every model because it generates fresh text, where n-gram drafting has almost no hit rate. On edit/rewrite work - what agentic coding actually does - the same feature is worth 1.95x to 12.08x. The big numbers are real but live outside the suite.", "fix": "Give B5 an edit-workload arm so the headline serving number reflects real use."}, {"sev": "high", "title": "Laguna ran with NO speculative decoding - and a purpose-built draft model exists", "detail": "poolside ships laguna-s-2.1-DFlash-BF16.gguf in its own GGUF repo: a DFlash speculator (6 sliding-attention layers, shares embeddings with the target, tagged speculative-decoding) built specifically to draft for Laguna. The Blackwell run used none of it. It also could not use n-gram spec-decode, because --spec-type ngram-mod is a prism llama.cpp FORK feature while Laguna's custom arch needs official llama.cpp b10087+. So every Laguna throughput figure here is un-accelerated, and the cheapest available speedup was left on the table.", "fix": "Re-serve Laguna with the draft: llama-server -m laguna-UD-IQ4_XS.gguf -md laguna-s-2.1-DFlash-BF16.gguf, and record decode t/s with vs without."}, {"sev": "medium", "title": "MTP was never tried on the big card", "detail": "MTP with a SEPARATE draft GGUF is proven locally at 2.55x lossless on dense gemma-4-31b (68 -> 173 t/s) - the old 0.20x result was the embedded-head trap, not MTP itself. No datacenter session tested it, so none of the B5 numbers reflect what these models can actually do when drafted.", "fix": "Add a draft-model arm to B5 for every model that has a published draft/MTP GGUF."}, {"sev": "medium", "title": "B6 judged quality never ran", "detail": "B6 reports only deterministic pass/fail. The 0-10 judged quality axis (does the code read well, handle edges, avoid gratuitous complexity) is built but has not been run, so a model that squeaks past the checks scores the same as one that writes genuinely good code.", "fix": "Run the B6 judged axis through the same 3-seat panel as B1."}, {"sev": "medium", "title": "B8 missing for the four largest models", "detail": "glm-4.5-air, gpt-oss-120b, llama-4-scout and qwen3-235b have no B8 rows - they don't fit the 24GB laptop that ran the agentic sweep, and the rented Blackwell sessions were spent on Laguna.", "fix": "One Blackwell session running the B8 container sweep for the big four."}, {"sev": "low", "title": "Laguna has no B5 / B7, and its B1 is a rescaled incremental wave", "detail": "B5 and B7 were skipped for Laguna (B5 is box-specific and B7 needs the fork's spec arm). Its B1 6.1 comes from a 3-letter incremental packet rescaled through the CAL anchors rather than a full-roster packet - defensible, but one step further from the frozen 16.", "fix": "Fold Laguna into the next full-roster judging wave."}], "caveats": {"hardware": "B1-B7 for the original 16 models ran on 2x RTX PRO 6000 (Blackwell). Laguna ran on a single rented RTX PRO 6000 Blackwell. The B8 agentic sweep ran locally on an RTX 5090 Laptop 24GB. Hardware is NOT interchangeable: re-running Laguna on an A100 (Ampere) moved its deterministic scores by up to 13 points (B6 87 -> 100, B2 97 -> 90) at temperature 0, because batching and GPU numerics shift borderline outputs.", "ngram_workload": "n-gram speculative decoding is lossless (temp-0 output is byte-identical) and costs no VRAM, but its speedup depends entirely on how much the output repeats the context. Edit/rewrite: 2-12x. Fresh generation: ~1.0-1.6x.", "b1_incremental": "Laguna's B1 was judged incrementally (only Laguna + calibration anchors, leaving the frozen 16 untouched) and then rescaled: the same fixed anchors score 9.0/1.5 in a small packet vs 8.0/1.0 in the full-roster packet, so judges are ~0.9pt more lenient without the comparison set. Raw 6.99 -> 6.13."}};
+
+(function(){
+  const D = DATA, phases = D.phases||[], models = D.models||[], M = D.matrix||{};
+  let sort = {key:'B1', dir:'desc'}, selected = null;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const cell = (m,p) => (M[m]||{})[p] || {};
+  const unitOf = p => (phases.find(x=>x.id===p)||{}).unit || '%';
+
+  /* normalise a value to 0..1 within its battery, for colour only */
+  function norm(pid, c){
+    if(!c || c.score==null) return null;
+    const u = unitOf(pid);
+    if(u === '/10') return Math.max(0, Math.min(1, c.score/10));
+    if(u === 't/s'){
+      const all = models.map(m=>cell(m,pid).score).filter(v=>v!=null);
+      const mx = Math.max(...all, 1);
+      return Math.max(0, Math.min(1, c.score/mx));
+    }
+    return Math.max(0, Math.min(1, c.score/100));
+  }
+  function heat(t){
+    if(t==null) return null;
+    const lo=[224,82,72], mid=[217,168,58], hi=[70,185,90];
+    let a,b,f;
+    if(t<0.5){ a=lo; b=mid; f=t/0.5; } else { a=mid; b=hi; f=(t-0.5)/0.5; }
+    const c = a.map((v,i)=>Math.round(v+(b[i]-v)*f));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
+  const coverage = m => phases.reduce((n,p)=>n+(cell(m,p.id).tested?1:0),0);
+
+  /* ---------------- stats ---------------- */
+  function renderStats(){
+    const totalCells = models.length*phases.length;
+    let done=0; phases.forEach(p=>models.forEach(m=>{ if(cell(m,p.id).tested) done++; }));
+    const b8 = models.filter(m=>cell(m,'B8').tested).length;
+    const crit = (D.gaps||[]).filter(g=>g.sev==='critical'||g.sev==='high').length;
+    const best = (D.ngram_edit||[])[0];
+    const tiles = [
+      ['models', models.length, 'in the roster'],
+      ['coverage', Math.round(100*done/totalCells)+'%', done+' of '+totalCells+' cells'],
+      ['agentic (B8)', b8+'/'+models.length, 'models with real agent runs'],
+      ['best ngram gain', best? best.speedup.toFixed(2)+'×':'—', best? best.model:''],
+      ['open gaps', crit, 'critical or high severity']
+    ];
+    $('stats').innerHTML = tiles.map(([k,v,s])=>
+      `<div class="stat"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div>
+       <div class="k" style="text-transform:none;letter-spacing:0;color:var(--ink-faint)">${esc(s)}</div></div>`).join('');
+  }
+
+  /* ---------------- glossary ---------------- */
+  function renderGloss(){
+    $('glossbody').innerHTML = phases.map(p=>
+      `<dt>${esc(p.id)}</dt><dd><b>${esc(p.name)}</b> <span class="tag">${esc(p.unit)}</span>
+        <span class="tag">${esc(p.kind)}</span><br>${esc(p.blurb)}</dd>`).join('');
+  }
+
+  /* ---------------- matrix ---------------- */
+  function sortVal(m, key){
+    if(key==='model') return m;
+    if(key==='cov') return coverage(m);
+    const c = cell(m,key);
+    return c.score==null ? -Infinity : c.score;
+  }
+  function ordered(){
+    const arr = models.slice();
+    arr.sort((a,b)=>{
+      const x=sortVal(a,sort.key), y=sortVal(b,sort.key);
+      let r;
+      if(typeof x==='string'||typeof y==='string') r=String(x).localeCompare(String(y));
+      else r = x===y ? 0 : (x<y?-1:1);
+      if(r===0) r = a.localeCompare(b);
+      return sort.dir==='desc' ? -r : r;
+    });
+    return arr;
+  }
+  function setSort(k){
+    if(sort.key===k) sort.dir = sort.dir==='desc'?'asc':'desc';
+    else { sort.key=k; sort.dir = k==='model'?'asc':'desc'; }
+    render();
+  }
+  const arrow = () => sort.dir==='desc' ? '▾' : '▴';
+
+  function renderMatrix(){
+    const head = `<thead><tr>
+      <th class="sortable ${sort.key==='model'?'active':''}" data-k="model">model ${sort.key==='model'?arrow():''}</th>
+      ${phases.map(p=>`<th class="sortable ${sort.key===p.id?'active':''}" data-k="${p.id}"
+         style="text-align:right" data-tip="${esc(p.name)} (${esc(p.unit)}) — ${esc(p.blurb)}">
+         ${p.id} ${sort.key===p.id?arrow():''}</th>`).join('')}
+      <th class="sortable ${sort.key==='cov'?'active':''}" data-k="cov" style="text-align:right">cov ${sort.key==='cov'?arrow():''}</th>
+    </tr></thead>`;
+    const body = '<tbody>' + ordered().map(m=>{
+      const tds = phases.map(p=>{
+        const c = cell(m,p.id);
+        if(!c.tested) return `<td class="num"><span class="cell gap" data-tip="${esc(p.name)}: not run for this model">not run</span></td>`;
+        const col = heat(norm(p.id,c));
+        return `<td class="num"><span class="cell" style="color:${col}"
+          data-tip="${esc(p.name)}: ${esc(c.display)} (n=${esc(c.n)})">${esc(c.display)}</span></td>`;
+      }).join('');
+      const cv = coverage(m);
+      return `<tr class="row ${selected===m?'on':''}" data-m="${esc(m)}">
+        <td class="model">${esc(m)}</td>${tds}
+        <td class="num"><span class="cov">${cv}/${phases.length}</span></td></tr>`;
+    }).join('') + '</tbody>';
+    const t = $('matrix');
+    t.innerHTML = head + body;
+    t.querySelectorAll('th.sortable').forEach(th=>th.onclick=()=>setSort(th.dataset.k));
+    t.querySelectorAll('tr.row').forEach(tr=>tr.onclick=()=>{
+      selected = (selected===tr.dataset.m) ? null : tr.dataset.m; render();
+    });
+  }
+
+  /* ---------------- model detail ---------------- */
+  function subHead(pid){
+    const p = phases.find(x=>x.id===pid);
+    return (p && p.sub) ? p.sub : 'breakdown';
+  }
+  function renderDetail(){
+    const box = $('detail');
+    $('detailtitle').textContent = selected ? ('Model detail — ' + selected) : 'Model detail';
+    if(!selected){ box.innerHTML = '<p class="empty">No model selected — click a row in the matrix.</p>'; return; }
+    const cards = [];
+    /* headline card */
+    cards.push(`<div class="dcard"><h5>all batteries</h5>${
+      phases.map(p=>{
+        const c = cell(selected,p.id);
+        const v = c.tested ? esc(c.display) : '<span class="faint">not run</span>';
+        return `<div class="row"><span>${p.id} ${esc(p.name)}</span><span>${v}</span></div>`;
+      }).join('')}</div>`);
+    /* sub-score cards */
+    phases.forEach(p=>{
+      const c = cell(selected,p.id);
+      if(!c.sub || !c.sub.length) return;
+      const rows = c.sub.slice().sort((a,b)=>b.score-a.score).map(s=>{
+        const t = unitOf(p.id)==='/10' ? s.score/10 : s.score/100;
+        return `<div class="row"><span>${esc(String(s.name).replace(/_/g,' '))}</span>
+          <span style="color:${heat(Math.max(0,Math.min(1,t)))}">${esc(s.display)}</span></div>`;
+      }).join('');
+      cards.push(`<div class="dcard"><h5>${p.id} — ${esc(subHead(p.id))}</h5>${rows}</div>`);
+    });
+    /* game anecdotes for this model, if any */
+    const g = (D.games_historical||[]).find(x=>x.model===selected);
+    if(g){
+      cards.push(`<div class="dcard"><h5>one-shot games <span class="faint">(ad-hoc, not scored)</span></h5>
+        <div class="row"><span>Snake</span><span>${chip(g.snake)}</span></div>
+        <div class="row" style="display:block"><span class="faint" style="font-size:11px">${esc(g.snake_note)}</span></div>
+        <div class="row"><span>Tetris</span><span>${chip(g.tetris)}</span></div>
+        <div class="row" style="display:block"><span class="faint" style="font-size:11px">${esc(g.tetris_note)}</span></div>
+      </div>`);
+    }
+    /* ngram gain for this model, if measured */
+    const n = (D.ngram_edit||[]).find(x=>x.model===selected);
+    if(n){
+      cards.push(`<div class="dcard"><h5>edit-workload throughput</h5>
+        <div class="row"><span>baseline</span><span>${n.base} t/s</span></div>
+        <div class="row"><span>with ngram-mod</span><span style="color:var(--s-hi)">${n.ngram} t/s</span></div>
+        <div class="row"><span>speedup</span><span>${n.speedup.toFixed(2)}×</span></div>
+        ${n.note?`<div class="row" style="display:block"><span class="faint" style="font-size:11px">${esc(n.note)}</span></div>`:''}
+      </div>`);
+    }
+    box.innerHTML = cards.join('');
+    bindTips();
+  }
+
+  function chip(state){
+    const map = {pass:['pass','✓','works'], partial:['partial','△','bugs'],
+                 fail:['fail','✗','broken'], none:['none','—','not tried']};
+    const [cls,ic,label] = map[state] || map.none;
+    return `<span class="chip ${cls}"><span class="ic">${ic}</span>${label}</span>`;
+  }
+
+  /* ---------------- speculative decoding ---------------- */
+  function renderSpec(){
+    $('specnote').innerHTML = esc(D.caveats && D.caveats.ngram_workload || '');
+    const ng = D.ngram_edit||[], ctl = D.ngram_control;
+    const maxS = Math.max(...ng.map(r=>r.speedup), ctl?ctl.speedup:1);
+    const row = (r,isCtl)=>{
+      const w = Math.max(2, 100*r.speedup/maxS);
+      return `<tr>
+        <td class="model" ${isCtl?'style="font-style:italic;color:var(--ink-dim)"':''}>${esc(r.model)}</td>
+        <td class="num">${r.base} t/s</td>
+        <td class="num" style="color:var(--s-hi)">${r.ngram} t/s</td>
+        <td style="width:34%"><div class="bar"><span style="width:${w}%"></span></div></td>
+        <td class="num"><b>${r.speedup.toFixed(2)}×</b></td>
+        <td class="faint" style="font-size:11.5px">${esc(r.note||'')}</td></tr>`;
+    };
+    $('ngram').innerHTML = `<thead><tr><th>model</th><th style="text-align:right">baseline</th>
+      <th style="text-align:right">ngram-mod</th><th>speedup</th><th style="text-align:right">×</th>
+      <th>note</th></tr></thead><tbody>${ng.map(r=>row(r,false)).join('')}
+      ${ctl?row(ctl,true):''}</tbody>`;
+
+    const arms = D.b5_spec_arms||{};
+    const keys = Object.keys(arms).sort((a,b)=>arms[b].speedup-arms[a].speedup);
+    $('b5arms').innerHTML = `<thead><tr><th>model</th><th style="text-align:right">spec off</th>
+      <th style="text-align:right">spec ngram32</th><th style="text-align:right">speedup</th></tr></thead>
+      <tbody>${keys.map(k=>`<tr><td class="model">${esc(k)}</td>
+        <td class="num">${arms[k].off} t/s</td><td class="num">${arms[k].ngram} t/s</td>
+        <td class="num" style="color:var(--ink-dim)">${arms[k].speedup.toFixed(2)}×</td></tr>`).join('')}</tbody>`;
+
+    const nm = D.ngram_nmatch||[];
+    const mxn = Math.max(...nm.map(r=>r.speedup),1);
+    $('nmatch').innerHTML = `<thead><tr><th>n-match</th><th>speedup</th>
+      <th style="text-align:right">×</th><th>note</th></tr></thead><tbody>${
+      nm.map(r=>`<tr><td class="model">${r.n}</td>
+        <td style="width:40%"><div class="bar ${r.speedup===0?'bad':''}">
+          <span style="width:${Math.max(2,100*r.speedup/mxn)}%"></span></div></td>
+        <td class="num">${r.speedup? r.speedup.toFixed(2)+'×':'—'}</td>
+        <td class="faint" style="font-size:11.5px">${esc(r.note)}</td></tr>`).join('')}</tbody>`;
+
+    $('mtp').innerHTML = `<thead><tr><th>configuration</th><th style="text-align:right">baseline</th>
+      <th style="text-align:right">with MTP</th><th style="text-align:right">×</th><th>verdict</th>
+      <th>note</th></tr></thead><tbody>${(D.mtp||[]).map(r=>{
+        const s = r.with/r.base;
+        const cls = r.verdict==='works'?'pass':(r.verdict==='inert'?'partial':'fail');
+        const ic = r.verdict==='works'?'✓':(r.verdict==='inert'?'△':'✗');
+        return `<tr><td class="model" style="white-space:normal">${esc(r.config)}</td>
+          <td class="num">${r.base} t/s</td>
+          <td class="num" style="color:${s>1.2?'var(--s-hi)':(s<0.9?'var(--s-lo)':'var(--ink-dim)')}">${r.with} t/s</td>
+          <td class="num"><b>${s.toFixed(2)}×</b></td>
+          <td><span class="chip ${cls}"><span class="ic">${ic}</span>${esc(r.verdict)}</span></td>
+          <td class="faint" style="font-size:11.5px">${esc(r.note)}</td></tr>`;}).join('')}</tbody>`;
+  }
+
+  /* ---------------- games ---------------- */
+  function renderGames(){
+    $('games').innerHTML = `<thead><tr><th>model</th><th>Snake</th><th>Tetris</th>
+      <th>what went wrong</th></tr></thead><tbody>${(D.games_historical||[]).map(g=>
+      `<tr><td class="model">${esc(g.model)}</td><td>${chip(g.snake)}</td><td>${chip(g.tetris)}</td>
+       <td class="faint" style="font-size:11.5px;white-space:normal">
+         <b class="dim">snake:</b> ${esc(g.snake_note)}<br>
+         <b class="dim">tetris:</b> ${esc(g.tetris_note)}</td></tr>`).join('')}</tbody>`;
+    $('gamesplanned').innerHTML = `<thead><tr><th>target</th><th>status</th></tr></thead><tbody>${
+      (D.games_planned||[]).map(g=>`<tr><td class="model" style="white-space:normal">${esc(g.game)}</td>
+        <td>${g.state==='ad-hoc only'
+          ? '<span class="chip partial"><span class="ic">△</span>ad-hoc only, never scored</span>'
+          : '<span class="chip none"><span class="ic">○</span>specified, not built</span>'}</td></tr>`).join('')}</tbody>`;
+  }
+
+  /* ---------------- gaps & caveats ---------------- */
+  function renderGaps(){
+    $('gaps').innerHTML = (D.gaps||[]).map(g=>
+      `<div class="gap-item ${esc(g.sev)}">
+        <h4><span class="sev ${esc(g.sev)}">${esc(g.sev)}</span>${esc(g.title)}</h4>
+        <p>${esc(g.detail)}</p>
+        <div class="fix"><b>To close it:</b> ${esc(g.fix)}</div></div>`).join('');
+    const c = D.caveats||{};
+    const order = [['hardware','Hardware is not interchangeable'],
+                   ['b1_incremental','How Laguna’s B1 was scored'],
+                   ['ngram_workload','What speculative decoding depends on']];
+    $('caveats').innerHTML = order.filter(([k])=>c[k]).map(([k,t])=>
+      `<div class="gap-item low"><h4>${esc(t)}</h4><p>${esc(c[k])}</p></div>`).join('');
+    $('foot').innerHTML = 'Generated from ' + esc(D.generated_from||'the eval shards') +
+      '. Regenerate with <code>python build_data.py</code>. Blank cells mean the battery was not run for that model — never a zero score.';
+  }
+
+  /* ---------------- tooltips ---------------- */
+  function bindTips(){
+    const tip = $('tip');
+    document.querySelectorAll('[data-tip]').forEach(n=>{
+      n.onmouseenter = e=>{
+        tip.textContent = n.dataset.tip; tip.style.opacity = 1;
+        const r = n.getBoundingClientRect();
+        let x = r.left, y = r.bottom + 8;
+        tip.style.left = '0px'; tip.style.top = '0px';
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        if(x + tw > innerWidth - 12) x = innerWidth - tw - 12;
+        if(y + th > innerHeight - 12) y = r.top - th - 8;
+        tip.style.left = Math.max(8,x)+'px'; tip.style.top = Math.max(8,y)+'px';
+      };
+      n.onmouseleave = ()=>{ tip.style.opacity = 0; };
+    });
+  }
+
+  function render(){ renderMatrix(); renderDetail(); bindTips(); }
+
+  $('gen').textContent = models.length + ' models · ' + phases.length + ' batteries';
+  renderStats(); renderGloss(); renderSpec(); renderGames(); renderGaps(); render();
+})();
+</script>
+</body>
+</html>
