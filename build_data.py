@@ -21,9 +21,12 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import math
 import re
 import statistics
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent / "llmtest-v2"
@@ -43,7 +46,7 @@ PHASES = [
      "blurb": "Can the model emit a well-formed tool call: correct schema, right tool selected, "
               "argument shapes valid. This is a FORMATION floor, not agentic skill - most models "
               "score ~100% and it cannot detect delegation failures.",
-     "sub": None},
+     "sub": "by axis"},
     {"id": "B3", "name": "Hallucination Resistance", "unit": "%", "kind": "deterministic",
      "blurb": "Unanswerable / trick / false-premise prompts. Scores the 'correct' signal: did it "
               "refuse or hedge instead of fabricating. Note the 300-token answer budget starves "
@@ -205,6 +208,21 @@ GAPS = [
                "don't fit the 24GB laptop that ran the agentic sweep, and the rented Blackwell "
                "sessions were spent on Laguna.",
      "fix": "One Blackwell session running the B8 container sweep for the big four."},
+    {"sev": "high", "title": "Judges agree with each other only 39% of the time",
+     "detail": "Across 7,560 judged answers the 3-seat panel lands within 1 point of itself on "
+               "just 39.3% of answers; mean spread is 2.29 points and 34% of answers draw a "
+               "spread greater than 2. So a B1 gap of a few tenths (7.6 vs 7.2) is well inside "
+               "judge noise. Gemini also scores its own family +0.53 higher than others "
+               "(kin_delta), while codex scores its own -0.67 lower.",
+     "fix": "Publish per-model score CIs from the judge spread, and treat B1 as tiers "
+            "rather than a strict order."},
+    {"sev": "medium", "title": "The quant-format A/B was never actually run",
+     "detail": "gemma-4-26b-a4b-mxfp4 exists in the registry as a controlled quant-format arm "
+               "('runs B5 + B2 + B6') but produced B8 rows ONLY. No quant delta can be computed. "
+               "Worse: that B8 data is what the roster model's agentic score uses, so "
+               "gemma-4-26b-a4b's B8 is the MXFP4 quant while its B1-B7 are UD-Q4_K_XL - one row "
+               "mixing two quants.",
+     "fix": "Run the mxfp4 arm through B2/B5/B6, or drop the arm and re-run B8 on UD-Q4_K_XL."},
     {"sev": "low", "title": "Laguna has no B5 / B7, and its B1 is a rescaled incremental wave",
      "detail": "B5 and B7 were skipped for Laguna (B5 is box-specific and B7 needs the fork's "
                "spec arm). Its B1 6.1 comes from a 3-letter incremental packet rescaled through "
@@ -228,6 +246,230 @@ CAVEATS = {
                       "score 9.0/1.5 in a small packet vs 8.0/1.0 in the full-roster packet, so "
                       "judges are ~0.9pt more lenient without the comparison set. Raw 6.99 -> 6.13.",
 }
+
+
+def wilson(k, n, z=1.96):
+    """Wilson score interval as (lo%, hi%). The suite's per-model n is small
+    (30 for B2/B6, 69 for the B8 sweep), so a bare percentage badly overstates
+    precision - every rate on the page carries this."""
+    if not n:
+        return None
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    m = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (round(100 * max(0.0, c - m), 1), round(100 * min(1.0, c + m), 1))
+
+
+def mean_ci(vals, z=1.96):
+    """Normal-approx CI for a mean of per-row rates (B4 recall, B7 agreement)."""
+    n = len(vals)
+    if n < 2:
+        return None
+    mu = statistics.mean(vals)
+    se = statistics.stdev(vals) / math.sqrt(n)
+    scale = 100 if max(vals, default=0) <= 1.0 else 1
+    return (round(scale * max(0.0, mu - z * se), 1), round(scale * min(1.0 if scale == 100 else 1e9,
+                                                                      mu + z * se), 1))
+
+
+def mark_ties(models, matrix):
+    """Per battery, flag every model whose CI overlaps the leader's CI. Those
+    models are NOT distinguishable at 95% and must not be read as ranked."""
+    for p in PHASES:
+        pid = p["id"]
+        scored = [(m, matrix[m][pid]) for m in models
+                  if matrix[m].get(pid, {}).get("score") is not None]
+        if not scored:
+            continue
+        lead_m, lead = max(scored, key=lambda t: t[1]["score"])
+        lead_ci = lead.get("ci")
+        for m, c in scored:
+            ci = c.get("ci")
+            if lead_ci and ci:
+                c["tied_with_leader"] = not (ci[1] < lead_ci[0] or ci[0] > lead_ci[1])
+            else:
+                c["tied_with_leader"] = None
+        matrix[lead_m][pid]["is_leader"] = True
+
+
+def compute_b2_axes(rows):
+    """B2 per-axis pass rates. The aggregate hides the real discriminators:
+    a model can sit at 90% overall while scoring 0/3 on parallel calls."""
+    ax = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
+    for r in rows:
+        if r.get("battery") != 2:
+            continue
+        axis = r.get("task_id", "").split(".")[-1].rsplit("-", 1)[0]
+        ok = det_pass(r)
+        if ok is None:
+            continue
+        d = ax[r["model_id"]][axis]
+        d[1] += 1
+        d[0] += 1 if ok else 0
+    return {m: [{"name": a, "score": round(100 * v[0] / v[1]),
+                 "display": f"{v[0]}/{v[1]}"} for a, v in sorted(axes.items())]
+            for m, axes in ax.items()}
+
+
+def compute_prefill(rows):
+    """Prompt-processing throughput. Agentic prompts run ~13k tokens, so prefill
+    often dominates wall-clock even though only decode t/s gets quoted."""
+    pp = collections.defaultdict(list)
+    for r in rows:
+        if r.get("battery") != 5:
+            continue
+        v = (r.get("metrics") or {}).get("pp_tps")
+        if v:
+            pp[r["model_id"]].append(float(v))
+    return {m: round(statistics.median(v)) for m, v in pp.items()}
+
+
+def compute_b7_drift(rows):
+    """Which harness knob actually moves the answer. Lower agreement = that
+    setting destabilises output more."""
+    dims = collections.defaultdict(lambda: [0.0, 0])
+    for r in rows:
+        if r.get("battery") != 7:
+            continue
+        parts = dict(p.split("=", 1) for p in r.get("condition", "").split(";") if "=" in p)
+        sig = (r.get("det_checks") or {}).get("signal_agreement_vs_baseline")
+        v = sig.get("value") if isinstance(sig, dict) else None
+        if v is None and isinstance(sig, dict) and "pass" in sig:
+            v = 1.0 if sig["pass"] else 0.0
+        if v is None:
+            continue
+        for k in ("sysp", "temp", "toolfmt", "spec"):
+            if k in parts:
+                d = dims[f"{k}={parts[k]}"]
+                d[0] += float(v)
+                d[1] += 1
+    out = [{"cell": k, "agreement": round(100 * s / n, 1), "n": n}
+           for k, (s, n) in dims.items() if n]
+    return sorted(out, key=lambda x: x["agreement"])
+
+
+def compute_failure_classes():
+    """B8 first-failure classes: WHY a run failed, which is more actionable than
+    the completion rate. a=schema-never-parsed b=parsed-but-tool-misused
+    c=task-logic-wrong d=harness-bug e=budget/step-exhausted."""
+    LABEL = {"a": "schema never parsed", "b": "tool parsed but misused",
+             "c": "task logic wrong", "d": "harness bug", "e": "budget/steps exhausted",
+             "unknown": "unclassified"}
+    per = collections.defaultdict(collections.Counter)
+    total = collections.Counter()
+    for p in (REPO / "results").glob("b8_classifications*.jsonl"):
+        for line in p.open(encoding="utf-8"):
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            lab = r.get("label") or "unknown"
+            total[lab] += 1
+            mid = r.get("model_id") or "(unattributed)"
+            per[mid][lab] += 1
+    return {"labels": LABEL,
+            "total": [{"label": k, "name": LABEL.get(k, k), "n": v}
+                      for k, v in total.most_common()],
+            "per_model": {m: [{"label": k, "name": LABEL.get(k, k), "n": v}
+                              for k, v in c.most_common()] for m, c in per.items()}}
+
+
+def compute_judge_reliability():
+    """How trustworthy the judged B1 numbers are: panel agreement, score spread,
+    and kin_delta (does a judge score its own family higher?)."""
+    maps = {}
+    for p in (REPO / "results" / "packets").glob("*.map.json"):
+        try:
+            maps[p.name.split(".")[0]] = json.load(p.open(encoding="utf-8"))
+        except Exception:
+            continue
+    groups = collections.defaultdict(dict)
+    for p in (REPO / "results").glob("judgments*.jsonl"):
+        for line in p.open(encoding="utf-8"):
+            try:
+                j = json.loads(line)
+            except Exception:
+                continue
+            if j.get("status") != "ok":
+                continue
+            groups[(j["packet_id"], j.get("model_id"))][j["judge_id"]] = j.get("score")
+    spreads, per_model = [], collections.defaultdict(list)
+    kin = collections.defaultdict(lambda: collections.defaultdict(list))
+    try:
+        kin_map = (yaml.safe_load((REPO / "config" / "judges.yaml").read_text(encoding="utf-8"))
+                   or {}).get("kin_map") or {}
+    except Exception:
+        kin_map = {}
+    for (pid, mid), sc in groups.items():
+        vals = [v for v in sc.values() if isinstance(v, (int, float))]
+        is_cal = str(mid).startswith("CAL-")
+        if len(vals) >= 2 and not is_cal:
+            spreads.append(max(vals) - min(vals))   # real answers only; CAL anchors
+                                                    # are deliberately extreme and
+                                                    # would inflate apparent agreement
+        if mid and not str(mid).startswith("CAL-"):
+            per_model[mid].append(statistics.median(vals) if vals else None)
+        for jid, v in sc.items():
+            if isinstance(v, (int, float)) and mid:
+                kin[jid]["kin" if kin_map.get(mid) == jid else "other"].append(v)
+    agree = 100 * sum(1 for s in spreads if s <= 1) / len(spreads) if spreads else None
+    return {
+        "packets_with_panel": len(spreads),
+        "agreement_pct": round(agree, 1) if agree is not None else None,
+        "mean_spread": round(statistics.mean(spreads), 2) if spreads else None,
+        "spread_gt2_pct": round(100 * sum(1 for s in spreads if s > 2) / len(spreads), 1)
+                          if spreads else None,
+        "kin_delta": [{"judge": j,
+                       "kin_mean": round(statistics.mean(v["kin"]), 2) if v.get("kin") else None,
+                       "other_mean": round(statistics.mean(v["other"]), 2) if v.get("other") else None,
+                       "delta": round(statistics.mean(v["kin"]) - statistics.mean(v["other"]), 2)
+                                if v.get("kin") and v.get("other") else None}
+                      for j, v in sorted(kin.items())],
+    }
+
+
+def compute_efficiency(models, matrix):
+    """Quality per GB of weights - the axis that decides what you actually run on
+    a 24GB card. A 6.7GB model at 6.8/10 is a different proposition to an 18GB
+    model at 7.4/10."""
+    try:
+        reg = (yaml.safe_load((REPO / "config" / "registry.yaml").read_text(encoding="utf-8"))
+               or {}).get("models") or {}
+    except Exception:
+        return []
+    out = []
+    for m in models:
+        gb = reg.get(m, {}).get("weights_gb")
+        b1 = matrix[m].get("B1", {}).get("score")
+        b8 = matrix[m].get("B8", {}).get("score")
+        if not gb:
+            continue
+        out.append({"model": m, "gb": gb,
+                    "b1": b1, "b8": b8,
+                    "b1_per_gb": round(b1 / gb, 3) if b1 else None,
+                    "fits_24gb": gb + 2.5 <= 23.5,
+                    "arch": "MoE" if reg.get(m, {}).get("arch", {}).get("moe") else "dense",
+                    "quant": reg.get(m, {}).get("quant_family", "")})
+    return sorted(out, key=lambda r: -(r["b1_per_gb"] or 0))
+
+
+def compute_quant_ab(rows):
+    """The controlled quant-format experiment (same google QAT base, UD-Q4_K_XL vs
+    MXFP4_MOE container). The registry says the arm 'runs B5 + B2 + B6', but only
+    B8 rows were ever produced - so the comparison CANNOT be made, and worse, the
+    only mxfp4 data (B8) is what the roster model's agentic score is drawn from,
+    mixing quants inside one model's row. Report that state rather than a fake delta."""
+    pair = ("gemma-4-26b-a4b", "gemma-4-26b-a4b-mxfp4")
+    have = {mid: sorted({r.get("battery") for r in rows
+                         if r.get("model_id") == mid and r.get("battery")})
+            for mid in pair}
+    comparable = sorted(set(have[pair[0]]) & set(have[pair[1]]))
+    return {"pair": list(pair), "batteries_run": have, "comparable": comparable,
+            "note": ("Only B8 exists for the MXFP4 arm and nothing else, so no "
+                     "quant-format delta can be computed. Note the roster model's "
+                     "B8 figure is the MXFP4 quant while its B1-B7 figures are "
+                     "UD-Q4_K_XL - the one row mixes two quants.")}
 
 
 def rows_from_shards():
@@ -273,7 +515,8 @@ def compute_matrix():
             t[0] += 1 if ok else 0
         for m, (p, n) in tally.items():
             agg[m][f"B{bat}"] = {"tested": True, "n": n, "score": round(100 * p / n),
-                                 "display": f"{round(100*p/n)}%", "sub": []}
+                                 "display": f"{round(100*p/n)}%", "sub": [],
+                                 "k": p, "ci": wilson(p, n)}
 
     # --- B4: needle recall ---
     b4 = collections.defaultdict(list)
@@ -285,7 +528,7 @@ def compute_matrix():
     for m, v in b4.items():
         sc = 100 * statistics.mean(v) if max(v) <= 1.0 else statistics.mean(v)
         agg[m]["B4"] = {"tested": True, "n": len(v), "score": round(sc),
-                        "display": f"{round(sc)}%", "sub": []}
+                        "display": f"{round(sc)}%", "sub": [], "ci": mean_ci(v)}
 
     # --- B5: decode t/s, split by spec arm (this is where ngram shows ~1.0x) ---
     b5 = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -305,7 +548,8 @@ def compute_matrix():
         off = arms.get("off") or []
         best = statistics.median(ng or off)
         agg[m]["B5"] = {"tested": True, "n": len(ng) + len(off), "score": round(best),
-                        "display": f"{round(best)} t/s", "sub": []}
+                        "display": f"{round(best)} t/s", "sub": [],
+                        "ci": None}   # t/s median over n=8; CI not meaningful, see gaps
         if ng and off:
             b5_arms[m] = {"off": round(statistics.median(off), 1),
                           "ngram": round(statistics.median(ng), 1),
@@ -325,7 +569,7 @@ def compute_matrix():
     for m, v in b7.items():
         sc = 100 * statistics.mean(v) if max(v) <= 1.0 else statistics.mean(v)
         agg[m]["B7"] = {"tested": True, "n": len(v), "score": round(sc),
-                        "display": f"{round(sc)}%", "sub": []}
+                        "display": f"{round(sc)}%", "sub": [], "ci": mean_ci(v)}
 
     # --- B1: judged panel scores + per-unit breakdown from the shard's units ---
     unit_of = {}
@@ -402,7 +646,7 @@ def compute_matrix():
             continue
         agg[mid]["B8"] = {
             "tested": True, "n": n, "score": round(100 * p / n),
-            "display": f"{round(100*p/n)}%",
+            "display": f"{round(100*p/n)}%", "k": p, "ci": wilson(p, n),
             "sub": [{"name": k, "score": round(100 * v[0] / v[1]),
                      "display": f"{round(100*v[0]/v[1])}%"}
                     for k, v in sorted(b8_cats[mid].items())]}
@@ -440,6 +684,17 @@ def main():
         if matrix[m].get("B1", {}).get("tested"):
             matrix[m]["B1"]["sub"] = b1_units_for(m)
 
+    rows_all = rows_from_shards()
+    b2ax = compute_b2_axes(rows_all)
+    for m in models:
+        if matrix[m].get("B2", {}).get("tested") and m in b2ax:
+            matrix[m]["B2"]["sub"] = b2ax[m]
+    mark_ties(models, matrix)
+    prefill = compute_prefill(rows_all)
+    for m, v in prefill.items():
+        if m in matrix and matrix[m].get("B5", {}).get("tested"):
+            matrix[m]["B5"]["prefill_tps"] = v
+
     data = {
         "generated_from": "llmtest-v2 results shards + labelled session constants",
         "phases": PHASES,
@@ -456,6 +711,12 @@ def main():
         "games_planned": GAMES_PLANNED,
         "gaps": GAPS,
         "caveats": CAVEATS,
+        "prefill": prefill,
+        "b7_drift": compute_b7_drift(rows_all),
+        "failure_classes": compute_failure_classes(),
+        "judge_reliability": compute_judge_reliability(),
+        "efficiency": compute_efficiency(models, matrix),
+        "quant_ab": compute_quant_ab(rows_all),
     }
 
     payload = json.dumps(data, indent=1, ensure_ascii=True)

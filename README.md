@@ -17,6 +17,11 @@ embedded in the file, so it works from `file://` and from GitHub Pages unchanged
 | **Model detail** | Per-model drill-down: B1 by business unit, B6 by coding track, B8 by task category, plus its one-shot game verdicts and edit-workload throughput. |
 | **Speculative decoding** | The 2–12× n-gram speedups on edit/rewrite work, why the suite's own B5 arm shows ~1.00×, `n-match` tuning, and MTP draft-head results. |
 | **Game builds** | The Snake/Tetris one-shot results that exist, and the roster (Arkanoid, Flappy Bird, Asteroids, 3D flight sim, …) that was specified but never built. |
+| **Statistical confidence** | Wilson intervals per battery and which models are statistically tied — most of the visible ordering is not significant. |
+| **Judge reliability** | Panel agreement, mean score spread, and per-judge self-preference, so B1's trustworthiness is visible. |
+| **Efficiency** | Quality per GB of weights and what fits a 24 GB card. |
+| **Failure modes** | B8 first-failure classification — *why* runs failed, not just how often. |
+| **Harness sensitivity** | Which B7 knob moves the answer most (the system prompt; not temperature). |
 | **Known gaps** | Severity-ranked list of what these numbers do **not** measure. Read this before ranking anything. |
 | **Caveats** | Hardware non-interchangeability, how the incremental B1 judging was calibrated, what spec-decode speedup depends on. |
 
@@ -42,9 +47,39 @@ embedded in the file, so it works from `file://` and from GitHub Pages unchanged
 2. **B5 under-reports speculative decoding by design of its workload.** Its spec arm
    generates fresh text, where n-gram drafting almost never hits (~1.00×). On edit/rewrite
    work — what agentic coding actually does — the same flag is worth **1.95× to 12.08×**.
-3. **Hardware is not interchangeable.** Re-running one model on an A100 instead of a
+3. **Most rankings are ties.** At n=30 (B2/B6) and n=69 (B8) the Wilson intervals overlap heavily —
+   the top five B8 models are one statistical tier, and B1's judge panel agrees within a point on
+   only 35% of answers (mean spread 2.45). Read tiers, not positions.
+4. **Hardware is not interchangeable.** Re-running one model on an A100 instead of a
    Blackwell moved its deterministic scores by up to 13 points *at temperature 0*, because
    batching and GPU numerics shift borderline outputs.
+
+## The explorer — every question, answer and artefact
+
+`explorer/index.html` is a three-column browser over the raw record, so any score on the
+dashboard can be checked by reading what the model actually produced.
+
+![explorer](explorer_preview.png)
+
+| Column | Contents |
+|---|---|
+| **Models** | 18 entries (17 roster + the mxfp4 quant arm), ~10,700 runs. Plus **▶ Playable games** and **★ My grades**. |
+| **Runs** | Every run for that model, filterable by battery / pass / fail / graded / task. Each row shows the oracle verdict, the B8 step count, and whether code is attached. |
+| **Detail** | The exact prompt we sent, the model's full answer, the code it left in the agent workspace, and all recorded metrics. |
+
+- **One-shot vs multi-pass** is the B8 `steps` count, shown as a badge: `1 step (one shot)` vs
+  `5 steps (multi-pass)`, alongside `budget exceeded` where the model ran out of room.
+- **Playable games** embeds the 19 one-shot browser builds in an iframe — actually play them, or
+  open in a tab. These are ad-hoc session-5/6 builds, not a scored battery.
+- **Grade it yourself**: score any run 0–10 with notes. Grades persist in `localStorage` and export
+  as CSV or JSON from ★ My grades, so a human pass can be compared against the automated verdict.
+- **B8 code attribution is inferred.** Workspace directories carry a temp id that appears nowhere in
+  the rows, so a workspace is matched to a model by run window (the sweep ran one model at a time).
+  Every such view says so. The original interleaved gpt-oss + gemma run is left unattributed.
+
+Regenerate with `python build_explorer.py` (`--limit N` for a fast check). Data is emitted as
+`.js` files rather than `.json` because Chrome blocks `fetch()` on `file://` — script tags are not
+blocked, so the page works by double-click as well as over HTTP.
 
 ## Regenerating the data
 
