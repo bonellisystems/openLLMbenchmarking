@@ -47,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from llmtest.harness.game_oracle import det_checks_for, run_game_checks  # noqa: E402
+from llmtest.harness.game_probes import probe_for  # noqa: E402
 
 MAX_ITERS = 6
 HINT_BANDS = [(1, 2, "H0"), (3, 4, "H1"), (5, 6, "H2")]
@@ -114,11 +115,37 @@ def symptom_from(checks, detail):
         return "pressing the controls throws an error and the game stops responding"
     if not checks.get("keys_wired", {}).get("pass"):
         return "the keyboard controls do nothing"
+    for k, v in checks.items():
+        if k.startswith("probe.") and not v.get("pass"):
+            return {
+                "probe.dies_at_wall": "the game ends at the wrong moment near the edge of the board",
+                "probe.grows_on_eat": "eating does not update the score and the body together",
+                "probe.render_in_sync": "what is drawn does not match where things actually are",
+                "probe.advances": "the game does not advance",
+                "probe.turns": "steering does not change direction",
+            }.get(k, "one of the game rules behaves incorrectly")
     return "the game does not behave correctly"
 
 
+def gate(path: Path, *, chrome, keys, probe_game: str | None):
+    """Green = the generic gate passes AND, for a fixture build, every game-specific
+    invariant holds. A subtle bug (off-by-one wall, score desync, renderer a tick
+    behind) is invisible to the generic gate by construction, so without the probe a
+    model could "fix" it by changing nothing."""
+    res = run_game_checks(path, chrome_path=chrome, keys=keys)
+    checks = det_checks_for(res)
+    probe = probe_for(probe_game) if probe_game else None
+    pr = None
+    if probe is not None:
+        pr = probe(path, chrome_path=chrome)
+        for k, v in pr.checks.items():
+            checks[f"probe.{k}"] = {"pass": bool(v)}
+        checks["runs_clean"] = {"pass": res.runs_clean and pr.all_pass}
+    return res, checks, (pr.to_dict() if pr else None)
+
+
 def run_one(endpoint, model, name, html0, *, out: Path, chrome, keys, max_tokens,
-            temperature, track, bug_kind=None):
+            temperature, track, bug_kind=None, probe_game=None):
     """One repair loop over a single broken build. Returns the result row."""
     work = out / "iters"
     work.mkdir(parents=True, exist_ok=True)
@@ -130,9 +157,8 @@ def run_one(endpoint, model, name, html0, *, out: Path, chrome, keys, max_tokens
 
     base_p = work / f"{name}__iter0.html"
     base_p.write_text(cur, encoding="utf-8")
-    base = run_game_checks(base_p, chrome_path=chrome, keys=keys)
-    base_checks = det_checks_for(base)
-    if base.runs_clean:
+    base, base_checks, base_probe = gate(base_p, chrome=chrome, keys=keys, probe_game=probe_game)
+    if base_checks.get("runs_clean", {}).get("pass"):
         return {"skipped": "starting build already passes the gate", "name": name}
 
     for i in range(1, MAX_ITERS + 1):
@@ -165,11 +191,10 @@ def run_one(endpoint, model, name, html0, *, out: Path, chrome, keys, max_tokens
         if new_html:
             p = work / f"{name}__iter{i}.html"
             p.write_text(new_html, encoding="utf-8")
-            res = run_game_checks(p, chrome_path=chrome, keys=keys)
-            checks = det_checks_for(res)
+            res, checks, probe_out = gate(p, chrome=chrome, keys=keys, probe_game=probe_game)
             if res.screenshot_b64:
                 (work / f"{name}__iter{i}.png").write_bytes(base64.b64decode(res.screenshot_b64))
-            clean = res.runs_clean
+            clean = checks.get("runs_clean", {}).get("pass", False)
             first_err = (res.errors or [None])[0]
             # regression: a check that passed on the previous build now fails
             prev = iters[-1]["checks"] if iters else base_checks
@@ -254,7 +279,8 @@ def main():
         bd = ROOT / args.bugs_dir
         for p in sorted(bd.glob("*.html")):
             kind = p.stem.split("__")[-1] if "__" in p.stem else "unknown"
-            jobs.append((p.stem, p.read_text(encoding="utf-8"), kind))
+            game = "snake" if "snake" in p.stem else None
+            jobs.append((p.stem, p.read_text(encoding="utf-8"), kind, game))
     else:
         # the model's OWN failed one-shot builds
         gshard = Path(args.from_games) / "rows-games.jsonl"
@@ -272,20 +298,21 @@ def main():
                 continue
             hp = Path(args.from_games) / r["artifacts"]["html"]
             if hp.exists() and hp.stat().st_size > 200:
-                jobs.append((hp.stem, hp.read_text(encoding="utf-8"), "self"))
+                # model-authored builds stay BLACK-BOX (amendment 18): no probe
+                jobs.append((hp.stem, hp.read_text(encoding="utf-8"), "self", None))
     if args.limit:
         jobs = jobs[:args.limit]
     print(f"{args.track}: {len(jobs)} broken build(s) for {args.model}")
 
     chrome = args.chrome if Path(args.chrome).exists() else None
-    for name, html, kind in jobs:
+    for name, html, kind, probe_game in jobs:
         if (args.model, f"b9repair.{name}") in done:
             print(f"  skip {name} (done)")
             continue
         print(f"  {name}  [{kind}]")
         row = run_one(args.endpoint_url, args.model, name, html, out=out, chrome=chrome,
                       keys=None, max_tokens=args.max_tokens, temperature=args.temperature,
-                      track=args.track, bug_kind=kind)
+                      track=args.track, bug_kind=kind, probe_game=probe_game)
         if row.get("skipped"):
             print(f"    skipped: {row['skipped']}")
             continue
