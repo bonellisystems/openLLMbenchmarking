@@ -98,7 +98,8 @@ _SNAPSHOT = r"""
         }
       }
       out.grid = grid;
-    } catch (e) { out.sig = 'tainted'; out.colors = 0; }
+    } catch (e) { out.sig = 'nogl'; out.colors = null; out.webgl = true; }
+    if (!out.sig) { out.sig = 'nogl'; out.colors = null; out.webgl = true; }
     return out;
   }
   const cells = document.querySelectorAll('[class*=cell],[class*=block],[class*=tile],td');
@@ -106,8 +107,32 @@ _SNAPSHOT = r"""
     let s = ''; const uniq = new Set();
     cells.forEach((n, i) => { if (i < 400) { s += (n.className||'') + (n.textContent||'').trim();
                                              uniq.add((n.className||'') + (n.textContent||'')); } });
+    // Per-cell digest so a DOM/ASCII game (roguelike, CSS tetris) gets the same
+    // change-fraction treatment as a canvas one.
+    const grid = [];
+    cells.forEach((n, i) => {
+      if (i < 1024) {
+        const t = (n.className || '') + '|' + (n.textContent || '').trim();
+        let h = 0;
+        for (let k = 0; k < t.length; k++) h = (h * 31 + t.charCodeAt(k)) & 255;
+        grid.push(h);
+      }
+    });
     return Object.assign(out, {kind: 'dom', sig: s.slice(0, 4000), colors: uniq.size,
-                               w: cells.length, h: 0});
+                               w: cells.length, h: 0, grid: grid});
+  }
+  // ASCII games render into a <pre> (or one text block) - a real surface, just not
+  // a canvas or a cell grid.
+  const pre = document.querySelector('pre') ||
+              [...document.querySelectorAll('div,section,main')]
+                .find(n => (n.innerText||'').split('\n').length > 5 && n.children.length < 3);
+  if (pre) {
+    const t = (pre.innerText || '');
+    const lines = t.split('\n').slice(0, 64);
+    const grid = lines.map(L => { let h = 0; for (let k = 0; k < L.length; k++) h = (h*31 + L.charCodeAt(k)) & 255; return h; });
+    return Object.assign(out, {kind: 'text', sig: t.slice(0, 4000),
+                               colors: new Set(t.replace(/\s/g,'')).size, w: lines.length, h: 0,
+                               grid: grid});
   }
   return Object.assign(out, {kind: 'none', sig: (document.body.innerText||'').slice(0, 1500),
                              colors: 0, w: 0, h: 0});
@@ -189,7 +214,7 @@ def run_game_checks(html_path: Path, *, chrome_path: str | None = None,
             load_errs = len(errors)
 
             s0 = page.evaluate(_SNAPSHOT)
-            res.surface = s0.get("kind") in ("canvas", "dom")
+            res.surface = s0.get("kind") in ("canvas", "dom", "text")
             res.detail["surface"] = s0.get("kind")
 
             # Many builds wait behind a start overlay; a game we never started
@@ -217,14 +242,25 @@ def run_game_checks(html_path: Path, *, chrome_path: str | None = None,
             page.wait_for_timeout(500)
 
             a = page.evaluate(_SNAPSHOT)
-            res.paints = (a.get("colors") or 0) >= 2 or (a.get("draws") or 0) > 0
+            shot_a = page.screenshot() if a.get("webgl") or not a.get("grid") else None
+            # A WebGL build reports no colour count; treat a canvas that exists and
+            # is being drawn into as painting.
+            res.paints = ((a.get("colors") or 0) >= 2 or (a.get("draws") or 0) > 0
+                          or bool(a.get("webgl")))
             res.detail["colors"] = a.get("colors")
 
             # Loop: does the picture change while we sit still? Short window, taken
             # immediately after start so a game that can end has not ended yet.
             page.wait_for_timeout(observe_ms)
+            shot_b = page.screenshot() if shot_a is not None else None
             b = page.evaluate(_SNAPSHOT)
             frac = _grid_change(a.get("grid"), b.get("grid"))
+            if frac is None:
+                # WebGL (a 3D sim has no 2d context to read back) or an exotic
+                # surface: diff the rendered frames instead, which works for any
+                # renderer. Without this, every 3D build scored a false 0/6.
+                frac = 1.0 if shot_a and shot_b and shot_a != shot_b else 0.0
+                res.detail["change_via"] = "screenshot"
             res.detail["board_change_frac"] = round(frac, 4)
             # >1.5% of the board must move. Hash equality alone is too blunt: a
             # blinking score would count as "advancing" while a frozen snake with
@@ -242,6 +278,26 @@ def run_game_checks(html_path: Path, *, chrome_path: str | None = None,
                 # It is repainting but the picture never changes - that IS the dead
                 # loop; keep loop False and say why.
                 res.detail["repaints_without_advancing"] = True
+
+            if not res.loop:
+                # Turn-based games (a roguelike waits for you) do not move on their
+                # own; treat change produced BY INPUT as equally good evidence that
+                # the game is alive. A build that responds to neither still fails.
+                pre_in = page.evaluate(_SNAPSHOT)
+                shot_pre = page.screenshot() if pre_in.get("webgl") or not pre_in.get("grid") else None
+                for k in (keys or DEFAULT_KEYS):
+                    page.keyboard.press(k)
+                    page.wait_for_timeout(110)
+                page.wait_for_timeout(300)
+                post_in = page.evaluate(_SNAPSHOT)
+                f2 = _grid_change(pre_in.get("grid"), post_in.get("grid"))
+                if f2 is None:
+                    shot_post = page.screenshot() if shot_pre is not None else None
+                    f2 = 1.0 if shot_pre and shot_post and shot_pre != shot_post else 0.0
+                res.detail["input_change_frac"] = round(f2, 4)
+                if f2 >= 0.002:
+                    res.loop = True
+                    res.detail["alive_via"] = "input (turn-based)"
 
             res.keys_wired = (b.get("keys") or 0) > 0
             if not res.keys_wired:
