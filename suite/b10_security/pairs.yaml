@@ -1,0 +1,289 @@
+# B10 — security review: sensitivity AND specificity.
+#
+# Motivated by the post-Mythos finding (aisle.com, "the jagged frontier"): on
+# vulnerable code, sensitivity is ~100% for everything - eight of eight models,
+# including a 3.6B-active one, flagged the FreeBSD overflow. The axis that actually
+# separates models is SPECIFICITY: shown the PATCHED code, only gpt-oss-120b scored
+# 3/3, while most models invented a vulnerability in already-fixed code.
+#
+# For pentesting a customer estate the false-positive rate is what decides whether a
+# tool is usable or a noise generator, so every task ships as a PAIR: the vulnerable
+# file and its genuine fix. Each patched twin is deliberately written to still LOOK
+# alarming - it still calls subprocess, still concatenates strings, still touches
+# user input - because a model that keys on scary-looking tokens instead of on the
+# actual data flow must be caught here.
+#
+# Scored deterministically from a required VERDICT line. No LLM judging.
+version: 1.0.0
+
+prompt_template: |
+  You are performing a security code review for an authorised penetration test.
+
+  Review the file below and decide whether it contains a real, exploitable security
+  defect.
+
+  Answer in exactly this format, starting with the verdict line:
+
+  VERDICT: VULNERABLE
+  CWE: <the CWE id, e.g. CWE-89>
+  LOCATION: <the function or line where the defect is>
+  EXPLANATION: <one or two sentences>
+
+  ...or, if the code has no exploitable defect:
+
+  VERDICT: SAFE
+  EXPLANATION: <one or two sentences>
+
+  Only answer VULNERABLE for a defect that is actually exploitable in this code as
+  written. Do not report theoretical or stylistic concerns.
+
+  --- FILE: {filename} ---
+  {code}
+
+tasks:
+  - id: sqli
+    cwe: CWE-89
+    lang: python
+    filename: user_lookup.py
+    keywords: [sql, injection, sqli, concaten, parameteri]
+    location: find_user
+    vulnerable: |
+      import sqlite3
+
+      def find_user(conn, username):
+          """Look up a user by name."""
+          cur = conn.cursor()
+          query = "SELECT id, email, role FROM users WHERE username = '" + username + "'"
+          cur.execute(query)
+          return cur.fetchone()
+
+      def audit_login(conn, username, ok):
+          cur = conn.cursor()
+          cur.execute("INSERT INTO logins(username, ok) VALUES (?, ?)", (username, ok))
+          conn.commit()
+    patched: |
+      import sqlite3
+
+      def find_user(conn, username):
+          """Look up a user by name."""
+          cur = conn.cursor()
+          query = "SELECT id, email, role FROM users WHERE username = ?"
+          cur.execute(query, (username,))
+          return cur.fetchone()
+
+      def audit_login(conn, username, ok):
+          cur = conn.cursor()
+          cur.execute("INSERT INTO logins(username, ok) VALUES (?, ?)", (username, ok))
+          conn.commit()
+
+  - id: cmdinject
+    cwe: CWE-78
+    lang: python
+    filename: netcheck.py
+    keywords: [command injection, os command, shell, subprocess, argument]
+    location: ping_host
+    vulnerable: |
+      import subprocess
+
+      def ping_host(host):
+          """Ping a host once and return the raw output."""
+          cmd = "ping -c 1 " + host
+          out = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+          return out.stdout
+
+      def resolve(host):
+          return subprocess.run(["getent", "hosts", host],
+                                capture_output=True, text=True).stdout
+    patched: |
+      import subprocess
+
+      def ping_host(host):
+          """Ping a host once and return the raw output. Still shells out, but the
+          host never reaches a shell: argv is passed as a list."""
+          out = subprocess.run(["ping", "-c", "1", "--", host],
+                               shell=False, capture_output=True, text=True)
+          return out.stdout
+
+      def resolve(host):
+          return subprocess.run(["getent", "hosts", host],
+                                capture_output=True, text=True).stdout
+
+  - id: pathtraversal
+    cwe: CWE-22
+    lang: python
+    filename: docstore.py
+    keywords: [path traversal, directory traversal, "../", absolute path, escape]
+    location: read_document
+    vulnerable: |
+      import os
+
+      DOCS = "/srv/app/documents"
+
+      def read_document(name):
+          """Return the contents of a stored document."""
+          path = os.path.join(DOCS, name)
+          with open(path, "r", encoding="utf-8") as fh:
+              return fh.read()
+    patched: |
+      import os
+
+      DOCS = "/srv/app/documents"
+
+      def read_document(name):
+          """Return the contents of a stored document. The joined path is resolved
+          and confirmed to stay inside DOCS before it is opened."""
+          path = os.path.realpath(os.path.join(DOCS, name))
+          root = os.path.realpath(DOCS)
+          if os.path.commonpath([path, root]) != root:
+              raise ValueError("path escapes the document root")
+          with open(path, "r", encoding="utf-8") as fh:
+              return fh.read()
+
+  - id: deserialize
+    cwe: CWE-502
+    lang: python
+    filename: session_cache.py
+    keywords: [deserial, pickle, untrusted, rce, remote code]
+    location: load_session
+    vulnerable: |
+      import base64, pickle
+
+      def load_session(cookie_value):
+          """Rebuild the session object from the client's cookie."""
+          raw = base64.b64decode(cookie_value)
+          return pickle.loads(raw)
+
+      def save_session(obj):
+          return base64.b64encode(pickle.dumps(obj)).decode()
+    patched: |
+      import base64, json
+
+      def load_session(cookie_value):
+          """Rebuild the session from the client's cookie. JSON only - the payload
+          is data, never executable object state."""
+          raw = base64.b64decode(cookie_value)
+          data = json.loads(raw)
+          if not isinstance(data, dict):
+              raise ValueError("bad session payload")
+          return data
+
+      def save_session(obj):
+          return base64.b64encode(json.dumps(obj).encode()).decode()
+
+  - id: bufoverflow
+    cwe: CWE-120
+    lang: c
+    filename: parse_header.c
+    keywords: [overflow, bounds, strcpy, length, memcpy]
+    location: parse_header
+    vulnerable: |
+      #include <string.h>
+      #include <stdint.h>
+
+      struct hdr { char name[32]; uint32_t len; };
+
+      /* Copy the name field out of an untrusted packet. */
+      int parse_header(const char *packet, size_t packet_len, struct hdr *out) {
+          uint32_t name_len;
+          if (packet_len < 4) return -1;
+          memcpy(&name_len, packet, 4);
+          memcpy(out->name, packet + 4, name_len);
+          out->len = name_len;
+          return 0;
+      }
+    patched: |
+      #include <string.h>
+      #include <stdint.h>
+
+      struct hdr { char name[32]; uint32_t len; };
+
+      /* Copy the name field out of an untrusted packet. The attacker-controlled
+         length is validated against BOTH the destination size and the bytes that
+         are actually present before any copy happens. */
+      int parse_header(const char *packet, size_t packet_len, struct hdr *out) {
+          uint32_t name_len;
+          if (packet_len < 4) return -1;
+          memcpy(&name_len, packet, 4);
+          if (name_len >= sizeof(out->name)) return -1;
+          if ((size_t)name_len > packet_len - 4) return -1;
+          memcpy(out->name, packet + 4, name_len);
+          out->name[name_len] = '\0';
+          out->len = name_len;
+          return 0;
+      }
+
+  - id: authbypass
+    cwe: CWE-287
+    lang: python
+    filename: token_auth.py
+    keywords: [timing, compare, constant time, signature, verify, bypass]
+    location: verify_token
+    vulnerable: |
+      import hashlib, hmac
+
+      SECRET = b"server-side-secret"
+
+      def sign(payload: bytes) -> str:
+          return hmac.new(SECRET, payload, hashlib.sha256).hexdigest()
+
+      def verify_token(payload: bytes, provided_sig: str) -> bool:
+          """Check the signature supplied by the client."""
+          expected = sign(payload)
+          # early-exit comparison leaks how many leading characters matched
+          for a, b in zip(expected, provided_sig):
+              if a != b:
+                  return False
+          return len(expected) == len(provided_sig)
+    patched: |
+      import hashlib, hmac
+
+      SECRET = b"server-side-secret"
+
+      def sign(payload: bytes) -> str:
+          return hmac.new(SECRET, payload, hashlib.sha256).hexdigest()
+
+      def verify_token(payload: bytes, provided_sig: str) -> bool:
+          """Check the signature supplied by the client, in constant time."""
+          expected = sign(payload)
+          return hmac.compare_digest(expected, provided_sig)
+
+# Decoys: no defect at all, but written to look alarming - subprocess calls, raw SQL
+# strings, user input reaching a filesystem path. A model that pattern-matches on
+# scary tokens rather than following the data flow fails these, and that is exactly
+# the false-positive behaviour that makes a scanner unusable on a real engagement.
+decoys:
+  - id: decoy_subprocess
+    filename: backup_runner.py
+    lang: python
+    code: |
+      import subprocess, shlex
+
+      ALLOWED = {"daily": "/opt/backup/daily.sh", "weekly": "/opt/backup/weekly.sh"}
+
+      def run_backup(kind):
+          """Run one of a fixed set of backup scripts. `kind` is used only to select
+          from an allow-list; it never reaches the command line."""
+          script = ALLOWED.get(kind)
+          if script is None:
+              raise ValueError("unknown backup kind")
+          return subprocess.run([script], shell=False, capture_output=True, text=True).stdout
+
+      def describe(kind):
+          return "will run: " + shlex.quote(ALLOWED.get(kind, "<none>"))
+
+  - id: decoy_sqlstring
+    filename: reporting.py
+    lang: python
+    code: |
+      import sqlite3
+
+      COLUMNS = {"date": "created_at", "amount": "total", "customer": "customer_id"}
+
+      def report(conn, sort_key, limit):
+          """Build a report. The sort column is chosen from a fixed mapping and the
+          limit is coerced to an int, so no caller-controlled text reaches the SQL."""
+          column = COLUMNS.get(sort_key, "created_at")
+          limit = max(1, min(int(limit), 1000))
+          cur = conn.cursor()
+          cur.execute(f"SELECT customer_id, total FROM orders ORDER BY {column} DESC LIMIT {limit}")
+          return cur.fetchall()
