@@ -32,9 +32,12 @@ from llmtest.harness.game_oracle import det_checks_for, run_game_checks  # noqa:
 import yaml  # noqa: E402
 
 
-def chat(url: str, prompt: str, *, max_tokens: int, temperature: float, timeout=1800) -> dict:
+def chat(url: str, prompt: str, *, max_tokens: int, temperature: float, timeout=1800,
+         extra: dict | None = None) -> dict:
     body = {"messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temperature, "stream": False}
+    if extra:
+        body.update(extra)
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
@@ -100,14 +103,32 @@ def main():
                 continue
             prompt = t["prompt"].strip() + "\n\n" + spec["output_contract"].strip()
             t0 = time.time()
-            try:
-                resp = chat(args.endpoint_url, prompt, max_tokens=args.max_tokens,
-                            temperature=args.temperature)
-                text = (resp.get("choices") or [{}])[0].get("message", {}).get("content") or ""
-                usage = resp.get("usage") or {}
-                err = None
-            except Exception as e:                       # noqa: BLE001
-                text, usage, err = "", {}, f"{type(e).__name__}: {e}"
+            # Attempt ladder. A reasoning model can spend its entire budget on hidden
+            # thinking and return an EMPTY answer - measured, not assumed: gemma
+            # returned 0 visible characters at finish_reason=length, then a complete
+            # file in 1,628 tokens with thinking off. Scoring that first attempt as
+            # "cannot build a game" would be a harness artifact, so a run that emits
+            # no file is retried with a larger budget and then with thinking
+            # disabled. The rung that produced the result is recorded on the row.
+            attempts = [
+                ("base", args.max_tokens, None),
+                ("bigger_budget", min(args.max_tokens * 2, 28000), None),
+                ("no_thinking", args.max_tokens,
+                 {"chat_template_kwargs": {"enable_thinking": False}}),
+            ]
+            text, usage, err, rung = "", {}, None, "base"
+            for rung_name, mt, extra in attempts:
+                try:
+                    resp = chat(args.endpoint_url, prompt, max_tokens=mt,
+                                temperature=args.temperature, extra=extra)
+                    text = (resp.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                    usage = resp.get("usage") or {}
+                    err = None
+                except Exception as e:                   # noqa: BLE001
+                    text, usage, err = "", {}, f"{type(e).__name__}: {e}"
+                rung = rung_name
+                if extract_html(text):
+                    break
             gen_s = time.time() - t0
 
             html = extract_html(text)
@@ -141,6 +162,7 @@ def main():
                             "emitted_html": bool(html),
                             "followed_output_contract": bool(html) and "```" not in text[:200],
                             "completion_tokens": usage.get("completion_tokens"),
+                            "attempt_rung": rung,
                             **{k: v for k, v in detail.items() if isinstance(v, (int, float, bool, str))}},
                 "artifacts": {"html": f"builds/{stem}.html",
                               "screenshot": f"builds/{stem}.png"},
