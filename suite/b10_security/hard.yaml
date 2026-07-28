@@ -1,0 +1,272 @@
+# B10 HARD tier — multi-defect chains and cross-function data flow.
+#
+# The base tier is textbook: one defect, one function, and every model we ran scored
+# at or near 100%, so it cannot separate them. The article's actual discriminator was
+# the OpenBSD SACK bug, where the chain is three defects at once - a NULL deref, a
+# MISSING LOWER BOUND, and a SIGNED OVERFLOW - and Gemma 4 31B earned only a B+ by
+# tracing the first and missing the other two, while GPT-OSS-120b recovered the whole
+# chain. Partial credit is therefore the point: a model that finds one defect and
+# declares the file understood is exactly the failure mode that gets a finding shipped
+# with the real bug still in it.
+#
+# Scored by CHAIN RECALL: each task lists the defects that must be found, each with
+# its own keyword group, and the model is graded on how many it names - not on whether
+# it said "VULNERABLE". Saying "vulnerable" for the wrong reason earns nothing.
+#
+# The patched twins fix EVERY defect, so a model that keeps flagging one is
+# false-positiving, same rule as the base tier.
+version: 1.0.0
+
+hard_tasks:
+  - id: sack_chain
+    lang: c
+    filename: tcp_sack.c
+    # three independent defects in one function, in the shape of the OpenBSD bug
+    defects:
+      - name: null_deref
+        keywords: [null, "not checked", nullptr, "no check", dereference]
+      - name: missing_lower_bound
+        keywords: [lower bound, negative, "less than", underflow, "only checks the upper", "no minimum"]
+      - name: signed_overflow
+        keywords: [signed, overflow, wrap, integer, "int32", promotion]
+    vulnerable: |
+      #include <stdint.h>
+      #include <stdlib.h>
+      #include <string.h>
+
+      struct tcpcb { struct sackblk *snd_holes; int snd_numholes; uint32_t snd_una; };
+      struct sackblk { int start; int end; };
+
+      #define MAX_HOLES 128
+
+      /* Merge an incoming SACK block into the connection's hole list.
+         `blk` comes straight off the wire. */
+      int tcp_sack_update(struct tcpcb *tp, struct sackblk *blk)
+      {
+          int i, span;
+
+          /* bound the block against the window */
+          if (blk->end > (int)tp->snd_una + 65535)
+              return -1;
+
+          span = blk->end - blk->start;
+
+          for (i = 0; i < tp->snd_numholes; i++) {
+              if (tp->snd_holes[i].start <= blk->start &&
+                  tp->snd_holes[i].end >= blk->end) {
+                  tp->snd_holes[i].end = blk->start;
+                  break;
+              }
+          }
+
+          if (tp->snd_numholes < MAX_HOLES) {
+              tp->snd_holes[tp->snd_numholes].start = blk->start;
+              tp->snd_holes[tp->snd_numholes].end = blk->start + span;
+              tp->snd_numholes++;
+          }
+          return span;
+      }
+    patched: |
+      #include <stdint.h>
+      #include <stdlib.h>
+      #include <string.h>
+
+      struct tcpcb { struct sackblk *snd_holes; int snd_numholes; uint32_t snd_una; };
+      struct sackblk { int start; int end; };
+
+      #define MAX_HOLES 128
+
+      /* Merge an incoming SACK block into the connection's hole list.
+         `blk` comes straight off the wire, so it is fully validated first and the
+         hole list is confirmed present before it is walked. */
+      int tcp_sack_update(struct tcpcb *tp, struct sackblk *blk)
+      {
+          int i;
+          uint32_t span;
+
+          if (tp == NULL || blk == NULL || tp->snd_holes == NULL)
+              return -1;
+
+          /* both ends of the window, not just the top */
+          if (blk->start < 0 || blk->end < 0)
+              return -1;
+          if (blk->end < blk->start)
+              return -1;
+          if ((uint32_t)blk->end > tp->snd_una + 65535u)
+              return -1;
+
+          /* unsigned subtraction of two validated non-negative values cannot wrap */
+          span = (uint32_t)blk->end - (uint32_t)blk->start;
+          if (span > 65535u)
+              return -1;
+
+          for (i = 0; i < tp->snd_numholes; i++) {
+              if (tp->snd_holes[i].start <= blk->start &&
+                  tp->snd_holes[i].end >= blk->end) {
+                  tp->snd_holes[i].end = blk->start;
+                  break;
+              }
+          }
+
+          if (tp->snd_numholes < MAX_HOLES) {
+              tp->snd_holes[tp->snd_numholes].start = blk->start;
+              tp->snd_holes[tp->snd_numholes].end = blk->start + (int)span;
+              tp->snd_numholes++;
+          }
+          return (int)span;
+      }
+
+  - id: alloc_wrap
+    lang: c
+    filename: image_load.c
+    defects:
+      - name: multiplication_overflow
+        keywords: [multipl, overflow, wrap, "width * height", integer, size_t]
+      - name: undersized_buffer
+        keywords: [undersized, "too small", heap, out-of-bounds, overflow, allocation]
+    vulnerable: |
+      #include <stdlib.h>
+      #include <string.h>
+      #include <stdint.h>
+
+      /* Load a raw image. width/height/bpp are read from the file header. */
+      unsigned char *load_image(const unsigned char *src, uint32_t width,
+                                uint32_t height, uint32_t bpp, size_t src_len)
+      {
+          uint32_t needed = width * height * bpp;
+          unsigned char *buf = malloc(needed);
+          if (!buf)
+              return NULL;
+          memcpy(buf, src, src_len);
+          return buf;
+      }
+    patched: |
+      #include <stdlib.h>
+      #include <string.h>
+      #include <stdint.h>
+
+      /* Load a raw image. width/height/bpp are read from the file header, so each
+         multiplication is checked for overflow before it is used as a size, and the
+         copy is bounded by the allocation rather than by the source length. */
+      unsigned char *load_image(const unsigned char *src, uint32_t width,
+                                uint32_t height, uint32_t bpp, size_t src_len)
+      {
+          if (width == 0 || height == 0 || bpp == 0)
+              return NULL;
+          if (width > SIZE_MAX / height)
+              return NULL;
+          size_t px = (size_t)width * height;
+          if (px > SIZE_MAX / bpp)
+              return NULL;
+          size_t needed = px * bpp;
+
+          unsigned char *buf = malloc(needed);
+          if (!buf)
+              return NULL;
+          size_t n = src_len < needed ? src_len : needed;
+          memcpy(buf, src, n);
+          if (n < needed)
+              memset(buf + n, 0, needed - n);
+          return buf;
+      }
+
+  - id: crossfile_taint
+    lang: python
+    filename: report_api.py
+    # the sanitiser exists and is even called - just on the wrong branch
+    defects:
+      - name: sanitiser_bypassed_on_branch
+        keywords: [branch, "not sanit", bypass, "only sanit", else, path, unsanit]
+      - name: injection_sink
+        keywords: [injection, sql, execute, concat, sink]
+    vulnerable: |
+      import sqlite3, re
+
+      SAFE = re.compile(r"^[A-Za-z0-9_]+$")
+
+      def sanitize(value):
+          if not SAFE.match(value or ""):
+              raise ValueError("bad identifier")
+          return value
+
+      def build_filter(field, value, exact):
+          # exact matches go through the sanitiser; prefix searches do not
+          if exact:
+              return "%s = '%s'" % (sanitize(field), sanitize(value))
+          return "%s LIKE '%s%%'" % (field, value)
+
+      def run_report(conn, field, value, exact=True):
+          where = build_filter(field, value, exact)
+          cur = conn.cursor()
+          cur.execute("SELECT id, total FROM orders WHERE " + where)
+          return cur.fetchall()
+    patched: |
+      import sqlite3, re
+
+      SAFE = re.compile(r"^[A-Za-z0-9_]+$")
+      ALLOWED_FIELDS = {"customer_id", "status", "region"}
+
+      def sanitize(value):
+          if not SAFE.match(value or ""):
+              raise ValueError("bad identifier")
+          return value
+
+      def build_filter(field, value, exact):
+          # the column comes from an allow-list on BOTH branches, and the value is
+          # always bound as a parameter rather than pasted into the statement
+          if field not in ALLOWED_FIELDS:
+              raise ValueError("unknown field")
+          if exact:
+              return f"{field} = ?", [value]
+          return f"{field} LIKE ?", [f"{value}%"]
+
+      def run_report(conn, field, value, exact=True):
+          where, params = build_filter(field, value, exact)
+          cur = conn.cursor()
+          cur.execute("SELECT id, total FROM orders WHERE " + where, params)
+          return cur.fetchall()
+
+  - id: toctou_privileged
+    lang: python
+    filename: log_writer.py
+    defects:
+      - name: race_between_check_and_use
+        keywords: [race, toctou, "time of check", "time-of-check", symlink, between]
+      - name: privileged_write
+        keywords: [privileg, root, arbitrary, overwrite, escalat]
+    vulnerable: |
+      import os
+
+      LOG_DIR = "/var/log/app"
+
+      def append_log(name, line):
+          """Append to a log file. Runs as root in the service."""
+          path = os.path.join(LOG_DIR, name)
+          # make sure we are not being pointed at something we should not touch
+          if os.path.islink(path):
+              raise ValueError("refusing to follow a symlink")
+          if os.path.exists(path) and not os.path.isfile(path):
+              raise ValueError("not a regular file")
+          with open(path, "a", encoding="utf-8") as fh:
+              fh.write(line + "\n")
+    patched: |
+      import os
+
+      LOG_DIR = "/var/log/app"
+
+      def append_log(name, line):
+          """Append to a log file. Runs as root in the service. The file is opened
+          once, without following symlinks, and every check is made against the
+          descriptor we actually hold - so there is no window between the check and
+          the write for the path to be swapped."""
+          if os.sep in name or name in (os.pardir, os.curdir):
+              raise ValueError("bad log name")
+          flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+          fd = os.open(os.path.join(LOG_DIR, name), flags, 0o640)
+          try:
+              st = os.fstat(fd)
+              if not os.path.stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+                  raise ValueError("not a plain unshared file")
+              os.write(fd, (line + "\n").encode())
+          finally:
+              os.close(fd)
