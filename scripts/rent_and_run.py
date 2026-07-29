@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -51,19 +52,37 @@ def api():
     return VastAI(api_key=KEYFILE.read_text().strip())
 
 
+def safe_err(e: Exception) -> str:
+    """The vast SDK builds request URLs with ?api_key=... and puts the whole URL in
+    HTTPError text, so printing a raw SDK exception leaks the key into logs and
+    terminal scrollback. Never print one directly."""
+    return re.sub(r"api_key=[A-Za-z0-9]+", "api_key=REDACTED", str(e))[:300]
+
+
 def norm(s: str) -> str:
     return (s or "").lower().replace(" ", "").replace("-", "")
 
 
 def onstart(pub: str) -> str:
-    return ("export DEBIAN_FRONTEND=noninteractive; "
-            "mkdir -p /root/.ssh; chmod 700 /root/.ssh; chmod go-w /root; "
+    """Fix up /root/.ssh and get out of the way.
+
+    DO NOT INSTALL OR START sshd HERE. vast.ai's runtype="ssh" supplies the ssh layer
+    for any image, and an earlier version of this function ran
+    `apt-get install openssh-server` + `sed PermitRootLogin` + `/usr/sbin/sshd`. That
+    replaced the working daemon with one whose authorized_keys did not include the
+    instance's attached key, and every connection got "Permission denied (publickey)"
+    even though the key was registered AND attached (verified via show_ssh_keys and
+    attach_ssh, which answered "already associated"). The runs that DID connect used a
+    plain onstart that never touched sshd.
+
+    What stays: 0700 on /root/.ssh and go-w off /root. sshd silently refuses
+    authorized_keys in a group-writable directory, and that cost three boxes.
+    Package installs belong in setup.sh, which is also why this is now fast - the
+    30-minute "waiting for sshd" window was self-inflicted.
+    """
+    return ("mkdir -p /root/.ssh; chmod 700 /root/.ssh; chmod go-w /root; "
             f"echo '{pub}' >> /root/.ssh/authorized_keys; "
             "chmod 600 /root/.ssh/authorized_keys; chown -R root:root /root/.ssh; "
-            "apt-get update -qq && apt-get install -y -qq openssh-server python3 python3-pip "
-            "curl git aria2 tmux >/tmp/onstart.log 2>&1; "
-            "sed -i 's/#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config; "
-            "mkdir -p /run/sshd && /usr/sbin/sshd; "
             "echo DONE > /tmp/onstart_done")
 
 
@@ -179,15 +198,15 @@ def main():
     # SILENCE IS "NOT READY YET", NOT "WRONG CARD" - conflating the two destroyed a
     # perfectly good box on the first attempt.
     gpu = ""
-    for attempt in range(90):
+    for attempt in range(40):
         r = sshx(host, port, "nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader",
                  timeout=45)
         if r.returncode == 0 and r.stdout.strip():
             gpu = r.stdout.strip()
             break
-        if attempt and attempt % 10 == 0:
-            print(f"  waiting for sshd ... ({attempt*20//60} min)")
-        time.sleep(20)
+        if attempt and attempt % 8 == 0:
+            print(f"  waiting for sshd ... ({attempt*15//60} min)", flush=True)
+        time.sleep(15)
 
     if not gpu:
         print("box never answered over SSH; leaving it up for manual inspection")
