@@ -54,6 +54,16 @@ def load_rows():
                 rows.append(json.loads(line))
             except Exception:
                 continue
+    # the newer batteries live in their own shards
+    for extra in ("results_games/rows-games.jsonl", "results_security/rows-security.jsonl",
+                  "results_tools/rows-tools.jsonl"):
+        p = REPO / extra
+        if p.exists():
+            for line in p.open(encoding="utf-8"):
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    continue
     for p in sorted(REPO.glob("results_b8_*/*.jsonl")):
         for line in p.open(encoding="utf-8"):
             try:
@@ -262,7 +272,8 @@ def main():
         models = models[:args.limit]
 
     index = {"models": [], "prompts": prompts, "games": games,
-             "batteries": {"1": "Business Scorecard", "2": "Tool Calling",
+             "batteries": {"9": "Game Builds", "10": "Security Review", "11": "Tool Loop",
+                           "1": "Business Scorecard", "2": "Tool Calling",
                            "3": "Hallucination", "4": "Long Context", "5": "Serving",
                            "6": "Agentic Coding", "7": "Reproducibility",
                            "8": "Agentic Harness"},

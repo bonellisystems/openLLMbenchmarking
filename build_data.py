@@ -77,6 +77,26 @@ PHASES = [
               "break-fix / cross-module / feature / stateful / build / robustness, scored by a "
               "hidden oracle. SINGLE-AGENT ONLY - no task requires spawning a subagent.",
      "sub": "by task category"},
+    {"id": "B9", "name": "Game Builds", "unit": "%", "kind": "deterministic",
+     "blurb": "One-shot browser games from a bare one-line prompt (snake, tetris, arkanoid, "
+              "flappy, doodle jump, asteroids, roguelike, and a fly.pieter-style 3D flight sim), "
+              "scored by DRIVING each build in headless Chrome: does it load, paint, animate, "
+              "wire up keys, survive a key burst. Gameplay quality is human-graded in the "
+              "explorer - a browser cannot tell 'the snake moved' from 'a particle blinked'.",
+     "sub": "by game"},
+    {"id": "B10", "name": "Security Review", "unit": "score", "kind": "deterministic",
+     "blurb": "Authorised-pentest code review on vulnerable/patched PAIRS plus safe-but-alarming "
+              "decoys. Headline is a usable-finding score = whole-chain recall x specificity, "
+              "because sensitivity is ~100% for every model and the real discriminator is not "
+              "inventing defects in already-fixed code. Includes a hard tier of multi-defect "
+              "chains graded on how much of the chain is found.",
+     "sub": "by measure"},
+    {"id": "B11", "name": "Tool Loop", "unit": "%", "kind": "deterministic",
+     "blurb": "Can the model actually DRIVE a harness: emit a structured tool call, read the "
+              "result, act on it. The client advertises schemas and owns execution, because "
+              "llama.cpp's --tools never tells the model the tools exist. Scored from the "
+              "filesystem, so narrating a command you never ran scores zero.",
+     "sub": "by task"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -159,75 +179,77 @@ GAMES_PLANNED = [
 # Known gaps - what the numbers on this page do NOT cover.
 # ---------------------------------------------------------------------------
 GAPS = [
-    {"sev": "critical", "title": "Subagent delegation is measured by NOTHING",
-     "detail": "Every B8 row for every model records subagent_spawned = 'no' (verified across all "
-               "1,000+ rows): none of the 23 tasks requires delegating to a subagent, so the "
-               "subagent canary never fires. qwen3.6-35b-a3b tops B8 at 94% on SINGLE-AGENT "
-               "coding while being separately known to FAIL delegation - it makes zero Task calls "
-               "and confabulates having delegated. gpt-oss-* and gemma-4-* handle delegation. "
-               "None of that behaviour is captured in any battery. Do not read B8 as a "
-               "delegation ranking.",
-     "fix": "Add B8 tasks that only pass via a spawned subagent, and score the canary."},
-    {"sev": "high", "title": "Game / graphical builds are not a battery",
-     "detail": "B6 is is_prime, a word-count CLI, backup.sh, debounce, one SQL query and 5 planted "
-               "bugs. The game roster (Snake, Tetris, Arkanoid, Flappy Bird, Doodle Jump, "
-               "Asteroids, roguelike, fly.pieter-style 3D sim) is written into the v2.1 design "
-               "spec but was never implemented, so no model has a scored game result. Snake and "
-               "Tetris have ad-hoc session-5/6 verdicts for 6 models only.",
-     "fix": "Implement the spec'd one-shot roster with the playability/feature/bug rubric."},
-    {"sev": "high", "title": "The suite under-reports speculative decoding",
+    {"sev": "high", "title": "Coverage is ragged across the three newest batteries",
+     "detail": "B9 (games) ran for 12 models but 4 of those have partial rows, and the four "
+               "largest models plus laguna have none at all - 96 completed rows were lost when a "
+               "rented box was left idle, ran out of credit and could not be restarted. B10 "
+               "(security) covers 6 models of 20. B11 (tool loop) covers 1. Every blank cell in "
+               "the matrix is genuinely unrun, never a zero - but the newer columns are far "
+               "thinner than B1-B7 and should not be read as a roster-wide ranking yet.",
+     "fix": "One rented session per battery to fill the roster; pull results per phase, not at "
+            "the end."},
+    {"sev": "high", "title": "Subagent delegation is deliberately unscored - and the canary never fires",
+     "detail": "TESTPLAN 5.7 excludes the subagent axis from scoring ON PURPOSE - 'documented 0% "
+               "with local models - non-differentiating' - keeping it as one unscored canary. The "
+               "consequence still matters: every B8 row records subagent_spawned = 'no', so B8 is "
+               "SINGLE-AGENT completion only. B11 now covers the related question (can the model "
+               "drive a tool loop at all) and the answer is yes, but that is a client-owned loop, "
+               "not model-initiated delegation.",
+     "fix": "Re-test the axis periodically; the 0% result predates the current model generation."},
+    {"sev": "high", "title": "B10's hard tier reverses its own base tier - so neither alone is safe to quote",
+     "detail": "On single-defect textbook cases every model scores at or near 100% and the base "
+               "tier cannot separate them. On multi-defect chains the ordering changes outright: "
+               "abl-gemma-4-31b is perfect on the base tier and worst on chains (25% whole-chain), "
+               "while abl-qwen3.6-27b leads. Quoting the base tier alone would have produced - and "
+               "did produce - the wrong recommendation.",
+     "fix": "Always report the hard tier alongside; treat base-tier scores as a floor, not a rank."},
+    {"sev": "medium", "title": "The abliteration A/Bs are confounded by quantisation",
+     "detail": "Abliterated builds beat their bases in both families (qwen3.6-27b 25%->75% "
+               "whole-chain, gemma-4-31b 66%->100% base specificity), which is the opposite of the "
+               "usual assumption. But the abliterated files are Q4_K while the bases are Q5_K_M, so "
+               "part of that delta could be quantisation rather than abliteration.",
+     "fix": "Re-run one pair at matched quant before treating the abliteration gain as established."},
+    {"sev": "medium", "title": "Small samples - most rankings are statistical ties",
+     "detail": "B2/B6 run n=30 per model, B8's sweep n=69, B10's hard tier n=12 per model. Wilson "
+               "intervals on whole-chain recall span roughly +/-25 points, so abl-qwen3.6-27b vs "
+               "gpt-oss-120b is NOT a separated result. The matrix marks ties with a tilde.",
+     "fix": "More replicates on the tasks that actually discriminate, rather than more tasks."},
+    {"sev": "medium", "title": "Judged axes built and never run",
+     "detail": "B6's 0-10 code-quality axis has 510 generated rows waiting and is not wired into "
+               "JUDGED_BATTERIES; B2's error-recovery and faithfulness axes are wired but have "
+               "never been executed. Both would add discrimination to batteries currently sitting "
+               "at a ceiling, and both need judge quota rather than GPU.",
+     "fix": "One judging pass each, when judge budget allows."},
+    {"sev": "medium", "title": "Games are scored for 'runs clean', not for being good games",
+     "detail": "The browser oracle can prove a build loads, paints, animates, wires keys and "
+               "survives input. It CANNOT tell that the snake advanced - validated the hard way: a "
+               "frozen snake whose particle layer animates changes more of the board than a working "
+               "one. Gameplay quality is therefore human-graded in the explorer.",
+     "fix": "Per-game probes exist for the authored snake fixture; extend them to tetris and the "
+            "rest if scored gameplay is wanted."},
+    {"sev": "medium", "title": "The suite under-reports speculative decoding",
      "detail": "B5's spec-decode arm measures ~1.00x for every model because it generates fresh "
-               "text, where n-gram drafting has almost no hit rate. On edit/rewrite work - what "
-               "agentic coding actually does - the same feature is worth 1.95x to 12.08x. The "
-               "big numbers are real but live outside the suite.",
-     "fix": "Give B5 an edit-workload arm so the headline serving number reflects real use."},
-    {"sev": "high", "title": "Laguna ran with NO speculative decoding - and a purpose-built draft model exists",
-     "detail": "poolside ships laguna-s-2.1-DFlash-BF16.gguf in its own GGUF repo: a DFlash "
-               "speculator (6 sliding-attention layers, shares embeddings with the target, tagged "
-               "speculative-decoding) built specifically to draft for Laguna. The Blackwell run "
-               "used none of it. It also could not use n-gram spec-decode, because --spec-type "
-               "ngram-mod is a prism llama.cpp FORK feature while Laguna's custom arch needs "
-               "official llama.cpp b10087+. So every Laguna throughput figure here is "
-               "un-accelerated, and the cheapest available speedup was left on the table.",
-     "fix": "Re-serve Laguna with the draft: llama-server -m laguna-UD-IQ4_XS.gguf "
-            "-md laguna-s-2.1-DFlash-BF16.gguf, and record decode t/s with vs without."},
-    {"sev": "medium", "title": "MTP was never tried on the big card",
-     "detail": "MTP with a SEPARATE draft GGUF is proven locally at 2.55x lossless on dense "
-               "gemma-4-31b (68 -> 173 t/s) - the old 0.20x result was the embedded-head trap, not "
-               "MTP itself. No datacenter session tested it, so none of the B5 numbers reflect "
-               "what these models can actually do when drafted.",
-     "fix": "Add a draft-model arm to B5 for every model that has a published draft/MTP GGUF."},
-    {"sev": "medium", "title": "B6 judged quality never ran",
-     "detail": "B6 reports only deterministic pass/fail. The 0-10 judged quality axis (does the "
-               "code read well, handle edges, avoid gratuitous complexity) is built but has not "
-               "been run, so a model that squeaks past the checks scores the same as one that "
-               "writes genuinely good code.",
-     "fix": "Run the B6 judged axis through the same 3-seat panel as B1."},
-    {"sev": "medium", "title": "B8 missing for the four largest models",
-     "detail": "glm-4.5-air, gpt-oss-120b, llama-4-scout and qwen3-235b have no B8 rows - they "
-               "don't fit the 24GB laptop that ran the agentic sweep, and the rented Blackwell "
-               "sessions were spent on Laguna.",
-     "fix": "One Blackwell session running the B8 container sweep for the big four."},
-    {"sev": "high", "title": "Judges agree with each other only 39% of the time",
-     "detail": "Across 7,560 judged answers the 3-seat panel lands within 1 point of itself on "
-               "just 39.3% of answers; mean spread is 2.29 points and 34% of answers draw a "
-               "spread greater than 2. So a B1 gap of a few tenths (7.6 vs 7.2) is well inside "
-               "judge noise. Gemini also scores its own family +0.53 higher than others "
-               "(kin_delta), while codex scores its own -0.67 lower.",
-     "fix": "Publish per-model score CIs from the judge spread, and treat B1 as tiers "
-            "rather than a strict order."},
-    {"sev": "medium", "title": "The quant-format A/B was never actually run",
-     "detail": "gemma-4-26b-a4b-mxfp4 exists in the registry as a controlled quant-format arm "
-               "('runs B5 + B2 + B6') but produced B8 rows ONLY. No quant delta can be computed. "
-               "Worse: that B8 data is what the roster model's agentic score uses, so "
-               "gemma-4-26b-a4b's B8 is the MXFP4 quant while its B1-B7 are UD-Q4_K_XL - one row "
-               "mixing two quants.",
+               "text, where n-gram drafting almost never hits. On edit/rewrite work - what agentic "
+               "coding actually does - the same feature is worth 1.95x to 12.08x. Laguna also ran "
+               "with no acceleration at all, and its purpose-built DFlash draft could not be loaded "
+               "by upstream llama.cpp (wrong tensor count - it needs poolside's fork).",
+     "fix": "Give B5 an edit-workload arm; test DFlash on poolside's fork."},
+    {"sev": "low", "title": "The quant-format A/B was never actually run",
+     "detail": "gemma-4-26b-a4b-mxfp4 exists as a controlled quant arm ('runs B5 + B2 + B6') but "
+               "produced B8 rows only. Worse, that B8 data is what the roster model's agentic score "
+               "uses, so gemma-4-26b-a4b's B8 is the MXFP4 quant while its B1-B7 are UD-Q4_K_XL - "
+               "one row mixing two quants.",
      "fix": "Run the mxfp4 arm through B2/B5/B6, or drop the arm and re-run B8 on UD-Q4_K_XL."},
-    {"sev": "low", "title": "Laguna has no B5 / B7, and its B1 is a rescaled incremental wave",
-     "detail": "B5 and B7 were skipped for Laguna (B5 is box-specific and B7 needs the fork's "
-               "spec arm). Its B1 6.1 comes from a 3-letter incremental packet rescaled through "
-               "the CAL anchors rather than a full-roster packet - defensible, but one step "
-               "further from the frozen 16.",
+    {"sev": "low", "title": "Judges agree with each other only 35% of the time",
+     "detail": "Across 6,120 judged answers the 3-seat panel lands within 1 point of itself on just "
+               "35.1%; mean spread is 2.45 points. A B1 gap of a few tenths is inside judge noise. "
+               "Gemini scores its own family +0.53 higher than others; codex scores its own -0.67.",
+     "fix": "Publish per-model score intervals from the judge spread; read B1 as tiers."},
+    {"sev": "low", "title": "Laguna has no B5 / B7 / B8, and its B1 is a rescaled incremental wave",
+     "detail": "B5 and B7 were skipped (box-specific / needs the fork's spec arm) and B8 postdates "
+               "its peer group. Its B1 6.1 comes from a 3-letter incremental packet rescaled through "
+               "the CAL anchors rather than a full-roster packet - defensible, one step further from "
+               "the frozen sixteen.",
      "fix": "Fold Laguna into the next full-roster judging wave."},
 ]
 
@@ -472,6 +494,138 @@ def compute_quant_ab(rows):
                      "UD-Q4_K_XL - the one row mixes two quants.")}
 
 
+def _load(path):
+    out = []
+    p = REPO / path
+    if p.exists():
+        for line in p.open(encoding="utf-8"):
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    return out
+
+
+def compute_b9(matrix):
+    """Games: share of builds that run clean when driven in a real browser."""
+    rows = _load("results_games/rows-games.jsonl")
+    tally = collections.defaultdict(lambda: [0, 0])
+    per_game = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
+    for r in rows:
+        m = r["model_id"]
+        ok = bool((r.get("metrics") or {}).get("runs_clean"))
+        tally[m][1] += 1
+        tally[m][0] += ok
+        g = r.get("task_id", "").split(".")[-1]
+        per_game[m][g][1] += 1
+        per_game[m][g][0] += ok
+    for m, kn in tally.items():
+        k, n = kn
+        if m in matrix and n:
+            matrix[m]["B9"] = {"tested": True, "n": n, "score": round(100 * k / n),
+                               "display": "%d%%" % round(100 * k / n), "k": k,
+                               "ci": wilson(k, n),
+                               "sub": [{"name": g, "score": round(100 * v[0] / v[1]),
+                                        "display": "%d/%d" % (v[0], v[1])}
+                                       for g, v in sorted(per_game[m].items())]}
+
+
+def compute_b10(matrix):
+    """Security: headline is whole-chain recall x specificity - the two axes that decide
+    whether a finding is usable. Sensitivity is a sub-score because it is ~100% for
+    everything and therefore discriminates nothing."""
+    rows = _load("results_security/rows-security.jsonl")
+    agg = collections.defaultdict(lambda: {"sens": [0, 0], "spec": [0, 0], "dec": [0, 0],
+                                           "chain": [0, 0], "whole": [0, 0], "ref": 0, "n": 0})
+    for r in rows:
+        a = agg[r["model_id"]]
+        met = r.get("metrics") or {}
+        det = r.get("det_checks") or {}
+        ok = bool(det.get("correct_verdict", {}).get("pass"))
+        a["n"] += 1
+        if met.get("refused"):
+            a["ref"] += 1
+        if met.get("tier") == "hard":
+            if met.get("expect_vulnerable"):
+                a["chain"][0] += met.get("found_n", 0) or 0
+                a["chain"][1] += met.get("chain_total", 0) or 0
+                a["whole"][1] += 1
+                a["whole"][0] += 1 if det.get("found_whole_chain", {}).get("pass") else 0
+            else:
+                a["spec"][1] += 1
+                a["spec"][0] += 1 if ok else 0
+        else:
+            if met.get("expect_vulnerable"):
+                a["sens"][1] += 1
+                a["sens"][0] += 1 if ok else 0
+            elif "decoy" in r.get("task_id", ""):
+                a["dec"][1] += 1
+                a["dec"][0] += 1 if ok else 0
+            else:
+                a["spec"][1] += 1
+                a["spec"][0] += 1 if ok else 0
+
+    def pct(x):
+        return "%d%%" % round(100 * x[0] / x[1]) if x[1] else "-"
+
+    for m, a in agg.items():
+        if m not in matrix or not a["n"]:
+            continue
+        wc = (a["whole"][0] / a["whole"][1]) if a["whole"][1] else None
+        sp_n = a["spec"][1] + a["dec"][1]
+        sp = ((a["spec"][0] + a["dec"][0]) / sp_n) if sp_n else None
+        score = round(100 * wc * sp) if (wc is not None and sp is not None) else None
+        matrix[m]["B10"] = {
+            "tested": True, "n": a["n"], "score": score,
+            "display": (str(score) if score is not None else "-"),
+            "ci": wilson(a["whole"][0], a["whole"][1]) if a["whole"][1] else None,
+            "sub": [
+                {"name": "whole-chain", "score": round(100 * wc) if wc is not None else 0,
+                 "display": pct(a["whole"])},
+                {"name": "specificity", "score": round(100 * sp) if sp is not None else 0,
+                 "display": ("%d%%" % round(100 * sp)) if sp is not None else "-"},
+                {"name": "chain recall",
+                 "score": round(100 * a["chain"][0] / a["chain"][1]) if a["chain"][1] else 0,
+                 "display": pct(a["chain"])},
+                {"name": "sensitivity",
+                 "score": round(100 * a["sens"][0] / a["sens"][1]) if a["sens"][1] else 0,
+                 "display": pct(a["sens"])},
+                {"name": "decoys",
+                 "score": round(100 * a["dec"][0] / a["dec"][1]) if a["dec"][1] else 0,
+                 "display": pct(a["dec"])},
+                {"name": "refusals", "score": 100 if a["ref"] == 0 else 0,
+                 "display": str(a["ref"])},
+            ]}
+
+
+def compute_b11(matrix):
+    """Tool loop: task completion, verified from the filesystem rather than narration."""
+    rows = _load("results_tools/rows-tools.jsonl")
+    tally = collections.defaultdict(lambda: [0, 0])
+    per = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
+    calls = collections.defaultdict(list)
+    for r in rows:
+        m = r["model_id"]
+        ok = bool((r.get("metrics") or {}).get("completed"))
+        tally[m][1] += 1
+        tally[m][0] += ok
+        t = r.get("task_id", "").split(".")[-1]
+        per[m][t][1] += 1
+        per[m][t][0] += ok
+        calls[m].append((r.get("metrics") or {}).get("n_tool_calls", 0) or 0)
+    for m, kn in tally.items():
+        k, n = kn
+        if m in matrix and n:
+            cs = sorted(calls[m])
+            med = cs[len(cs) // 2] if cs else 0
+            matrix[m]["B11"] = {"tested": True, "n": n, "score": round(100 * k / n),
+                                "display": "%d%%" % round(100 * k / n), "k": k,
+                                "ci": wilson(k, n), "median_tool_calls": med,
+                                "sub": [{"name": t, "score": round(100 * v[0] / v[1]),
+                                         "display": "%d/%d" % (v[0], v[1])}
+                                        for t, v in sorted(per[m].items())]}
+
+
 def rows_from_shards():
     out = []
     for p in sorted((REPO / "results").glob("rows-suite-v2.*.jsonl")):
@@ -678,6 +832,17 @@ def main():
     args = ap.parse_args()
 
     models, matrix, b5_arms = compute_matrix()
+    # Models that appear ONLY in the newer batteries (the abliterated security arms
+    # ran B10/B11 but none of B1-B8) would otherwise be silently dropped from the
+    # roster - the exact "gap" this report is meant to surface.
+    extra = set()
+    for shard in ("results_games/rows-games.jsonl", "results_security/rows-security.jsonl",
+                  "results_tools/rows-tools.jsonl"):
+        for r in _load(shard):
+            extra.add(r.get("model_id"))
+    for m in sorted(x for x in extra if x and x not in matrix):
+        matrix[m] = {}
+        models.append(m)
     # drop the quant-arm pseudo-model from the roster view
     models = [m for m in models if m != "gemma-4-26b-a4b-mxfp4"]
     for m in models:
@@ -689,6 +854,9 @@ def main():
     for m in models:
         if matrix[m].get("B2", {}).get("tested") and m in b2ax:
             matrix[m]["B2"]["sub"] = b2ax[m]
+    compute_b9(matrix)
+    compute_b10(matrix)
+    compute_b11(matrix)
     mark_ties(models, matrix)
     prefill = compute_prefill(rows_all)
     for m, v in prefill.items():
