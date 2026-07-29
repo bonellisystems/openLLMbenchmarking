@@ -37,15 +37,27 @@ def tiers_for_model(ctx_tiers: list[int], claimed_ctx: int) -> list[int]:
     return kept if kept else [claimed_ctx]
 
 
-def arm_fits_estimate(model: dict, tiers_cfg: dict, kv_short: str, ctx_tokens: int) -> bool:
+def arm_fits_estimate(model: dict, tiers_cfg: dict, kv_short: str, ctx_tokens: int,
+                      tier: str = "T1") -> bool:
     """Estimated physical VRAM fit for ONE (kv, ctx) arm at its ACTUAL requested
     context length. registry.fits() always checks the fixed 128k kv_floor_ctx
     regardless of the caller's ctx -- it answers "does this artifact belong on
     this tier at all" (a tier-PLACEMENT question, TESTPLAN 3.1). This answers "does
     this specific B4 sweep point boot" (a planning question), by reusing the exact
     same kv_bytes_per_token table + hybrid-linear-attention 0.25x discount so the
-    two never silently diverge on the underlying model math."""
-    t = tiers_cfg["tiers"]["T1"]
+    two never silently diverge on the underlying model math.
+
+    `tier` is which physical card the sweep is being PLANNED for, and it defaults to
+    T1 (the 24GB laptop) so existing behaviour and tests are unchanged. It must be set
+    to the card actually being used, because it decides which arms exist at all: on T1
+    every tier above 16k prunes away, and a 57.6GB model like laguna-s-2.1 gets ZERO
+    arms and silently contributes no B4 rows. The frozen roster's B4 rows were produced
+    on an RTX PRO 6000 (results/sessions.jsonl records
+    hardware_sku=rtx-pro-6000, measured_usable_vram_gb=94.0), i.e. T3 - which is why
+    they contain 64k/128k/256k arms that T1 planning cannot produce. Set it via
+    suite.yaml b4.plan_tier when running on a bigger card.
+    """
+    t = tiers_cfg["tiers"][tier]
     usable = float(t["usable_gb"])
     weights = float(model["weights_gb"])
     overhead = float(tiers_cfg["runtime_overhead_gb"])
@@ -100,7 +112,8 @@ def model_arms(model_id: str, m: dict, b4cfg: dict, tiers_cfg: dict) -> dict[tup
 
     result: dict[tuple[int, str], list[str]] = {}
     for (ctx_tokens, kv_short), ride_through in unpruned.items():
-        fits_ok = arm_fits_estimate(m, tiers_cfg, kv_short, ctx_tokens)
+        fits_ok = arm_fits_estimate(m, tiers_cfg, kv_short, ctx_tokens,
+                                    b4cfg.get("plan_tier", "T1"))
         if not ride_through and not fits_ok:
             continue                       # standard-sweep arm: physically pruned
         tags = set()

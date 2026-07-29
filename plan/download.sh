@@ -22,6 +22,32 @@ get(){ # dir repo path
     || echo "FAIL $1 $3" >> /root/dl_fail
 }
 gate(){ while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 3; done; }
+
+# --- throughput probe: FAIL FAST ---------------------------------------------------
+# A host's advertised inet_down is its link speed, NOT the rate Hugging Face will serve
+# it. Cheap hosts have measured ~4MB/s against HF while advertising gigabits; at that
+# rate this download alone is ~44 hours and would consume the entire budget before a
+# single row is generated. Better to die here, loudly, than to bleed out slowly.
+MIN_MBPS=25
+probe(){
+  rm -f /tmp/probe.bin
+  timeout 60 aria2c -x8 -s8 -k1M --file-allocation=none --console-log-level=error \
+    -d /tmp -o probe.bin --max-download-limit=0 \
+    "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf" >/dev/null 2>&1
+  sz=$(stat -c %s /tmp/probe.bin 2>/dev/null || echo 0)
+  rm -f /tmp/probe.bin
+  echo $(( sz / 60 / 1000000 ))
+}
+RATE=$(probe)
+echo "HF throughput probe: ~${RATE} MB/s (floor ${MIN_MBPS})" | tee /root/dl_probe
+if [ "$RATE" -lt "$MIN_MBPS" ]; then
+  echo "ABORT: Hugging Face throughput too low on this host - the download would cost" >> /root/dl_probe
+  echo "more than the compute. Destroy this box and rent another." >> /root/dl_probe
+  echo "DL_ABORT rate=${RATE}" > /root/dl_abort
+  cat /root/dl_probe
+  exit 1
+fi
+
 gate; get abl-qwen3.6-27b huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf &
 gate; get agents-a1-35b jashepp/Agents-A1-35B-A3B-MXFP4_MOE_Hybrid-Imatrix-GGUF Agents-A1-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf &
 gate; get bonsai-ternary-27b prism-ml/Ternary-Bonsai-27B-gguf Ternary-Bonsai-27B-Q2_0.gguf &

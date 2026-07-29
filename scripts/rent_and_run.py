@@ -118,6 +118,11 @@ def main():
         if not p.exists():
             print(f"missing plan/{f} - run scripts/emit_run_plan.py first")
             return 2
+        # These are generated on Windows and executed on Linux. A single CR makes bash
+        # fail on `do\r` and silently breaks `\` line continuations.
+        if b"\r" in p.read_bytes():
+            print(f"plan/{f} has CRLF endings - re-run scripts/emit_run_plan.py")
+            return 2
 
     v = api()
     credit = v.show_user().get("credit", 0)
@@ -196,15 +201,42 @@ def main():
     print(f"card gate PASSED: {gpu}")
 
     print("shipping repo + plan ...")
-    subprocess.run(["tar", "czf", "/tmp/repo.tgz", "-C", str(ROOT.parent), ROOT.name,
-                    "--exclude=" + ROOT.name + "/.git",
-                    "--exclude=" + ROOT.name + "/artifacts",
-                    "--exclude=" + ROOT.name + "/results_*"], check=False)
-    scp_to(host, port, "/tmp/repo.tgz", "/root/repo.tgz")
-    sshx(host, port, "cd /root && tar xzf repo.tgz && ls -d /root/llmtest-v2")
+    # Verify each step. The tar used to run with check=False, so a failed archive
+    # scp'd nothing and the run started against an empty box - which looks identical
+    # to a model that would not load.
+    tgz = ROOT / "plan" / "repo.tgz"
+    tgz.unlink(missing_ok=True)
+    t = subprocess.run(["tar", "czf", str(tgz), "-C", str(ROOT.parent),
+                        "--exclude=.git", "--exclude=artifacts", "--exclude=results_*",
+                        "--exclude=plan/repo.tgz", ROOT.name],
+                       capture_output=True, text=True)
+    if not tgz.exists() or tgz.stat().st_size < 100_000:
+        print(f"tar FAILED (rc={t.returncode}): {t.stderr[:400]}")
+        print(f"instance {cid} left running at {host}:{port} - fix and re-ship")
+        return 1
+    print(f"  archive: {tgz.stat().st_size/1e6:.1f} MB")
+
+    if scp_to(host, port, tgz, "/root/repo.tgz").returncode != 0:
+        print("scp of repo FAILED; instance left running for inspection")
+        return 1
+    r = sshx(host, port, "cd /root && tar xzf repo.tgz && test -f llmtest-v2/scripts/"
+                         "bigmodel_gen.py && echo REPO_OK")
+    if "REPO_OK" not in r.stdout:
+        print("repo did not unpack on the box; instance left running:", r.stdout, r.stderr[:300])
+        return 1
     for f in ("setup.sh", "download.sh", "run_all.sh"):
         scp_to(host, port, ROOT / "plan" / f, f"/root/{f}")
-    sshx(host, port, "chmod +x /root/setup.sh /root/download.sh /root/run_all.sh")
+    # setup.sh repoints registry local_path from this manifest (the p8 drivers resolve
+    # the GGUF through local_path, which still holds the Windows authoring paths).
+    scp_to(host, port, ROOT / "plan" / "manifest.json", "/root/plan_manifest.json")
+    # A CR in these would break bash on the box; assert none survived the trip.
+    r = sshx(host, port, "chmod +x /root/*.sh; "
+                         "grep -l $'\\r' /root/setup.sh /root/download.sh /root/run_all.sh "
+                         "2>/dev/null || echo NO_CR")
+    if "NO_CR" not in r.stdout:
+        print("CRLF found in shipped scripts - refusing to launch:", r.stdout)
+        return 1
+    print("  scripts shipped, LF endings confirmed")
 
     print("launching setup -> download -> run_all in tmux ...")
     sshx(host, port,

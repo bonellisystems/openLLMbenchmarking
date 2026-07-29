@@ -33,6 +33,17 @@ NEEDS_EXTRA = {
     "B5": "timing-authoritative: only valid on the same card class as the frozen roster",
 }
 
+# Cells that already have rows but must be REGENERATED because the artifact changed
+# underneath them - a changed quant means the existing rows measure a different file,
+# and the coverage matrix would show the cell green while pooling two artifacts under
+# one model identity.
+#
+# Currently empty. abl-opus-35b-a3b was briefly moved Q3_K -> Q4_K to respect the suite's
+# 4-bit floor, which would have needed its B10 re-run; that was reverted because the
+# Q4_K build (21.7GB) leaves no KV headroom on the 24GB laptop this model exists to run
+# on. See its registry notes for the standing caveat.
+REQUANT_RERUN: dict[str, list[str]] = {}
+
 
 def hf_files(repo: str, want_hint: str = "") -> list[dict]:
     """Every .gguf in the repo, with sizes. Looks in the root and one level down,
@@ -107,6 +118,10 @@ def main():
     models = []
     for mid in data["models"]:
         missing = [p for p in phases if not matrix.get(mid, {}).get(p, {}).get("tested")]
+        for p in REQUANT_RERUN.get(mid, []):
+            if p not in missing and p in phases:
+                missing.append(p)
+        missing = [p for p in phases if p in missing]     # keep canonical order
         if not missing:
             continue
         entry = reg.get(mid) or {}

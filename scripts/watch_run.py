@@ -112,15 +112,34 @@ def main():
                      "(test -f /root/setup_done && echo downloading || echo setup))").stdout.strip()
         done_models = sshx(host, port, "wc -l < /root/models_done 2>/dev/null || echo 0").stdout.strip()
         fails = sshx(host, port, "cat /root/failures 2>/dev/null | tr '\\n' ';'").stdout.strip()
+
+        # The download script refuses to run on a host Hugging Face serves too slowly.
+        # That box can never finish inside the budget, so stop paying for it now.
+        if sshx(host, port, "test -f /root/dl_abort && cat /root/dl_abort || true").stdout.strip():
+            reason = "DL_ABORT (Hugging Face throughput below floor - rent another host)"
+            break
+
         pull(host, port)
         rows = rows_local()
+        # PROGRESS MUST BE MEASURED IN EVERY STAGE. Watching only `rows` meant a hung or
+        # crawling download never tripped the stall detector: during that phase no rows
+        # exist yet, so the box would run to the credit floor - ~30 hours - without an
+        # alarm. Bytes on disk are the download's progress metric; rows are the run's.
+        if stage == "downloading":
+            got = sshx(host, port, "du -sb /root/models 2>/dev/null | cut -f1 || echo 0").stdout.strip()
+            progress = int(got) if got.isdigit() else 0
+            pmsg = f"dl={progress/1e9:.1f}GB"
+        else:
+            progress = rows
+            pmsg = f"rows={rows}"
+
         try:
             bal = round(v.show_user().get("credit", 0), 2)
         except Exception:
             bal = None
 
         line = (f"{time.strftime('%H:%M:%S')} i={i} stage={stage} models_done={done_models} "
-                f"rows={rows} bal={bal} stalls={stalls}" + (f" FAILURES[{fails}]" if fails else ""))
+                f"{pmsg} bal={bal} stalls={stalls}" + (f" FAILURES[{fails}]" if fails else ""))
         print(line)
         with log.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -128,14 +147,14 @@ def main():
         if stage == "done":
             reason = "DONE"
             break
-        if rows == last and stage == "running":
+        if progress == last and stage in ("downloading", "running"):
             stalls += 1
             if stalls >= args.stall_polls:
-                reason = f"STALLED at {rows} rows"
+                reason = f"STALLED in {stage} at {pmsg}"
                 break
         else:
             stalls = 0
-        last = rows
+        last = progress
         if bal is not None and bal < args.floor:
             reason = f"LOWCREDIT {bal}"
             break
