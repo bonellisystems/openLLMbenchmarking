@@ -27,6 +27,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def write_sh(path: Path, text: str) -> None:
+    """Shell scripts MUST be written with LF endings.
+
+    Path.write_text() on Windows translates \\n to \\r\\n, and bash on the Linux box
+    then chokes on the carriage returns - `for i in ...; do\\r` is a syntax error, and a
+    `\\` line-continuation followed by \\r stops being a continuation at all. Every
+    script emitted here is generated on Windows and executed on Linux, so the newline
+    has to be pinned explicitly rather than left to the platform default.
+    """
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
 # how each battery is driven on the box
 DRIVER = {
     "B1": ("bigmodel", "1"), "B2": ("bigmodel", "2"), "B3": ("bigmodel", "3"),
@@ -36,24 +49,39 @@ DRIVER = {
 }
 
 DOWNLOAD = """#!/bin/bash
-# Fetch every model that still has gaps. Files are pulled CONCURRENTLY because
-# Hugging Face throttles a single transfer (measured: -x16 collapsing to one
-# connection at ~21MB/s); parallel files reach ~80MB/s aggregate.
+# Fetch every model that still has gaps.
+#
+# Files are pulled CONCURRENTLY because Hugging Face throttles a SINGLE transfer
+# (measured: -x16 collapsing to one connection at ~21MB/s); parallelism has to be
+# across files, where the same box reaches ~80MB/s aggregate.
+#
+# But concurrency is CAPPED. Firing all %(nfiles)d files at -x16 would open ~%(nconn)d
+# connections at once, which HF rate-limits, and it would also fill the disk in
+# nondeterministic order so a truncated download could belong to any model. JOBS
+# files at a time keeps the aggregate rate without either problem.
 set -u
 M=/root/models
+JOBS=6
 mkdir -p $M
 get(){ # dir repo path
   mkdir -p "$M/$1"
-  aria2c -x16 -s16 -k1M --continue=true --file-allocation=none --console-log-level=warn \\
-    --auto-file-renaming=false -d "$M/$1" -o "$(basename "$3")" \\
+  aria2c -x8 -s8 -k1M --continue=true --file-allocation=none --console-log-level=warn \\
+    --retry-wait=5 --max-tries=5 --auto-file-renaming=false \\
+    -d "$M/$1" -o "$(basename "$3")" \\
     "https://huggingface.co/$2/resolve/main/$3" >> "/root/dl_$1.log" 2>&1 \\
     || echo "FAIL $1 $3" >> /root/dl_fail
 }
+gate(){ while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 3; done; }
 %(gets)s
 wait
 echo DL_DONE > /root/dl_done
 df -h /root | tail -1
 du -sh $M
+# Report anything that failed AND anything suspiciously small, so a truncated shard is
+# caught here rather than as a "wrong number of tensors" load error an hour later.
+echo "--- download failures ---"; cat /root/dl_fail 2>/dev/null || echo none
+echo "--- files under 100MB (suspect) ---"
+find $M -name '*.gguf' -size -100M -printf '%%p %%s\\n' 2>/dev/null || true
 """
 
 RUNNER = """#!/bin/bash
@@ -154,8 +182,10 @@ def main():
     gets = []
     for m in man["models"]:
         for f in m["files"]:
-            gets.append(f'get {m["id"]} {m["repo"]} {f["path"]} &')
-    (outdir / "download.sh").write_text(DOWNLOAD % {"gets": "\n".join(gets)}, encoding="utf-8")
+            gets.append(f'gate; get {m["id"]} {m["repo"]} {f["path"]} &')
+    write_sh(outdir / "download.sh",
+             DOWNLOAD % {"gets": "\n".join(gets), "nfiles": len(gets),
+                         "nconn": len(gets) * 16})
 
     # --- runner: heaviest-gap models first so partial funding still buys the most ---
     blocks = []
@@ -166,10 +196,10 @@ def main():
         blocks.append(MODEL_BLOCK % {"id": m["id"], "bats": ",".join(m["batteries"]),
                                      "gguf": gguf, "flags": flags,
                                      "steps": steps_for(m["id"], m["batteries"])})
-    (outdir / "run_all.sh").write_text(RUNNER % {"models": "\n".join(blocks)}, encoding="utf-8")
+    write_sh(outdir / "run_all.sh", RUNNER % {"models": "\n".join(blocks)})
 
     # --- one-time box setup (B8 host mode needs node + opencode) ---
-    (outdir / "setup.sh").write_text("""#!/bin/bash
+    write_sh(outdir / "setup.sh", """#!/bin/bash
 # One-time box setup. B8 runs in HOST mode because vast.ai instances have no Docker;
 # opencode.py supports sandbox_image=None. Acceptable on a disposable box running our
 # own manifests - not a pattern for untrusted models or a persistent machine.
@@ -192,7 +222,7 @@ PY
 echo "node: $(node --version 2>/dev/null)  opencode: $(command -v opencode || echo absent)"
 python3 -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(); print('chromium OK'); b.close(); p.stop()"
 echo SETUP_DONE > /root/setup_done
-""", encoding="utf-8")
+""")
 
     for f in ("download.sh", "run_all.sh", "setup.sh"):
         (outdir / f).chmod(0o755)

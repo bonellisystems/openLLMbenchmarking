@@ -35,7 +35,11 @@ PRIVKEY = "C:/Users/Michael/.ssh/vast_laguna"
 
 REQUIRED_GPU = "RTX PRO 6000"
 MIN_DISK_GB = 780          # 639GB of weights + results + the container image
-MIN_RAM_GB = 200           # qwen3-235b needs --cpu-moe headroom
+# qwen3-235b is 134GB and does not fit the 96GB card, so --cpu-moe parks its expert
+# tensors in system RAM: ~120GB resident plus OS and page-cache headroom. 160GB clears
+# that. A 200GB floor disqualified 50 of the 54 available RTX PRO 6000 boxes (the
+# common configuration is 126GB) for headroom nothing in the plan uses.
+MIN_RAM_GB = 160
 
 SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
               "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=20",
@@ -64,20 +68,31 @@ def onstart(pub: str) -> str:
 
 
 def find_offers(v, limit=6):
-    q = (f"gpu_ram>=90 gpu_ram<100 num_gpus=1 rentable=true disk_space>={MIN_DISK_GB} "
-         f"reliability>0.98 inet_down>=2000")
-    res = v.search_offers(query=q, order="dph+")
+    """Qualifying RTX PRO 6000 offers, cheapest first, plus a per-constraint tally of
+    the rejects. "No offer" on its own is a dead end; knowing WHICH filter bound is
+    what tells you whether to wait for capacity or relax a number."""
+    res = v.search_offers(query="gpu_ram>=90 gpu_ram<100 num_gpus=1 rentable=true",
+                          order="dph+")
     rows = res if isinstance(res, list) else res.get("offers", [])
-    ok = []
+    ok, why = [], {"wrong card": 0, "disk": 0, "ram": 0, "reliability": 0, "slow net": 0}
     for o in rows:
         if norm(REQUIRED_GPU) not in norm(o.get("gpu_name")):
+            why["wrong card"] += 1
+            continue
+        if (o.get("disk_space") or 0) < MIN_DISK_GB:
+            why["disk"] += 1
             continue
         if (o.get("cpu_ram") or 0) / 1024 < MIN_RAM_GB:
+            why["ram"] += 1
+            continue
+        if (o.get("reliability2") or 0) < 0.98:
+            why["reliability"] += 1
+            continue
+        if (o.get("inet_down") or 0) < 1500:
+            why["slow net"] += 1
             continue
         ok.append(o)
-        if len(ok) >= limit:
-            break
-    return ok
+    return ok[:limit], why
 
 
 def sshx(host, port, cmd, timeout=900):
@@ -106,7 +121,7 @@ def main():
 
     v = api()
     credit = v.show_user().get("credit", 0)
-    offers = find_offers(v)
+    offers, why = find_offers(v)
 
     print(f"plan      : {man['totals']['models']} models, {man['totals']['missing_cells']} cells, "
           f"{man['totals']['download_gb']} GB")
@@ -114,6 +129,7 @@ def main():
     print(f"card gate : {REQUIRED_GPU} ONLY, >={MIN_DISK_GB}GB disk, >={MIN_RAM_GB}GB RAM")
     if not offers:
         print("NO QUALIFYING RTX PRO 6000 OFFER - refusing to rent anything else")
+        print("  rejected by: " + ", ".join(f"{k}={n}" for k, n in why.items() if n))
         return 2
     for o in offers:
         print(f"  id={o['id']} {o.get('gpu_name')} {o.get('gpu_ram',0)/1024:.0f}GB "
@@ -154,18 +170,30 @@ def main():
         return 1
     (ROOT / "plan" / "ENDPOINT").write_text(f"{host} {port}", encoding="utf-8")
 
+    # onstart installs sshd via apt, which can take 10-20 minutes on a slow host.
+    # SILENCE IS "NOT READY YET", NOT "WRONG CARD" - conflating the two destroyed a
+    # perfectly good box on the first attempt.
     gpu = ""
-    for _ in range(25):
-        r = sshx(host, port, "nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader")
+    for attempt in range(90):
+        r = sshx(host, port, "nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader",
+                 timeout=45)
         if r.returncode == 0 and r.stdout.strip():
             gpu = r.stdout.strip()
             break
+        if attempt and attempt % 10 == 0:
+            print(f"  waiting for sshd ... ({attempt*20//60} min)")
         time.sleep(20)
-    print("on-box GPU:", gpu or "(no answer)")
+
+    if not gpu:
+        print("box never answered over SSH; leaving it up for manual inspection")
+        print(f"  instance {cid} at {host}:{port} - destroy with scripts/watch_run.py or the API")
+        return 1
+    print("on-box GPU:", gpu)
     if norm(REQUIRED_GPU) not in norm(gpu):
-        print("WRONG CARD ON THE BOX - destroying immediately")
+        print(f"WRONG CARD ({gpu}) - destroying immediately")
         v.destroy_instance(id=cid)
         return 3
+    print(f"card gate PASSED: {gpu}")
 
     print("shipping repo + plan ...")
     subprocess.run(["tar", "czf", "/tmp/repo.tgz", "-C", str(ROOT.parent), ROOT.name,

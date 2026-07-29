@@ -31,6 +31,17 @@ def api():
     return VastAI(api_key=KEYFILE.read_text().strip())
 
 
+def wait_for_ssh(host, port, tries=60, delay=20):
+    """onstart installs sshd via apt, which can take 10-20 minutes on a slow host.
+    Silence here means NOT READY - it must never be mistaken for a failed check."""
+    for _ in range(tries):
+        r = sshx(host, port, "echo OK", timeout=30)
+        if r.stdout.strip() == "OK":
+            return True
+        time.sleep(delay)
+    return False
+
+
 def endpoint():
     host, port = (ROOT / "plan" / "ENDPOINT").read_text(encoding="utf-8").split()
     return host, int(port)
