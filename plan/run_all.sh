@@ -1,5 +1,14 @@
 #!/bin/bash
-# Close every gap, one model at a time so each GGUF is loaded once.
+# Close every gap, one model at a time: FETCH -> RUN ITS BATTERIES -> DELETE.
+#
+# Why interleaved rather than "download all 638.7GB, then run":
+#  * PEAK DISK becomes the largest single model (~134GB) instead of the whole corpus, so
+#    the disk floor drops 780GB -> 300GB. At 780GB, 15 of the available RTX PRO 6000
+#    offers were disqualified on disk alone and some hours none qualified at all.
+#  * IT COSTS NOTHING. The two phases were already sequential - download.sh ran to
+#    completion before run_all.sh started - so there was never any overlap to lose.
+#  * ROWS START ARRIVING IN MINUTES instead of after a ~2.2h download, and a box that
+#    dies early has produced COMPLETE models rather than a full disk and no results.
 set -u
 cd /root/llmtest-v2
 export LD_LIBRARY_PATH=/app
@@ -21,6 +30,29 @@ SPEC=""
 [ "$NGRAM" = "1" ] && SPEC="--spec-type ngram-mod --spec-ngram-mod-n-match 32"
 
 stop_server(){ pkill -f "llama-server" 2>/dev/null; sleep 5; }
+
+M=/root/models
+mkdir -p $M
+# Files within a model are fetched CONCURRENTLY (HF throttles a single transfer:
+# measured -x16 collapsing to one connection at ~21MB/s), but capped - firing everything
+# at once opens hundreds of connections and gets rate-limited.
+JOBS=4
+gate(){ while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 3; done; }
+get(){ # dir repo path
+  mkdir -p "$M/$1"
+  aria2c -x8 -s8 -k1M --continue=true --file-allocation=none --console-log-level=warn \
+    --retry-wait=5 --max-tries=5 --auto-file-renaming=false \
+    -d "$M/$1" -o "$(basename "$3")" \
+    "https://huggingface.co/$2/resolve/main/$3" >> "/root/dl_$1.log" 2>&1 \
+    || echo "FAIL $1 $3" >> /root/dl_fail
+}
+# Free the weights once a model's batteries are done. Without this the interleaving
+# buys nothing: the disk fills exactly as it did before, just more slowly.
+release(){
+  du -sh "$M/$1" 2>/dev/null | tee -a /root/run.log
+  rm -rf "$M/$1"
+  log "  released $1 ; free: $(df -h /root | awk 'NR==2{print $4}')"
+}
 
 serve(){ # $1 gguf  $2 extra flags -- the SHARED endpoint for B1/B2/B3/B6/B8-B11
   stop_server
@@ -63,11 +95,36 @@ run_serving(){ # $1 model  $2 battery-number
     --gpu0 "$1" --gpu1 ""
 }
 
+# --- throughput probe: FAIL FAST --------------------------------------------------
+# A host's advertised inet_down is its link speed, NOT the rate Hugging Face serves it.
+# Cheap hosts have measured ~4MB/s while advertising gigabits; at that rate this corpus
+# alone is ~44 hours and the budget is gone before a single row exists. Die here instead.
+MIN_MBPS=25
+rm -f /tmp/probe.bin
+timeout 60 aria2c -x8 -s8 -k1M --file-allocation=none --console-log-level=error \
+  -d /tmp -o probe.bin \
+  "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf" >/dev/null 2>&1
+PSZ=$(stat -c %s /tmp/probe.bin 2>/dev/null || echo 0)
+rm -f /tmp/probe.bin
+RATE=$(( PSZ / 60 / 1000000 ))
+log "HF throughput probe: ~${RATE} MB/s (floor ${MIN_MBPS} MB/s)"
+if [ "$RATE" -lt "$MIN_MBPS" ]; then
+  log "ABORT: Hugging Face serves this host too slowly - the download would cost more"
+  log "than the compute. Destroy this box and rent another."
+  echo "DL_ABORT rate=${RATE}" > /root/dl_abort
+  exit 1
+fi
+# The watcher keys its stage off this marker; with interleaved fetching there is no
+# separate download phase, so declare it once the probe has passed.
+echo PROBE_OK > /root/dl_done
 
-# ---------- abl-opus-35b-a3b : B1,B2,B3,B4,B5,B6,B7,B8,B9,B11 ----------
+
+# ---------- abl-opus-35b-a3b : B1,B2,B3,B4,B5,B6,B7,B8,B9,B11 (17.2 GB) ----------
+log "===== abl-opus-35b-a3b : fetching 17.2 GB ====="
+gate; get abl-opus-35b-a3b huihui-ai/Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-MTP-GGUF Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q3_K.gguf &
+wait
 GG="/root/models/abl-opus-35b-a3b/Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q3_K.gguf"
 if [ -f "$GG" ]; then
-  log "===== abl-opus-35b-a3b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "abl-opus-35b-a3b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "abl-opus-35b-a3b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -97,14 +154,18 @@ if [ -f "$GG" ]; then
   echo "abl-opus-35b-a3b" >> /root/models_done
   log "abl-opus-35b-a3b complete"
 else
-  log "abl-opus-35b-a3b SKIP (missing $GG)"; echo "abl-opus-35b-a3b missing-gguf" >> /root/failures
+  log "abl-opus-35b-a3b SKIP (fetch failed, no $GG)"; echo "abl-opus-35b-a3b missing-gguf" >> /root/failures
 fi
+stop_server
+release "abl-opus-35b-a3b"
 
 
-# ---------- abl-gemma-4-31b : B1,B2,B3,B4,B5,B6,B7,B8,B9,B11 ----------
+# ---------- abl-gemma-4-31b : B1,B2,B3,B4,B5,B6,B7,B8,B9,B11 (18.7 GB) ----------
+log "===== abl-gemma-4-31b : fetching 18.7 GB ====="
+gate; get abl-gemma-4-31b huihui-ai/Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-GGUF Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf &
+wait
 GG="/root/models/abl-gemma-4-31b/Huihui-gemma-4-31B-it-qat-q4_0-unquantized-abliterated-Q4_K.gguf"
 if [ -f "$GG" ]; then
-  log "===== abl-gemma-4-31b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "abl-gemma-4-31b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "abl-gemma-4-31b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -134,14 +195,20 @@ if [ -f "$GG" ]; then
   echo "abl-gemma-4-31b" >> /root/models_done
   log "abl-gemma-4-31b complete"
 else
-  log "abl-gemma-4-31b SKIP (missing $GG)"; echo "abl-gemma-4-31b missing-gguf" >> /root/failures
+  log "abl-gemma-4-31b SKIP (fetch failed, no $GG)"; echo "abl-gemma-4-31b missing-gguf" >> /root/failures
 fi
+stop_server
+release "abl-gemma-4-31b"
 
 
-# ---------- laguna-s-2.1 : B4,B5,B7,B8,B9,B10,B11 ----------
+# ---------- laguna-s-2.1 : B4,B5,B7,B8,B9,B10,B11 (57.6 GB) ----------
+log "===== laguna-s-2.1 : fetching 57.6 GB ====="
+gate; get laguna-s-2.1 unsloth/Laguna-S-2.1-GGUF UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00001-of-00003.gguf &
+gate; get laguna-s-2.1 unsloth/Laguna-S-2.1-GGUF UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00002-of-00003.gguf &
+gate; get laguna-s-2.1 unsloth/Laguna-S-2.1-GGUF UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00003-of-00003.gguf &
+wait
 GG="/root/models/laguna-s-2.1/Laguna-S-2.1-UD-IQ4_XS-00001-of-00003.gguf"
 if [ -f "$GG" ]; then
-  log "===== laguna-s-2.1 ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "laguna-s-2.1" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "laguna-s-2.1" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -171,14 +238,18 @@ if [ -f "$GG" ]; then
   echo "laguna-s-2.1" >> /root/models_done
   log "laguna-s-2.1 complete"
 else
-  log "laguna-s-2.1 SKIP (missing $GG)"; echo "laguna-s-2.1 missing-gguf" >> /root/failures
+  log "laguna-s-2.1 SKIP (fetch failed, no $GG)"; echo "laguna-s-2.1 missing-gguf" >> /root/failures
 fi
+stop_server
+release "laguna-s-2.1"
 
 
-# ---------- abl-qwen3.6-27b : B1,B4,B5,B7,B8,B9 ----------
+# ---------- abl-qwen3.6-27b : B1,B4,B5,B7,B8,B9 (16.8 GB) ----------
+log "===== abl-qwen3.6-27b : fetching 16.8 GB ====="
+gate; get abl-qwen3.6-27b huihui-ai/Huihui-Qwen3.6-27B-abliterated-MTP-GGUF Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf &
+wait
 GG="/root/models/abl-qwen3.6-27b/Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf"
 if [ -f "$GG" ]; then
-  log "===== abl-qwen3.6-27b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     run_step "abl-qwen3.6-27b" B9 python3 scripts/run_games.py --endpoint-url http://127.0.0.1:8080 --model "abl-qwen3.6-27b" --reps 3 --out $OUT/games --chrome ""
@@ -207,14 +278,19 @@ if [ -f "$GG" ]; then
   echo "abl-qwen3.6-27b" >> /root/models_done
   log "abl-qwen3.6-27b complete"
 else
-  log "abl-qwen3.6-27b SKIP (missing $GG)"; echo "abl-qwen3.6-27b missing-gguf" >> /root/failures
+  log "abl-qwen3.6-27b SKIP (fetch failed, no $GG)"; echo "abl-qwen3.6-27b missing-gguf" >> /root/failures
 fi
+stop_server
+release "abl-qwen3.6-27b"
 
 
-# ---------- llama-4-scout : B8,B9,B10,B11 ----------
+# ---------- llama-4-scout : B8,B9,B10,B11 (62.0 GB) ----------
+log "===== llama-4-scout : fetching 62.0 GB ====="
+gate; get llama-4-scout unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF UD-Q4_K_XL/Llama-4-Scout-17B-16E-Instruct-UD-Q4_K_XL-00001-of-00002.gguf &
+gate; get llama-4-scout unsloth/Llama-4-Scout-17B-16E-Instruct-GGUF UD-Q4_K_XL/Llama-4-Scout-17B-16E-Instruct-UD-Q4_K_XL-00002-of-00002.gguf &
+wait
 GG="/root/models/llama-4-scout/Llama-4-Scout-17B-16E-Instruct-UD-Q4_K_XL-00001-of-00002.gguf"
 if [ -f "$GG" ]; then
-  log "===== llama-4-scout ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "llama-4-scout" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "llama-4-scout" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -232,14 +308,19 @@ if [ -f "$GG" ]; then
   echo "llama-4-scout" >> /root/models_done
   log "llama-4-scout complete"
 else
-  log "llama-4-scout SKIP (missing $GG)"; echo "llama-4-scout missing-gguf" >> /root/failures
+  log "llama-4-scout SKIP (fetch failed, no $GG)"; echo "llama-4-scout missing-gguf" >> /root/failures
 fi
+stop_server
+release "llama-4-scout"
 
 
-# ---------- glm-4.5-air : B8,B9,B10,B11 ----------
+# ---------- glm-4.5-air : B8,B9,B10,B11 (67.7 GB) ----------
+log "===== glm-4.5-air : fetching 67.7 GB ====="
+gate; get glm-4.5-air unsloth/GLM-4.5-Air-GGUF UD-Q4_K_XL/GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf &
+gate; get glm-4.5-air unsloth/GLM-4.5-Air-GGUF UD-Q4_K_XL/GLM-4.5-Air-UD-Q4_K_XL-00002-of-00002.gguf &
+wait
 GG="/root/models/glm-4.5-air/GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf"
 if [ -f "$GG" ]; then
-  log "===== glm-4.5-air ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "glm-4.5-air" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "glm-4.5-air" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -257,14 +338,20 @@ if [ -f "$GG" ]; then
   echo "glm-4.5-air" >> /root/models_done
   log "glm-4.5-air complete"
 else
-  log "glm-4.5-air SKIP (missing $GG)"; echo "glm-4.5-air missing-gguf" >> /root/failures
+  log "glm-4.5-air SKIP (fetch failed, no $GG)"; echo "glm-4.5-air missing-gguf" >> /root/failures
 fi
+stop_server
+release "glm-4.5-air"
 
 
-# ---------- qwen3-235b : B8,B9,B10,B11 ----------
+# ---------- qwen3-235b : B8,B9,B10,B11 (134.3 GB) ----------
+log "===== qwen3-235b : fetching 134.3 GB ====="
+gate; get qwen3-235b unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf &
+gate; get qwen3-235b unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00002-of-00003.gguf &
+gate; get qwen3-235b unsloth/Qwen3-235B-A22B-Instruct-2507-GGUF UD-Q4_K_XL/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00003-of-00003.gguf &
+wait
 GG="/root/models/qwen3-235b/Qwen3-235B-A22B-Instruct-2507-UD-Q4_K_XL-00001-of-00003.gguf"
 if [ -f "$GG" ]; then
-  log "===== qwen3-235b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" "--cpu-moe"; then
     mkdir -p /root/agentws; run_step "qwen3-235b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "qwen3-235b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -282,14 +369,18 @@ if [ -f "$GG" ]; then
   echo "qwen3-235b" >> /root/models_done
   log "qwen3-235b complete"
 else
-  log "qwen3-235b SKIP (missing $GG)"; echo "qwen3-235b missing-gguf" >> /root/failures
+  log "qwen3-235b SKIP (fetch failed, no $GG)"; echo "qwen3-235b missing-gguf" >> /root/failures
 fi
+stop_server
+release "qwen3-235b"
 
 
-# ---------- gpt-oss-120b : B8,B9,B11 ----------
+# ---------- gpt-oss-120b : B8,B9,B11 (65.4 GB) ----------
+log "===== gpt-oss-120b : fetching 65.4 GB ====="
+gate; get gpt-oss-120b unsloth/gpt-oss-120b-GGUF gpt-oss-120b-F16.gguf &
+wait
 GG="/root/models/gpt-oss-120b/gpt-oss-120b-F16.gguf"
 if [ -f "$GG" ]; then
-  log "===== gpt-oss-120b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "gpt-oss-120b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "gpt-oss-120b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -306,14 +397,18 @@ if [ -f "$GG" ]; then
   echo "gpt-oss-120b" >> /root/models_done
   log "gpt-oss-120b complete"
 else
-  log "gpt-oss-120b SKIP (missing $GG)"; echo "gpt-oss-120b missing-gguf" >> /root/failures
+  log "gpt-oss-120b SKIP (fetch failed, no $GG)"; echo "gpt-oss-120b missing-gguf" >> /root/failures
 fi
+stop_server
+release "gpt-oss-120b"
 
 
-# ---------- bonsai-ternary-27b : B10,B11 ----------
+# ---------- bonsai-ternary-27b : B10,B11 (7.2 GB) ----------
+log "===== bonsai-ternary-27b : fetching 7.2 GB ====="
+gate; get bonsai-ternary-27b prism-ml/Ternary-Bonsai-27B-gguf Ternary-Bonsai-27B-Q2_0.gguf &
+wait
 GG="/root/models/bonsai-ternary-27b/Ternary-Bonsai-27B-Q2_0.gguf"
 if [ -f "$GG" ]; then
-  log "===== bonsai-ternary-27b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "bonsai-ternary-27b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "bonsai-ternary-27b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -329,14 +424,18 @@ if [ -f "$GG" ]; then
   echo "bonsai-ternary-27b" >> /root/models_done
   log "bonsai-ternary-27b complete"
 else
-  log "bonsai-ternary-27b SKIP (missing $GG)"; echo "bonsai-ternary-27b missing-gguf" >> /root/failures
+  log "bonsai-ternary-27b SKIP (fetch failed, no $GG)"; echo "bonsai-ternary-27b missing-gguf" >> /root/failures
 fi
+stop_server
+release "bonsai-ternary-27b"
 
 
-# ---------- ornith-1.0-9b : B10,B11 ----------
+# ---------- ornith-1.0-9b : B10,B11 (9.5 GB) ----------
+log "===== ornith-1.0-9b : fetching 9.5 GB ====="
+gate; get ornith-1.0-9b jashepp/Ornith-1.0-9B-MXFP4_Hybrid-Imatrix-GGUF Ornith-1.0-9B-MXFP4_Q8_0-Imatrix.gguf &
+wait
 GG="/root/models/ornith-1.0-9b/Ornith-1.0-9B-MXFP4_Q8_0-Imatrix.gguf"
 if [ -f "$GG" ]; then
-  log "===== ornith-1.0-9b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "ornith-1.0-9b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "ornith-1.0-9b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -352,14 +451,18 @@ if [ -f "$GG" ]; then
   echo "ornith-1.0-9b" >> /root/models_done
   log "ornith-1.0-9b complete"
 else
-  log "ornith-1.0-9b SKIP (missing $GG)"; echo "ornith-1.0-9b missing-gguf" >> /root/failures
+  log "ornith-1.0-9b SKIP (fetch failed, no $GG)"; echo "ornith-1.0-9b missing-gguf" >> /root/failures
 fi
+stop_server
+release "ornith-1.0-9b"
 
 
-# ---------- gpt-oss-20b : B10,B11 ----------
+# ---------- gpt-oss-20b : B10,B11 (13.8 GB) ----------
+log "===== gpt-oss-20b : fetching 13.8 GB ====="
+gate; get gpt-oss-20b unsloth/gpt-oss-20b-GGUF gpt-oss-20b-F16.gguf &
+wait
 GG="/root/models/gpt-oss-20b/gpt-oss-20b-F16.gguf"
 if [ -f "$GG" ]; then
-  log "===== gpt-oss-20b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "gpt-oss-20b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "gpt-oss-20b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -375,14 +478,18 @@ if [ -f "$GG" ]; then
   echo "gpt-oss-20b" >> /root/models_done
   log "gpt-oss-20b complete"
 else
-  log "gpt-oss-20b SKIP (missing $GG)"; echo "gpt-oss-20b missing-gguf" >> /root/failures
+  log "gpt-oss-20b SKIP (fetch failed, no $GG)"; echo "gpt-oss-20b missing-gguf" >> /root/failures
 fi
+stop_server
+release "gpt-oss-20b"
 
 
-# ---------- gemma-4-26b-a4b : B10,B11 ----------
+# ---------- gemma-4-26b-a4b : B10,B11 (14.2 GB) ----------
+log "===== gemma-4-26b-a4b : fetching 14.2 GB ====="
+gate; get gemma-4-26b-a4b unsloth/gemma-4-26B-A4B-it-qat-GGUF gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf &
+wait
 GG="/root/models/gemma-4-26b-a4b/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf"
 if [ -f "$GG" ]; then
-  log "===== gemma-4-26b-a4b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "gemma-4-26b-a4b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "gemma-4-26b-a4b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -398,14 +505,18 @@ if [ -f "$GG" ]; then
   echo "gemma-4-26b-a4b" >> /root/models_done
   log "gemma-4-26b-a4b complete"
 else
-  log "gemma-4-26b-a4b SKIP (missing $GG)"; echo "gemma-4-26b-a4b missing-gguf" >> /root/failures
+  log "gemma-4-26b-a4b SKIP (fetch failed, no $GG)"; echo "gemma-4-26b-a4b missing-gguf" >> /root/failures
 fi
+stop_server
+release "gemma-4-26b-a4b"
 
 
-# ---------- granite-4.1-30b : B10,B11 ----------
+# ---------- granite-4.1-30b : B10,B11 (17.7 GB) ----------
+log "===== granite-4.1-30b : fetching 17.7 GB ====="
+gate; get granite-4.1-30b unsloth/granite-4.1-30b-GGUF granite-4.1-30b-UD-Q4_K_XL.gguf &
+wait
 GG="/root/models/granite-4.1-30b/granite-4.1-30b-UD-Q4_K_XL.gguf"
 if [ -f "$GG" ]; then
-  log "===== granite-4.1-30b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "granite-4.1-30b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "granite-4.1-30b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -421,14 +532,18 @@ if [ -f "$GG" ]; then
   echo "granite-4.1-30b" >> /root/models_done
   log "granite-4.1-30b complete"
 else
-  log "granite-4.1-30b SKIP (missing $GG)"; echo "granite-4.1-30b missing-gguf" >> /root/failures
+  log "granite-4.1-30b SKIP (fetch failed, no $GG)"; echo "granite-4.1-30b missing-gguf" >> /root/failures
 fi
+stop_server
+release "granite-4.1-30b"
 
 
-# ---------- qwen3-coder-30b : B10,B11 ----------
+# ---------- qwen3-coder-30b : B10,B11 (17.7 GB) ----------
+log "===== qwen3-coder-30b : fetching 17.7 GB ====="
+gate; get qwen3-coder-30b unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf &
+wait
 GG="/root/models/qwen3-coder-30b/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
 if [ -f "$GG" ]; then
-  log "===== qwen3-coder-30b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "qwen3-coder-30b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "qwen3-coder-30b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -444,14 +559,18 @@ if [ -f "$GG" ]; then
   echo "qwen3-coder-30b" >> /root/models_done
   log "qwen3-coder-30b complete"
 else
-  log "qwen3-coder-30b SKIP (missing $GG)"; echo "qwen3-coder-30b missing-gguf" >> /root/failures
+  log "qwen3-coder-30b SKIP (fetch failed, no $GG)"; echo "qwen3-coder-30b missing-gguf" >> /root/failures
 fi
+stop_server
+release "qwen3-coder-30b"
 
 
-# ---------- qwen3.6-35b-a3b : B10,B11 ----------
+# ---------- qwen3.6-35b-a3b : B10,B11 (19.7 GB) ----------
+log "===== qwen3.6-35b-a3b : fetching 19.7 GB ====="
+gate; get qwen3.6-35b-a3b bartowski/Qwen_Qwen3.6-35B-A3B-GGUF Qwen_Qwen3.6-35B-A3B-IQ4_XS.gguf &
+wait
 GG="/root/models/qwen3.6-35b-a3b/Qwen_Qwen3.6-35B-A3B-IQ4_XS.gguf"
 if [ -f "$GG" ]; then
-  log "===== qwen3.6-35b-a3b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "qwen3.6-35b-a3b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "qwen3.6-35b-a3b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -467,14 +586,18 @@ if [ -f "$GG" ]; then
   echo "qwen3.6-35b-a3b" >> /root/models_done
   log "qwen3.6-35b-a3b complete"
 else
-  log "qwen3.6-35b-a3b SKIP (missing $GG)"; echo "qwen3.6-35b-a3b missing-gguf" >> /root/failures
+  log "qwen3.6-35b-a3b SKIP (fetch failed, no $GG)"; echo "qwen3.6-35b-a3b missing-gguf" >> /root/failures
 fi
+stop_server
+release "qwen3.6-35b-a3b"
 
 
-# ---------- agents-a1-35b : B10,B11 ----------
+# ---------- agents-a1-35b : B10,B11 (19.8 GB) ----------
+log "===== agents-a1-35b : fetching 19.8 GB ====="
+gate; get agents-a1-35b jashepp/Agents-A1-35B-A3B-MXFP4_MOE_Hybrid-Imatrix-GGUF Agents-A1-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf &
+wait
 GG="/root/models/agents-a1-35b/Agents-A1-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf"
 if [ -f "$GG" ]; then
-  log "===== agents-a1-35b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "agents-a1-35b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "agents-a1-35b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -490,14 +613,18 @@ if [ -f "$GG" ]; then
   echo "agents-a1-35b" >> /root/models_done
   log "agents-a1-35b complete"
 else
-  log "agents-a1-35b SKIP (missing $GG)"; echo "agents-a1-35b missing-gguf" >> /root/failures
+  log "agents-a1-35b SKIP (fetch failed, no $GG)"; echo "agents-a1-35b missing-gguf" >> /root/failures
 fi
+stop_server
+release "agents-a1-35b"
 
 
-# ---------- ornith-1.0-35b : B10,B11 ----------
+# ---------- ornith-1.0-35b : B10,B11 (19.8 GB) ----------
+log "===== ornith-1.0-35b : fetching 19.8 GB ====="
+gate; get ornith-1.0-35b jashepp/Ornith-1.0-35B-A3B-MXFP4_MOE_Hybrid-Imatrix-GGUF Ornith-1.0-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf &
+wait
 GG="/root/models/ornith-1.0-35b/Ornith-1.0-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf"
 if [ -f "$GG" ]; then
-  log "===== ornith-1.0-35b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "ornith-1.0-35b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "ornith-1.0-35b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -513,14 +640,18 @@ if [ -f "$GG" ]; then
   echo "ornith-1.0-35b" >> /root/models_done
   log "ornith-1.0-35b complete"
 else
-  log "ornith-1.0-35b SKIP (missing $GG)"; echo "ornith-1.0-35b missing-gguf" >> /root/failures
+  log "ornith-1.0-35b SKIP (fetch failed, no $GG)"; echo "ornith-1.0-35b missing-gguf" >> /root/failures
 fi
+stop_server
+release "ornith-1.0-35b"
 
 
-# ---------- nemotron-3-nano-30b : B10,B11 ----------
+# ---------- nemotron-3-nano-30b : B10,B11 (22.8 GB) ----------
+log "===== nemotron-3-nano-30b : fetching 22.8 GB ====="
+gate; get nemotron-3-nano-30b unsloth/Nemotron-3-Nano-30B-A3B-GGUF Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf &
+wait
 GG="/root/models/nemotron-3-nano-30b/Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf"
 if [ -f "$GG" ]; then
-  log "===== nemotron-3-nano-30b ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "nemotron-3-nano-30b" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "nemotron-3-nano-30b" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -536,14 +667,18 @@ if [ -f "$GG" ]; then
   echo "nemotron-3-nano-30b" >> /root/models_done
   log "nemotron-3-nano-30b complete"
 else
-  log "nemotron-3-nano-30b SKIP (missing $GG)"; echo "nemotron-3-nano-30b missing-gguf" >> /root/failures
+  log "nemotron-3-nano-30b SKIP (fetch failed, no $GG)"; echo "nemotron-3-nano-30b missing-gguf" >> /root/failures
 fi
+stop_server
+release "nemotron-3-nano-30b"
 
 
-# ---------- gemma-4-31b-dense : B11 ----------
+# ---------- gemma-4-31b-dense : B11 (17.3 GB) ----------
+log "===== gemma-4-31b-dense : fetching 17.3 GB ====="
+gate; get gemma-4-31b-dense unsloth/gemma-4-31B-it-qat-GGUF gemma-4-31B-it-qat-UD-Q4_K_XL.gguf &
+wait
 GG="/root/models/gemma-4-31b-dense/gemma-4-31B-it-qat-UD-Q4_K_XL.gguf"
 if [ -f "$GG" ]; then
-  log "===== gemma-4-31b-dense ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "gemma-4-31b-dense" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "gemma-4-31b-dense" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -558,14 +693,18 @@ if [ -f "$GG" ]; then
   echo "gemma-4-31b-dense" >> /root/models_done
   log "gemma-4-31b-dense complete"
 else
-  log "gemma-4-31b-dense SKIP (missing $GG)"; echo "gemma-4-31b-dense missing-gguf" >> /root/failures
+  log "gemma-4-31b-dense SKIP (fetch failed, no $GG)"; echo "gemma-4-31b-dense missing-gguf" >> /root/failures
 fi
+stop_server
+release "gemma-4-31b-dense"
 
 
-# ---------- qwen3.6-27b-dense : B11 ----------
+# ---------- qwen3.6-27b-dense : B11 (19.5 GB) ----------
+log "===== qwen3.6-27b-dense : fetching 19.5 GB ====="
+gate; get qwen3.6-27b-dense unsloth/Qwen3.6-27B-GGUF Qwen3.6-27B-Q5_K_M.gguf &
+wait
 GG="/root/models/qwen3.6-27b-dense/Qwen3.6-27B-Q5_K_M.gguf"
 if [ -f "$GG" ]; then
-  log "===== qwen3.6-27b-dense ====="
   # Phase A - batteries that share one endpoint.
   if serve "$GG" ""; then
     mkdir -p /root/agentws; run_step "qwen3.6-27b-dense" B11 python3 scripts/run_tools_agent.py --endpoint-url http://127.0.0.1:8080 --model "qwen3.6-27b-dense" --reps 3 --workspace /root/agentws --out $OUT/tools
@@ -580,8 +719,10 @@ if [ -f "$GG" ]; then
   echo "qwen3.6-27b-dense" >> /root/models_done
   log "qwen3.6-27b-dense complete"
 else
-  log "qwen3.6-27b-dense SKIP (missing $GG)"; echo "qwen3.6-27b-dense missing-gguf" >> /root/failures
+  log "qwen3.6-27b-dense SKIP (fetch failed, no $GG)"; echo "qwen3.6-27b-dense missing-gguf" >> /root/failures
 fi
+stop_server
+release "qwen3.6-27b-dense"
 
 
 stop_server

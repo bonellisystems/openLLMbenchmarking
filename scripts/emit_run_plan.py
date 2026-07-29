@@ -142,7 +142,16 @@ find $M -name '*.gguf' -size -100M -printf '%%p %%s\\n' 2>/dev/null || true
 """
 
 RUNNER = """#!/bin/bash
-# Close every gap, one model at a time so each GGUF is loaded once.
+# Close every gap, one model at a time: FETCH -> RUN ITS BATTERIES -> DELETE.
+#
+# Why interleaved rather than "download all 638.7GB, then run":
+#  * PEAK DISK becomes the largest single model (~134GB) instead of the whole corpus, so
+#    the disk floor drops 780GB -> 300GB. At 780GB, 15 of the available RTX PRO 6000
+#    offers were disqualified on disk alone and some hours none qualified at all.
+#  * IT COSTS NOTHING. The two phases were already sequential - download.sh ran to
+#    completion before run_all.sh started - so there was never any overlap to lose.
+#  * ROWS START ARRIVING IN MINUTES instead of after a ~2.2h download, and a box that
+#    dies early has produced COMPLETE models rather than a full disk and no results.
 set -u
 cd /root/llmtest-v2
 export LD_LIBRARY_PATH=/app
@@ -164,6 +173,29 @@ SPEC=""
 [ "$NGRAM" = "1" ] && SPEC="--spec-type ngram-mod --spec-ngram-mod-n-match 32"
 
 stop_server(){ pkill -f "llama-server" 2>/dev/null; sleep 5; }
+
+M=/root/models
+mkdir -p $M
+# Files within a model are fetched CONCURRENTLY (HF throttles a single transfer:
+# measured -x16 collapsing to one connection at ~21MB/s), but capped - firing everything
+# at once opens hundreds of connections and gets rate-limited.
+JOBS=4
+gate(){ while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 3; done; }
+get(){ # dir repo path
+  mkdir -p "$M/$1"
+  aria2c -x8 -s8 -k1M --continue=true --file-allocation=none --console-log-level=warn \\
+    --retry-wait=5 --max-tries=5 --auto-file-renaming=false \\
+    -d "$M/$1" -o "$(basename "$3")" \\
+    "https://huggingface.co/$2/resolve/main/$3" >> "/root/dl_$1.log" 2>&1 \\
+    || echo "FAIL $1 $3" >> /root/dl_fail
+}
+# Free the weights once a model's batteries are done. Without this the interleaving
+# buys nothing: the disk fills exactly as it did before, just more slowly.
+release(){
+  du -sh "$M/$1" 2>/dev/null | tee -a /root/run.log
+  rm -rf "$M/$1"
+  log "  released $1 ; free: $(df -h /root | awk 'NR==2{print $4}')"
+}
 
 serve(){ # $1 gguf  $2 extra flags -- the SHARED endpoint for B1/B2/B3/B6/B8-B11
   stop_server
@@ -206,6 +238,29 @@ run_serving(){ # $1 model  $2 battery-number
     --gpu0 "$1" --gpu1 ""
 }
 
+# --- throughput probe: FAIL FAST --------------------------------------------------
+# A host's advertised inet_down is its link speed, NOT the rate Hugging Face serves it.
+# Cheap hosts have measured ~4MB/s while advertising gigabits; at that rate this corpus
+# alone is ~44 hours and the budget is gone before a single row exists. Die here instead.
+MIN_MBPS=25
+rm -f /tmp/probe.bin
+timeout 60 aria2c -x8 -s8 -k1M --file-allocation=none --console-log-level=error \\
+  -d /tmp -o probe.bin \\
+  "https://huggingface.co/%(probe_repo)s/resolve/main/%(probe_file)s" >/dev/null 2>&1
+PSZ=$(stat -c %%s /tmp/probe.bin 2>/dev/null || echo 0)
+rm -f /tmp/probe.bin
+RATE=$(( PSZ / 60 / 1000000 ))
+log "HF throughput probe: ~${RATE} MB/s (floor ${MIN_MBPS} MB/s)"
+if [ "$RATE" -lt "$MIN_MBPS" ]; then
+  log "ABORT: Hugging Face serves this host too slowly - the download would cost more"
+  log "than the compute. Destroy this box and rent another."
+  echo "DL_ABORT rate=${RATE}" > /root/dl_abort
+  exit 1
+fi
+# The watcher keys its stage off this marker; with interleaved fetching there is no
+# separate download phase, so declare it once the probe has passed.
+echo PROBE_OK > /root/dl_done
+
 %(models)s
 
 stop_server
@@ -216,10 +271,12 @@ $(grep -c ' fail' /root/steps 2>/dev/null || echo 0) failed"
 """
 
 MODEL_BLOCK = """
-# ---------- %(id)s : %(bats)s ----------
+# ---------- %(id)s : %(bats)s (%(gb).1f GB) ----------
+log "===== %(id)s : fetching %(gb).1f GB ====="
+%(gets)s
+wait
 GG="%(gguf)s"
 if [ -f "$GG" ]; then
-  log "===== %(id)s ====="
   # Phase A - batteries that share one endpoint.
 %(phase_a)s
   # Phase B - batteries that launch their own servers per arm. The shared endpoint MUST
@@ -230,8 +287,10 @@ if [ -f "$GG" ]; then
   echo "%(id)s" >> /root/models_done
   log "%(id)s complete"
 else
-  log "%(id)s SKIP (missing $GG)"; echo "%(id)s missing-gguf" >> /root/failures
+  log "%(id)s SKIP (fetch failed, no $GG)"; echo "%(id)s missing-gguf" >> /root/failures
 fi
+stop_server
+release "%(id)s"
 """
 
 PHASE_A = """  if serve "$GG" "%(flags)s"; then
@@ -322,33 +381,36 @@ def main():
     outdir = ROOT / args.out
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # --- download script ---
-    gets = []
-    for m in man["models"]:
-        for f in m["files"]:
-            gets.append(f'gate; get {m["id"]} {m["repo"]} {f["path"]} &')
-    # Probe against a real file from the run itself, so the measurement is of exactly
-    # the transfer this box is about to do 26 times.
-    probe_m = min((m for m in man["models"] if m["files"]), key=lambda x: x["gb"])
-    write_sh(outdir / "download.sh",
-             DOWNLOAD % {"gets": "\n".join(gets), "nfiles": len(gets),
-                         "nconn": len(gets) * 16,
-                         "probe_repo": probe_m["repo"],
-                         "probe_file": probe_m["files"][0]["path"]})
-
     # --- runner: heaviest-gap models first so partial funding still buys the most ---
     blocks = []
+    nfiles = 0
     for m in sorted(man["models"], key=lambda x: (-len(x["batteries"]), x["gb"])):
         first = m["files"][0]["path"] if m["files"] else ""
         gguf = f'/root/models/{m["id"]}/{Path(first).name}'
         flags = "--cpu-moe" if m.get("fits_card") is False else ""
         pa, pb = steps_for(m["id"], m["batteries"])
+        gets = "\n".join(f'gate; get {m["id"]} {m["repo"]} {f["path"]} &'
+                         for f in m["files"])
+        nfiles += len(m["files"])
         blocks.append(MODEL_BLOCK % {"id": m["id"], "bats": ",".join(m["batteries"]),
-                                     "gguf": gguf,
+                                     "gguf": gguf, "gb": m["gb"], "gets": gets,
                                      "phase_a": phase_a_block(m["id"], flags, pa),
                                      "phase_b": pb})
+
+    # Probe against the smallest real file in the run, so the measurement is of exactly
+    # the transfer this box is about to repeat.
+    probe_m = min((m for m in man["models"] if m["files"]), key=lambda x: x["gb"])
     write_sh(outdir / "run_all.sh", RUNNER % {"models": "\n".join(blocks),
-                                              "shared_ctx": SHARED_CTX})
+                                              "shared_ctx": SHARED_CTX,
+                                              "probe_repo": probe_m["repo"],
+                                              "probe_file": probe_m["files"][0]["path"]})
+    # download.sh is retained only so an operator can pre-stage weights by hand; the
+    # run itself no longer uses it.
+    write_sh(outdir / "download.sh",
+             "#!/bin/bash\n"
+             "# NOT USED BY THE RUN. run_all.sh fetches each model just before it runs\n"
+             "# and deletes it after, which is what keeps peak disk at one model.\n"
+             "echo 'see plan/run_all.sh - fetching is interleaved per model'\n")
 
     # --- one-time box setup (B8 host mode needs node + opencode) ---
     write_sh(outdir / "setup.sh", """#!/bin/bash
@@ -427,8 +489,12 @@ echo SETUP_DONE > /root/setup_done
     for f in ("download.sh", "run_all.sh", "setup.sh"):
         (outdir / f).chmod(0o755)
 
-    print(f"wrote {outdir/'download.sh'}  ({len(gets)} files, {man['totals']['download_gb']} GB)")
-    print(f"wrote {outdir/'run_all.sh'}   ({len(blocks)} models, {man['totals']['missing_cells']} cells)")
+    biggest = max(m["gb"] for m in man["models"])
+    print(f"wrote {outdir/'download.sh'}  (placeholder - fetching is interleaved)")
+    print(f"wrote {outdir/'run_all.sh'}   ({len(blocks)} models, {nfiles} files, "
+          f"{man['totals']['missing_cells']} cells)")
+    print(f"  total fetched      : {man['totals']['download_gb']} GB")
+    print(f"  PEAK DISK          : ~{biggest:.0f} GB (largest single model, not the corpus)")
     print(f"wrote {outdir/'setup.sh'}")
     print("\nmodel order (heaviest gaps first):")
     for m in sorted(man["models"], key=lambda x: (-len(x["batteries"]), x["gb"]))[:8]:

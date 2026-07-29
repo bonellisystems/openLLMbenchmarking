@@ -35,7 +35,11 @@ PUBKEY = Path("C:/Users/Michael/.ssh/vast_laguna.pub")
 PRIVKEY = "C:/Users/Michael/.ssh/vast_laguna"
 
 REQUIRED_GPU = "RTX PRO 6000"
-MIN_DISK_GB = 780          # 639GB of weights + results + the container image
+# run_all.sh fetches each model immediately before running it and deletes it after, so
+# peak disk is the LARGEST SINGLE MODEL (qwen3-235b, 134GB) plus the container image and
+# results - not the 639GB corpus. The old 780GB floor disqualified 15 of the available
+# RTX PRO 6000 offers on disk alone, and at times left none at all.
+MIN_DISK_GB = 300
 # qwen3-235b is 134GB and does not fit the 96GB card, so --cpu-moe parks its expert
 # tensors in system RAM: ~120GB resident plus OS and page-cache headroom. 160GB clears
 # that. A 200GB floor disqualified 50 of the 54 available RTX PRO 6000 boxes (the
@@ -257,10 +261,10 @@ def main():
         return 1
     print("  scripts shipped, LF endings confirmed")
 
-    print("launching setup -> download -> run_all in tmux ...")
+    # tmux, not `nohup ... &` - a backgrounded job over ssh dies with the session.
+    print("launching setup -> run_all in tmux ...")
     sshx(host, port,
          "tmux new-session -d -s work 'bash /root/setup.sh > /root/setup_out.log 2>&1; "
-         "bash /root/download.sh > /root/dl_out.log 2>&1; "
          "bash /root/run_all.sh > /root/run_out.log 2>&1'")
     print(f"\nlaunched on {cid} ({host}:{port})")
     print("now run: python scripts/watch_run.py")

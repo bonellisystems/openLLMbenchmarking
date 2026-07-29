@@ -122,16 +122,21 @@ def main():
         pull(host, port)
         rows = rows_local()
         # PROGRESS MUST BE MEASURED IN EVERY STAGE. Watching only `rows` meant a hung or
-        # crawling download never tripped the stall detector: during that phase no rows
-        # exist yet, so the box would run to the credit floor - ~30 hours - without an
-        # alarm. Bytes on disk are the download's progress metric; rows are the run's.
-        if stage == "downloading":
-            got = sshx(host, port, "du -sb /root/models 2>/dev/null | cut -f1 || echo 0").stdout.strip()
-            progress = int(got) if got.isdigit() else 0
-            pmsg = f"dl={progress/1e9:.1f}GB"
-        else:
-            progress = rows
-            pmsg = f"rows={rows}"
+        # crawling fetch never tripped the stall detector - no rows exist yet during one,
+        # so the box would run to the credit floor (~30h) without an alarm. Fetching is
+        # now interleaved per model, so BOTH signals are live throughout: bytes moving on
+        # disk OR rows arriving each count as progress, and only both being frozen is a
+        # stall. cumulative_dl is monotonic across models even though `release` deletes
+        # each model's weights after it runs.
+        got = sshx(host, port,
+                   "cat /root/dl_*.log 2>/dev/null | grep -c 'download completed' || echo 0"
+                   ).stdout.strip().splitlines()
+        files_done = int(got[0]) if got and got[0].strip().isdigit() else 0
+        cur = sshx(host, port,
+                   "du -sb /root/models 2>/dev/null | cut -f1 || echo 0").stdout.strip()
+        cur_gb = (int(cur) / 1e9) if cur.isdigit() else 0.0
+        progress = rows * 1000 + files_done          # either advancing breaks a stall
+        pmsg = f"rows={rows} files_fetched={files_done} on_disk={cur_gb:.0f}GB"
 
         try:
             bal = round(v.show_user().get("credit", 0), 2)
@@ -147,7 +152,7 @@ def main():
         if stage == "done":
             reason = "DONE"
             break
-        if progress == last and stage in ("downloading", "running"):
+        if progress == last and stage == "running":
             stalls += 1
             if stalls >= args.stall_polls:
                 reason = f"STALLED in {stage} at {pmsg}"
