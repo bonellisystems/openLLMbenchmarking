@@ -81,9 +81,16 @@ def run_validate(root: Path | str = ".") -> int:
         errors += [f"row {row.get('row_id', '?')[:12]}: {e}"
                    for e in schema.validate_row(row)]
     scan_dirs = [root / "docs", root / "suite", root / "grading"]
+    # The mojibake lint (amendment 29) guards AUTHORED fixtures against homoglyph and
+    # smart-quote contamination. B9's planted/known-good game files are CAPTURED MODEL
+    # OUTPUT kept byte-for-byte - a snake game legitimately contains U+1F40D, and
+    # "fixing" it would corrupt the artefact the oracle is scored against.
+    captured = {root / "suite" / "b9_games" / "planted",
+                root / "suite" / "b9_games" / "fixtures"}
     scan = [root / "TESTPLAN.md"] + [p for d in scan_dirs if d.exists()
                                      for p in d.rglob("*") if p.is_file()
-                                     and p.suffix in {".md", ".yaml", ".txt", ".html"}]
+                                     and p.suffix in {".md", ".yaml", ".txt", ".html"}
+                                     and not any(c in p.parents for c in captured)]
     for p in scan:
         try:
             text = p.read_text(encoding="utf-8")

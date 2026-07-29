@@ -113,7 +113,8 @@ def score_chain(text, defects):
     low = (text or "").lower()
     found = []
     for d in defects:
-        hit = any(k.lower() in low for k in d.get("keywords", []))
+        kws = [k for k in (d.get("keywords") or []) if isinstance(k, str)]
+        hit = any(k.lower() in low for k in kws)
         found.append({"name": d["name"], "found": hit})
     n = sum(1 for f in found if f["found"])
     return {"defects": found, "found_n": n, "total": len(defects),
