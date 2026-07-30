@@ -19,7 +19,9 @@ import base64
 import json
 import re
 import sys
+import socket
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +34,16 @@ from llmtest.harness.game_oracle import det_checks_for, run_game_checks  # noqa:
 import yaml  # noqa: E402
 
 
-def chat(url: str, prompt: str, *, max_tokens: int, temperature: float, timeout=1800,
+class Unreachable(Exception):
+    """The endpoint did not answer in time, or at all.
+
+    Kept distinct from "the model answered but emitted no HTML" because the two need
+    OPPOSITE handling: the attempt ladder should retry the second and must NOT retry the
+    first. A hung server retried three times costs three timeouts instead of one.
+    """
+
+
+def chat(url: str, prompt: str, *, max_tokens: int, temperature: float, timeout=600,
          extra: dict | None = None) -> dict:
     body = {"messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temperature, "stream": False}
@@ -41,8 +52,14 @@ def chat(url: str, prompt: str, *, max_tokens: int, temperature: float, timeout=
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions",
                                  data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode())
+    except (TimeoutError, socket.timeout) as e:
+        raise Unreachable(f"no response in {timeout}s") from e
+    except urllib.error.URLError as e:
+        # URLError wraps a socket timeout as well as a refused connection.
+        raise Unreachable(f"{type(e.reason).__name__}: {e.reason}") from e
 
 
 def extract_html(text: str) -> str:
@@ -72,6 +89,11 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--max-tokens", type=int, default=16000)
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--req-timeout", type=int, default=600,
+                    help="seconds to wait for one generation. Was 1800 and unbounded by "
+                         "any per-model budget: 24 games x 3 ladder rungs meant a stalled "
+                         "server could hold a rented box for many hours. 600s is generous "
+                         "for a single HTML file even on a slow dense model.")
     ap.add_argument("--chrome", default=r"C:\Program Files\Google\Chrome\Application\chrome.exe")
     ap.add_argument("--force", action="store_true", help="redo builds already on disk")
     args = ap.parse_args()
@@ -120,10 +142,21 @@ def main():
             for rung_name, mt, extra in attempts:
                 try:
                     resp = chat(args.endpoint_url, prompt, max_tokens=mt,
-                                temperature=args.temperature, extra=extra)
+                                temperature=args.temperature, extra=extra,
+                                timeout=args.req_timeout)
                     text = (resp.get("choices") or [{}])[0].get("message", {}).get("content") or ""
                     usage = resp.get("usage") or {}
                     err = None
+                except Unreachable as e:
+                    # DO NOT CLIMB THE LADDER ON A HANG. The ladder answers "the model
+                    # spent its budget thinking and returned nothing"; it cannot fix a
+                    # server that stopped responding, and retrying multiplies the wait.
+                    # A 1800s timeout retried three times is 90 minutes for ONE game -
+                    # measured: it silently burned 85 minutes of a rented box on
+                    # llama-4-scout before the watcher noticed nothing was moving.
+                    text, usage, err = "", {}, f"Unreachable: {e}"
+                    rung = rung_name
+                    break
                 except Exception as e:                   # noqa: BLE001
                     text, usage, err = "", {}, f"{type(e).__name__}: {e}"
                 rung = rung_name
