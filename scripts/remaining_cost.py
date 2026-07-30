@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import yaml  # noqa: E402
 
+from build_run_manifest import EXCLUDED  # noqa: E402
 from emit_run_plan import ROWS, est_seconds  # noqa: E402
 
 # Cells that no amount of GPU time closes, with the reason. Quoting a GPU cost for these
@@ -68,8 +69,19 @@ def main() -> int:
     rows.sort(key=lambda r: r[5])
     print(f"\n{'model':<22} {'missing':<26} {'GB':>6} {'est h':>6} {'est $':>7}  note")
     tot_h = 0.0
+    excl_h = 0.0
+    excl_cells = 0
     for mid, missing, gpu_cells, blocked, gb, secs in rows:
         h = secs / 3600
+        # An excluded model's cells are still GAPS - they are just not being funded.
+        # They are shown, and priced, but kept out of the total so the "cost to finish"
+        # figure matches what would actually be run.
+        if mid in EXCLUDED:
+            excl_h += h
+            excl_cells += len(gpu_cells)
+            print(f"{mid:<22} {','.join(missing):<26} {gb:6.1f} {h:6.1f} "
+                  f"{h * args.rate:7.2f}  EXCLUDED (still a gap)")
+            continue
         tot_h += h
         note = ""
         if mid in NEEDS_OTHER_BINARY:
@@ -79,9 +91,14 @@ def main() -> int:
         print(f"{mid:<22} {','.join(missing):<26} {gb:6.1f} {h:6.1f} "
               f"{h * args.rate:7.2f}  {note}")
 
-    n_gpu = sum(len(r[2]) for r in rows)
+    n_gpu = sum(len(r[2]) for r in rows if r[0] not in EXCLUDED)
     n_blocked = sum(len(r[3]) for r in rows)
-    print(f"\nGPU-closable cells : {n_gpu}  ->  ~{tot_h:.1f} h  ~${tot_h * args.rate:.2f}")
+    print(f"\nTO FUND            : {n_gpu} cells  ->  ~{tot_h:.1f} h  ~${tot_h * args.rate:.2f}")
+    if excl_cells:
+        print(f"excluded (gaps)    : {excl_cells} cells  ~{excl_h:.1f} h  "
+              f"~${excl_h * args.rate:.2f}")
+        for m, why in EXCLUDED.items():
+            print(f"    {m}: {why}")
     print(f"not GPU-bound      : {n_blocked}")
     for b, why in NON_GPU.items():
         print(f"    {b}: {why}")

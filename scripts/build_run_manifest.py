@@ -44,6 +44,19 @@ NEEDS_EXTRA = {
 # on. See its registry notes for the standing caveat.
 REQUANT_RERUN: dict[str, list[str]] = {}
 
+# Models deliberately held out of runs, with the reason. NOT deletions - the cells stay
+# in the coverage matrix as genuine gaps and the entry is one line to remove when the
+# model is wanted again. A silent drop would let a model disappear from the plan while
+# the matrix still showed it as merely "not yet run", which is the same class of quiet
+# untruth as a battery that reports rows it never produced.
+EXCLUDED = {
+    "qwen3-235b": "Held out by Michael (2026-07-30) pending a dedicated large-model "
+                  "pass. At 134GB it does not fit the 96GB card, so --cpu-moe streams "
+                  "its experts over PCIe and every row costs ~8x: its 4 remaining cells "
+                  "were $13.54 of a $29 remainder, i.e. 46% of the budget for 14% of "
+                  "the cells. Remove this entry to re-include it.",
+}
+
 
 def hf_files(repo: str, want_hint: str = "") -> list[dict]:
     """Every .gguf in the repo, with sizes. Looks in the root and one level down,
@@ -116,8 +129,12 @@ def main():
     matrix = data["matrix"]
 
     models = []
+    excluded_cells = 0
     for mid in data["models"]:
         missing = [p for p in phases if not matrix.get(mid, {}).get(p, {}).get("tested")]
+        if mid in EXCLUDED:
+            excluded_cells += len(missing)
+            continue
         for p in REQUANT_RERUN.get(mid, []):
             if p not in missing and p in phases:
                 missing.append(p)
@@ -163,6 +180,8 @@ def main():
             "size_mismatch_vs_registry": mismatch,
             "needs_offload": oversize,
         },
+        "excluded": {m: why for m, why in EXCLUDED.items()},
+        "excluded_cells": excluded_cells,
     }
     p = ROOT / args.out
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +193,10 @@ def main():
     print(f"unresolved files    : {unresolved or 'none'}")
     print(f"size mismatch       : {mismatch or 'none'}")
     print(f"needs offload       : {oversize or 'none'}")
+    for m, why in EXCLUDED.items():
+        print(f"EXCLUDED            : {m} -- {why.split('.')[0]}.")
+    if excluded_cells:
+        print(f"  ({excluded_cells} cells held out; they REMAIN gaps in the matrix)")
     print(f"-> {p}")
     return 1 if unresolved else 0
 
