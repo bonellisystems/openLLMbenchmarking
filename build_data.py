@@ -179,6 +179,19 @@ GAMES_PLANNED = [
 # Known gaps - what the numbers on this page do NOT cover.
 # ---------------------------------------------------------------------------
 GAPS = [
+    {"sev": "high", "title": "B4 has only ever run 7 of its 8 tasks - the classic single-needle probe is missing",
+     "detail": "b4.single-needle-01 has ZERO rows for all 16 roster models; the other seven B4 "
+               "tasks have 49 each. build_document() sizes the filler with a 4-chars-per-token "
+               "heuristic, and that task's filler is dense operational log text (timestamps, asset "
+               "IDs, digit groups) that really tokenizes at ~2.97 chars/token - a 1.35x overshoot. "
+               "Every arm therefore overflows its own tier and the server rejects the request: "
+               "20716 vs 16384, 86644 vs 65536, 174563 vs 131072, 350408 vs 262144. No row is "
+               "written, so the loss is invisible unless task-level completeness is checked. The "
+               "missing task is the canonical 'lost in the middle' needle-in-a-haystack probe at "
+               "depth 50%, which is the single most standard thing B4 claims to measure.",
+     "fix": "Size the document by real tokenization (or measure-and-trim) instead of a fixed "
+            "chars/token ratio. Note this re-bases B4: existing rows cover 7 tasks, so a fixed "
+            "run is not directly comparable to the frozen roster until every model is re-run."},
     {"sev": "high", "title": "Coverage is ragged across the three newest batteries",
      "detail": "B9 (games) ran for 12 models but 4 of those have partial rows, and the four "
                "largest models plus laguna have none at all - 96 completed rows were lost when a "
