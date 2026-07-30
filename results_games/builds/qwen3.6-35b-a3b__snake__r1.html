@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snake Game</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #1a1a2e;
+display: flex;
+justify-content: center;
+align-items: center;
+height: 100vh;
+font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+overflow: hidden;
+}
+#gameContainer {
+text-align: center;
+}
+#score {
+color: #e94560;
+font-size: 28px;
+margin-bottom: 10px;
+font-weight: bold;
+letter-spacing: 2px;
+}
+canvas {
+border: 3px solid #e94560;
+border-radius: 8px;
+background: #16213e;
+display: block;
+}
+#message {
+color: #eee;
+font-size: 20px;
+margin-top: 15px;
+min-height: 30px;
+}
+#highScore {
+color: #0f3460;
+font-size: 16px;
+margin-top: 5px;
+color: #53d8fb;
+}
+</style>
+</head>
+<body>
+<div id="gameContainer">
+<div id="score">Score: 0</div>
+<canvas id="gameCanvas" width="500" height="500"></canvas>
+<div id="message">Press any arrow key or WASD to start</div>
+<div id="highScore">High Score: 0</div>
+</div>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const messageEl = document.getElementById('message');
+const highScoreEl = document.getElementById('highScore');
+
+const GRID_SIZE = 25;
+const CELL_SIZE = canvas.width / GRID_SIZE;
+const INITIAL_SPEED = 120;
+const MIN_SPEED = 60;
+
+let snake, direction, nextDirection, food, score, highScore, gameLoop, speed, gameStarted, gameOver, particles;
+
+highScore = parseInt(localStorage.getItem('snakeHighScore')) || 0;
+highScoreEl.textContent = 'High Score: ' + highScore;
+
+function init() {
+    snake = [
+        { x: 10, y: 10 },
+        { x: 9, y: 10 },
+        { x: 8, y: 10 }
+    ];
+    direction = { x: 1, y: 0 };
+    nextDirection = { x: 1, y: 0 };
+    score = 0;
+    speed = INITIAL_SPEED;
+    gameStarted = false;
+    gameOver = false;
+    particles = [];
+    scoreEl.textContent = 'Score: 0';
+    messageEl.textContent = 'Press any arrow key or WASD to start';
+    placeFood();
+    draw();
+}
+
+function placeFood() {
+    let valid = false;
+    while (!valid) {
+        food = {
+            x: Math.floor(Math.random() * GRID_SIZE),
+            y: Math.floor(Math.random() * GRID_SIZE)
+        };
+        valid = true;
+        for (let segment of snake) {
+            if (segment.x === food.x && segment.y === food.y) {
+                valid = false;
+                break;
+            }
+        }
+    }
+}
+
+function createParticles(x, y) {
+    for (let i = 0; i < 12; i++) {
+        particles.push({
+            x: x * CELL_SIZE + CELL_SIZE / 2,
+            y: y * CELL_SIZE + CELL_SIZE / 2,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            life: 1,
+            color: Math.random() > 0.5 ? '#e94560' : '#ff6b6b',
+            size: Math.random() * 4 + 2
+        });
+    }
+}
+
+function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.03;
+        p.vx *= 0.96;
+        p.vy *= 0.96;
+        if (p.life <= 0) {
+            particles.splice(i, 1);
+        }
+    }
+}
+
+function drawParticles() {
+    for (let p of particles) {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+}
+
+function update() {
+    direction = { ...nextDirection };
+
+    const head = {
+        x: snake[0].x + direction.x,
+        y: snake[0].y + direction.y
+    };
+
+    if (head.x < 0 || head.x >= GRID_SIZE || head.y < 0 || head.y >= GRID_SIZE) {
+        endGame();
+        return;
+    }
+
+    for (let segment of snake) {
+        if (head.x === segment.x && head.y === segment.y) {
+            endGame();
+            return;
+        }
+    }
+
+    snake.unshift(head);
+
+    if (head.x === food.x && head.y === food.y) {
+        score += 10;
+        scoreEl.textContent = 'Score: ' + score;
+        createParticles(food.x, food.y);
+        placeFood();
+        speed = Math.max(MIN_SPEED, INITIAL_SPEED - Math.floor(score / 50) * 10);
+        clearInterval(gameLoop);
+        gameLoop = setInterval(update, speed);
+    } else {
+        snake.pop();
+    }
+
+    draw();
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= GRID_SIZE; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * CELL_SIZE, 0);
+        ctx.lineTo(i * CELL_SIZE, canvas.height);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, i * CELL_SIZE);
+        ctx.lineTo(canvas.width, i * CELL_SIZE);
+        ctx.stroke();
+    }
+
+    // Draw food with glow
+    const pulse = Math.sin(Date.now() / 200) * 0.3 + 0.7;
+    ctx.shadowColor = '#e94560';
+    ctx.shadowBlur = 15 * pulse;
+    ctx.fillStyle = '#e94560';
+    ctx.beginPath();
+    ctx.arc(
+        food.x * CELL_SIZE + CELL_SIZE / 2,
+        food.y * CELL_SIZE + CELL_SIZE / 2,
+        CELL_SIZE / 2.5,
+        0, Math.PI * 2
+    );
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Draw snake
+    for (let i = snake.length - 1; i >= 0; i--) {
+        const segment = snake[i];
+        const ratio = 1 - (i / snake.length) * 0.5;
+
+        if (i === 0) {
+            ctx.shadowColor = '#53d8fb';
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = '#53d8fb';
+        } else {
+            ctx.shadowBlur = 0;
+            const g = Math.floor(180 * ratio + 40);
+            ctx.fillStyle = `rgb(30, ${g}, ${Math.floor(120 * ratio + 40)})`;
+        }
+
+        const padding = i === 0 ? 1 : 2;
+        const radius = i === 0 ? 6 : 4;
+        roundRect(
+            ctx,
+            segment.x * CELL_SIZE + padding,
+            segment.y * CELL_SIZE + padding,
+            CELL_SIZE - padding * 2,
+            CELL_SIZE - padding * 2,
+            radius
+        );
+        ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+
+    // Draw eyes on head
+    const head = snake[0];
+    ctx.fillStyle = '#1a1a2e';
+    const eyeSize = 3;
+    let eye1x, eye1y, eye2x, eye2y;
+    const cx = head.x * CELL_SIZE + CELL_SIZE / 2;
+    const cy = head.y * CELL_SIZE + CELL_SIZE / 2;
+
+    if (direction.x === 1) {
+        eye1x = cx + 5; eye1y = cy - 5;
+        eye2x = cx + 5; eye2y = cy + 5;
+    } else if (direction.x === -1) {
+        eye1x = cx - 5; eye1y = cy - 5;
+        eye2x = cx - 5; eye2y = cy + 5;
+    } else if (direction.y === -1) {
+        eye1x = cx - 5; eye1y = cy - 5;
+        eye2x = cx + 5; eye2y = cy - 5;
+    } else {
+        eye1x = cx - 5; eye1y = cy + 5;
+        eye2x = cx + 5; eye2y = cy + 5;
+    }
+
+    ctx.beginPath();
+    ctx.arc(eye1x, eye1y, eyeSize, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(eye2x, eye2y, eyeSize, 0, Math.PI * 2);
+    ctx.fill();
+
+    drawParticles();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+function endGame() {
+    clearInterval(gameLoop);
+    gameOver = true;
+    gameStarted = false;
+
+    if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('snakeHighScore', highScore);
+        highScoreEl.textContent = 'High Score: ' + highScore;
+    }
+
+    messageEl.textContent = 'Game Over! Press any arrow key or WASD to restart';
+
+    // Flash effect
+    ctx.fillStyle = 'rgba(233, 69, 96, 0.3)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+document.addEventListener('keydown', function(e) {
+    const key = e.key.toLowerCase();
+
+    if (gameOver) {
+        init();
+        return;
+    }
+
+    if (!gameStarted) {
+        gameStarted = true;
+        messageEl.textContent = '';
+    }
+
+    let newDir = null;
+
+    switch (key) {
+        case 'arrowup': case 'w':
+            if (direction.y !== 1) newDir = { x: 0, y: -1 };
+            break;
+        case 'arrowdown': case 's':
+            if (direction.y !== -1) newDir = { x: 0, y: 1 };
+            break;
+        case 'arrowleft': case 'a':
+            if (direction.x !== 1) newDir = { x: -1, y: 0 };
+            break;
+        case 'arrowright': case 'd':
+            if (direction.x !== -1) newDir = { x: 1, y: 0 };
+            break;
+    }
+
+    if (newDir) {
+        e.preventDefault();
+        nextDirection = newDir;
+        if (!gameStarted) {
+            gameStarted = true;
+            messageEl.textContent = '';
+            gameLoop = setInterval(update, speed);
+        }
+    }
+});
+
+// Animation loop for particles and food pulse when game is running
+function animationLoop() {
+    if (gameStarted && !gameOver) {
+        updateParticles();
+        draw();
+    }
+    requestAnimationFrame(animationLoop);
+}
+
+init();
+animationLoop();
+</script>
+</body>
+</html>

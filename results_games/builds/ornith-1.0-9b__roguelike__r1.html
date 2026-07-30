@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ASCII Roguelike</title>
+<style>
+    body {
+        background: #0d0d0d;
+        color: #33ff33;
+        font-family: 'Courier New', Courier, monospace;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    #ui {
+        width: 100%;
+        text-align: center;
+        padding: 6px;
+        background: #111;
+        border-bottom: 1px solid #333;
+        font-size: 16px;
+        letter-spacing: 1px;
+    }
+    #game {
+        margin-top: 4px;
+        padding: 4px;
+        background: #000;
+        border: 1px solid #333;
+        line-height: 1.2;
+        font-size: 16px;
+        white-space: pre;
+        overflow: hidden;
+        width: 80ch;
+    }
+    #log {
+        width: 100%;
+        text-align: center;
+        padding: 4px;
+        color: #ff0;
+        font-size: 13px;
+        height: 24px;
+        overflow: hidden;
+    }
+    .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+    HP: <span id="ui-hp">10</span>/<span id="ui-maxhp">10</span> | LVL: <span id="ui-lvl">1</span> | XP: <span id="ui-xp">0</span>
+    <span style="color:#888; font-size:12px; margin-left:10px;">[WASD/Arrows] Move | [Space] Attack | [Q] Quit</span>
+</div>
+<pre id="game"></pre>
+<div id="log"></div>
+
+<script>
+// --- CONFIG ---
+const COLS = 80;
+const ROWS = 25;
+const MAP = [];
+const ENEMIES = [];
+const ITEMS = [];
+const STAIRS = {x:0, y:0};
+let player = {x:1, y:1, hp:10, maxHp:10, atk:2, def:0, xp:0, lvl:1, name: "Hero"};
+let gameOver = false;
+let logMsg = "";
+
+// --- COLORS ---
+const C_WALL = '#555';
+const C_FLOOR = '#111';
+const C_PLAYER = '#33ff33';
+const C_ENEMY = '#ff3333';
+const C_ITEM = '#ffff33';
+const C_STAIRS = '#33ffff';
+const C_LOG = '#ff0';
+const C_HP = '#ff3333';
+const C_HP_FULL = '#33ff33';
+
+// --- INIT ---
+window.addEventListener('keydown', handleInput);
+window.addEventListener('load', init);
+
+function init() {
+    generateLevel();
+    render();
+}
+
+// --- MAP GENERATION ---
+function generateLevel() {
+    // Reset
+    MAP.length = 0;
+    ENEMIES.length = 0;
+    ITEMS.length = 0;
+    gameOver = false;
+    logMsg = "";
+
+    // Fill with walls
+    for (let y = 0; y < ROWS; y++) {
+        MAP[y] = [];
+        for (let x = 0; x < COLS; x++) {
+            MAP[y][x] = '#';
+        }
+    }
+
+    // Room Generator
+    const rooms = [];
+    const maxRooms = 12;
+    const minRoom = 3;
+    const maxRoom = 7;
+
+    for (let i = 0; i < maxRooms; i++) {
+        const w = Math.floor(Math.random() * (maxRoom - minRoom + 1)) + minRoom;
+        const h = Math.floor(Math.random() * (maxRoom - minRoom + 1)) + minRoom;
+        const x = Math.floor(Math.random() * (COLS - w - 2)) + 1;
+        const y = Math.floor(Math.random() * (ROWS - h - 2)) + 1;
+
+        const newRoom = {x, y, w, h};
+
+        let failed = false;
+        for (const room of rooms) {
+            if (x <= room.x + room.w && x + w >= room.x && y <= room.y + room.h && y + h >= room.y) {
+                failed = true;
+                break;
+            }
+        }
+
+        if (!failed) {
+            carveRoom(newRoom);
+            if (rooms.length > 0) {
+                connectRooms(rooms[rooms.length - 1], newRoom);
+            }
+            rooms.push(newRoom);
+        }
+    }
+
+    // Place Player in first room
+    const startRoom = rooms[0];
+    player.x = startRoom.x + 1;
+    player.y = startRoom.y + 1;
+
+    // Place Stairs in last room
+    const lastRoom = rooms[rooms.length - 1];
+    STAIRS.x = lastRoom.x + Math.floor(lastRoom.w / 2);
+    STAIRS.y = lastRoom.y + Math.floor(lastRoom.h / 2);
+
+    // Place Enemies
+    const enemyCount = 3 + Math.floor(level * 1.5);
+    for (let i = 0; i < enemyCount; i++) {
+        placeEntity('enemy', i);
+    }
+
+    // Place Items
+    const itemCount = 1 + Math.floor(level / 2);
+    for (let i = 0; i < itemCount; i++) {
+        placeEntity('item', i);
+    }
+
+    // Place XP orbs
+    const xpCount = 2 + Math.floor(level);
+    for (let i = 0; i < xpCount; i++) {
+        placeEntity('xp', i);
+    }
+}
+
+function carveRoom(room) {
+    for (let y = room.y; y < room.y + room.h; y++) {
+        for (let x = room.x; x < room.x + room.w; x++) {
+            MAP[y][x] = ' ';
+        }
+    }
+}
+
+function connectRooms(a, b) {
+    // L-shaped corridor
+    const x = a.x + Math.floor(a.w / 2);
+    const y = a.y + Math.floor(a.h / 2);
+    const x2 = b.x + Math.floor(b.w / 2);
+    const y2 = b.y + Math.floor(b.h / 2);
+
+    // Horizontal
+    for (let cx = x; cx <= x2; cx++) {
+        MAP[y][cx] = '.';
+    }
+    // Vertical
+    for (let cy = y; cy <= y2; cy++) {
+        MAP[cy][x2] = '|';
+    }
+}
+
+function placeEntity(type, index) {
+    let placed = false;
+    let attempts = 0;
+    while (!placed && attempts < 100) {
+        const room = rooms[Math.floor(Math.random() * rooms.length)];
+        const ex = room.x + Math.floor(Math.random() * room.w);
+        const ey = room.y + Math.floor(Math.random() * room.h);
+        if (MAP[ey][ex] === ' ' && !(ex === player.x && ey === player.y)) {
+            if (type === 'enemy') {
+                ENEMIES.push({
+                    x: ex, y: ey,
+                    hp: 4 + level, maxHp: 4 + level,
+                    atk: 1 + Math.floor(level / 2),
+                    name: ["Goblin", "Skeleton", "Orc", "Slime"][Math.floor(Math.random() * 4)]
+                });
+            } else if (type === 'item') {
+                ITEMS.push({
+                    x: ex, y: ey,
+                    type: Math.random() > 0.5 ? 'potion' : 'sword',
+                    val: type === 'potion' ? 3 + Math.floor(level/2) : 1 + Math.floor(level/2)
+                });
+            } else if (type === 'xp') {
+                ITEMS.push({
+                    x: ex, y: ey,
+                    type: 'xp', val: 10 + level * 5
+                });
+            }
+            placed = true;
+        }
+        attempts++;
+    }
+}
+
+// --- RENDER ---
+function render() {
+    let output = "";
+    for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            let char = MAP[y][x];
+            let color = C_FLOOR;
+
+            // Check entities
+            if (x === player.x && y === player.y) {
+                char = '@';
+                color = C_PLAYER;
+            } else {
+                for (const e of ENEMIES) {
+                    if (e.x === x && e.y === y) {
+                        char = e.name[0];
+                        color = C_ENEMY;
+                        break;
+                    }
+                }
+                if (char === ' ') {
+                    for (const i of ITEMS) {
+                        if (i.x === x && i.y === y) {
+                            char = i.type === 'xp' ? '+' : (i.type === 'potion' ? '!' : 'S');
+                            color = C_ITEM;
+                            break;
+                        }
+                    }
+                    if (char === ' ') {
+                        if (x === STAIRS.x && y === STAIRS.y) {
+                            char = '>';
+                            color = C_STAIRS;
+                        }
+                    }
+                }
+            }
+
+            output += `<span style="color:${color}">${char}</span>`;
+        }
+        output += '\n';
+    }
+
+    document.getElementById('game').innerHTML = output;
+    document.getElementById('ui-hp').textContent = player.hp;
+    document.getElementById('ui-maxhp').textContent = player.maxHp;
+    document.getElementById('ui-lvl').textContent = player.lvl;
+    document.getElementById('ui-xp').textContent = player.xp;
+    document.getElementById('log').textContent = logMsg;
+}
+
+// --- GAME LOGIC ---
+function handleInput(e) {
+    if (gameOver) return;
+
+    const key = e.key.toLowerCase();
+
+    if (key === 'q') {
+        gameOver = true;
+        document.getElementById('game').innerHTML = '<span style="color:red">GAME OVER</span>\nPress R to Restart';
+        document.getElementById('log').textContent = "You died. Press R to restart.";
+        return;
+    }
+
+    if (key === 'r') {
+        player.hp = player.maxHp;
+        player.xp = 0;
+        player.lvl = 1;
+        player.atk = 2;
+        generateLevel();
+        render();
+        return;
+    }
+
+    let moved = false;
+
+    if (key === 'w' || key === 'arrowup') {
+        if (player.y > 0 && MAP[player.y - 1][player.x] !== '#') {
+            player.y--; moved = true;
+        }
+    } else if (key === 's' || key === 'arrowdown') {
+        if (player.y < ROWS - 1 && MAP[player.y + 1][player.x] !== '#') {
+            player.y++; moved = true;
+        }
+    } else if (key === 'a' || key === 'arrowleft') {
+        if (player.x > 0 && MAP[player.y][player.x - 1] !== '#') {
+            player.x--; moved = true;
+        }
+    } else if (key === 'd' || key === 'arrowright') {
+        if (player.x < COLS - 1 && MAP[player.y][player.x + 1] !== '#') {
+            player.x++; moved = true;
+        }
+    } else if (key === ' ') {
+        attack();
+        return;
+    }
+
+    if (moved) {
+        // Check stairs
+        if (player.x === STAIRS.x && player.y === STAIRS.y) {
+            level++;
+            player.hp = Math.min(player.hp + 2, player.maxHp + level);
+            player.maxHp += 1;
+            generateLevel();
+            render();
+            return;
+        }
+
+        // Check items
+        for (let i = 0; i < ITEMS.length; i++) {
+            if (ITEMS[i].x === player.x && ITEMS[i].y === player.y) {
+                if (ITEMS[i].type === 'potion') {
+                    player.hp = Math.min(player.hp + ITEMS[i].val, player.maxHp);
+                    logMsg = `Drank potion! +${ITEMS[i].val} HP`;
+                } else if (ITEMS[i].type === 'sword') {
+                    player.atk += ITEMS[i].val;
+                    logMsg = `Found sword! ATK +${ITEMS[i].val}`;
+                } else if (ITEMS[i].type === 'xp') {
+                    player.xp += ITEMS[i].val;
+                    logMsg = `Found XP! +${ITEMS[i].val}`;
+                    if (player.xp >= player.lvl * 20) {
+                        player.lvl++;
+                        player.maxHp += 2;
+                        player.hp = player.maxHp;
+                        player.atk += 1;
+                        logMsg = `LEVEL UP! You are now level ${player.lvl}`;
+                    }
+                }
+                ITEMS.splice(i, 1);
+                render();
+                return;
+            }
+        }
+
+        // Check enemies
+        for (let i = 0; i < ENEMIES.length; i++) {
+            if (ENEMIES[i].x === player.x && ENEMIES[i].y === player.y) {
+                // Move enemy away or attack
+                ENEMIES[i].x += (Math.random() > 0.5 ? 1 : -1);
+                if (ENEMIES[i].x < 0) ENEMIES[i].x = 0;
+                if (ENEMIES[i].x >= COLS) ENEMIES[i].x = COLS - 1;
+                logMsg = `Enemy fled!`;
+                render();
+                return;
+            }
+        }
+
+        // Enemy AI
+        updateEnemies();
+
+        render();
+    }
+}
+
+function updateEnemies() {
+    for (const e of ENEMIES) {
+        const dx = player.x - e.x;
+        const dy = player.y - e.y;
+        const dist = Math.abs(dx) + Math.abs(dy);
+
+        if (dist === 1) {
+            // Attack player
+            player.hp -= e.atk;
+            logMsg = `${e.name} attacks you! -${e.atk} HP`;
+            if (player.hp <= 0) {
+                player.hp = 0;
+                gameOver = true;
+                document.getElementById('game').innerHTML = '<span style="color:red">GAME OVER</span>\nPress R to Restart';
+                document.getElementById('log').textContent = "You died. Press R to restart.";
+            }
+        } else if (dist < 6) {
+            // Move towards player
+            if (Math.abs(dx) > Math.abs(dy)) {
+                if (dx > 0 && MAP[e.y][e.x + 1] !== '#') e.x++;
+                else if (dx < 0 && MAP[e.y][e.x - 1] !== '#') e.x--;
+            } else {
+                if (dy > 0 && MAP[e.y + 1][e.x] !== '#') e.y++;
+                else if (dy < 0 && MAP[e.y - 1][e.x] !== '#') e.y--;
+            }
+        }
+    }
+}
+
+function attack() {
+    for (let i = 0; i < ENEMIES.length; i++) {
+        if (ENEMIES[i].x === player.x && ENEMIES[i].y === player.y) {
+            ENEMIES[i].hp -= player.atk;
+            logMsg = `You hit ${ENEMIES[i].name} for ${player.atk} dmg!`;
+            if (ENEMIES[i].hp <= 0) {
+                ENEMIES.splice(i, 1);
+                logMsg += ` ${ENEMIES[i].name} defeated!`;
+                player.xp += 10;
+            }
+            render();
+            return;
+        }
+    }
+}
+
+</script>
+</body>
+</html>

@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ASCII ROGUE</title>
+<style>
+  body {
+    background: #000;
+    color: #0f0;
+    font-family: 'Courier New', Courier, monospace;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    user-select: none;
+  }
+  #game-container {
+    position: relative;
+    width: 640px;
+    height: 400px;
+    border: 2px solid #0f0;
+    box-shadow: 0 0 20px rgba(0, 255, 0, 0.2);
+  }
+  pre {
+    margin: 0;
+    padding: 10px;
+    font-size: 14px;
+    line-height: 14px;
+    white-space: pre;
+    overflow: hidden;
+    height: 100%;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  #status-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 20px;
+    line-height: 20px;
+    padding: 0 10px;
+    font-size: 14px;
+    background: #001100;
+    border-top: 1px solid #0f0;
+    color: #0f0;
+  }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    color: #0f0;
+    font-size: 18px;
+    text-align: center;
+    z-index: 10;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+  <pre id="screen"></pre>
+  <div id="status-bar">
+    HP: <span id="hp-val">10</span>/10 | ATK: <span id="atk-val">2</span> | FLOOR: <span id="floor-val">1</span>
+  </div>
+  <div id="overlay">
+    <h1>ASCII ROGUE</h1>
+    <p>Arrows/WASD to Move</p>
+    <p>ENTER to Attack</p>
+    <p>R to Rest (Heal)</p>
+    <p>Q to Quit</p>
+    <br>
+    <p>[ Press any key to start ]</p>
+  </div>
+</div>
+
+<script>
+/* --- CONFIG --- */
+const COLS = 60;
+const ROWS = 30;
+const MAX_ROOMS = 14;
+const MIN_ROOM_SIZE = 3;
+const MAX_ROOM_SIZE = 7;
+
+/* --- STATE --- */
+let map = [];
+let entities = [];
+let player = {};
+let stairs = { x: 0, y: 0 };
+let floor = 1;
+let gameOver = false;
+let gameWon = false;
+let msgLog = [];
+
+/* --- CONSTANTS --- */
+const WALL = '#';
+const FLOOR = '.';
+const PLAYER = '@';
+const ENEMY_G = 'g'; // Goblin
+const ENEMY_S = 's'; // Skeleton
+const ENEMY_Z = 'z'; // Zombie
+const ITEM_P = '!'; // Potion
+const ITEM_S = '>'; // Sword
+const STAIRS = '>';
+const DOOR = '+';
+const LOG = '*';
+
+/* --- INIT --- */
+function init() {
+  map = [];
+  entities = [];
+  msgLog = [];
+  gameOver = false;
+  gameWon = false;
+  floor = 1;
+  generateDungeon();
+  render();
+}
+
+/* --- MAP GENERATION --- */
+function generateDungeon() {
+  // 1. Create grid
+  for (let y = 0; y < ROWS; y++) {
+    map[y] = [];
+    for (let x = 0; x < COLS; x++) {
+      map[y][x] = WALL;
+    }
+  }
+
+  // 2. Generate Rooms
+  let rooms = [];
+  for (let i = 0; i < MAX_ROOMS; i++) {
+    let w = Math.floor(Math.random() * (MAX_ROOM_SIZE - MIN_ROOM_SIZE + 1)) + MIN_ROOM_SIZE;
+    let h = Math.floor(Math.random() * (MAX_ROOM_SIZE - MIN_ROOM_SIZE + 1)) + MIN_ROOM_SIZE;
+    let x = Math.floor(Math.random() * (COLS - w - 2)) + 1;
+    let y = Math.floor(Math.random() * (ROWS - h - 2)) + 1;
+
+    let newRoom = { x, y, w, h, cx: Math.floor(x + w/2), cy: Math.floor(y + h/2) };
+
+    // Check overlap
+    let overlap = false;
+    for (let r of rooms) {
+      if (x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y) {
+        overlap = true;
+        break;
+      }
+    }
+    if (!overlap) {
+      carveRoom(newRoom);
+      rooms.push(newRoom);
+    }
+  }
+
+  // 3. Connect Rooms
+  for (let i = 1; i < rooms.length; i++) {
+    let prev = rooms[i-1];
+    let curr = rooms[i];
+    // L-shaped corridor
+    let cx = prev.cx, cy = prev.cy;
+    // Horizontal
+    while (cx !== curr.cx) {
+      let tx = cx < curr.cx ? cx + 1 : cx - 1;
+      carveHCorridor(cx, cy, tx, cy);
+      cx = tx;
+    }
+    // Vertical
+    while (cy !== curr.cy) {
+      let ty = cy < curr.cy ? cy + 1 : cy - 1;
+      carveVCorridor(cx, cy, cx, ty);
+      cy = ty;
+    }
+  }
+
+  // 4. Place Player in first room
+  player = {
+    x: rooms[0].cx,
+    y: rooms[0].cy,
+    hp: 10,
+    maxHp: 10,
+    atk: 2,
+    name: "Hero"
+  };
+
+  // 5. Place Stairs in last room
+  stairs = { x: rooms[rooms.length-1].cx, y: rooms[rooms.length-1].cy };
+
+  // 6. Spawn Entities
+  spawnEntities();
+}
+
+function carveRoom(r) {
+  for (let y = r.y; y < r.y + r.h; y++) {
+    for (let x = r.x; x < r.x + r.w; x++) {
+      map[y][x] = FLOOR;
+    }
+  }
+}
+
+function carveHCorridor(x1, y, x2, y2) {
+  for (let x = Math.min(x1, x2); x <= Math.max(x1, x2); x++) {
+    map[y][x] = FLOOR;
+  }
+}
+
+function carveVCorridor(x, y1, x2, y2) {
+  for (let y = Math.min(y1, y2); y <= Math.max(y1, y2); y++) {
+    map[y][x] = FLOOR;
+  }
+}
+
+/* --- ENTITIES --- */
+function spawnEntities() {
+  let enemies = [];
+  let items = [];
+  let attempts = 0;
+
+  // Enemies
+  let enemyTypes = [
+    { name: "Goblin", sym: ENEMY_G, hp: 4, atk: 1, color: "#0f0" },
+    { name: "Skeleton", sym: ENEMY_S, hp: 6, atk: 2, color: "#ff0" },
+    { name: "Zombie", sym: ENEMY_Z, hp: 8, atk: 3, color: "#f00" }
+  ];
+
+  for (let i = 0; i < 3 + Math.floor(Math.random() * 3); i++) {
+    attempts++;
+    let ex, ey;
+    do {
+      ex = Math.floor(Math.random() * COLS);
+      ey = Math.floor(Math.random() * ROWS);
+    } while (map[ey][ex] !== FLOOR || (ex === player.x && ey === player.y) || attempts > 50);
+
+    let type = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+    entities.push({
+      x: ex, y: ey,
+      hp: type.hp, maxHp: type.hp,
+      atk: type.atk,
+      name: type.name,
+      sym: type.sym,
+      color: type.color,
+      alive: true
+    });
+  }
+
+  // Items
+  for (let i = 0; i < 1 + Math.floor(Math.random() * 2); i++) {
+    attempts = 0;
+    let ix, iy;
+    do {
+      ix = Math.floor(Math.random() * COLS);
+      iy = Math.floor(Math.random() * ROWS);
+    } while (map[iy][ix] !== FLOOR || (ix === player.x && iy === player.y) || attempts > 50);
+
+    let type = Math.random() > 0.5 ? 'potion' : 'sword';
+    entities.push({
+      x: ix, y: iy,
+      type: type,
+      val: type === 'potion' ? Math.floor(Math.random() * 4) + 2 : Math.floor(Math.random() * 3) + 1,
+      sym: type === 'potion' ? ITEM_P : ITEM_S,
+      color: type === 'potion' ? '#0ff' : '#fff',
+      alive: true
+    });
+  }
+}
+
+/* --- RENDERING --- */
+function render() {
+  let buf = "";
+  let visible = [];
+
+  // Simple Fog of War
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      let dist = Math.abs(x - player.x) + Math.abs(y - player.y);
+      if (dist > 6) {
+        visible.push({ x, y, char: ' ' });
+      } else {
+        visible.push({ x, y, char: null }); // Needs drawing
+      }
+    }
+  }
+
+  // Draw visible tiles
+  for (let v of visible) {
+    if (v.char === null) {
+      let ch = map[v.y][v.x];
+      // Check entities
+      for (let e of entities) {
+        if (e.alive && e.x === v.x && e.y === v.y) {
+          ch = e.sym;
+          break;
+        }
+      }
+      // Player
+      if (v.x === player.x && v.y === player.y) {
+        ch = PLAYER;
+      }
+      // Stairs
+      if (v.x === stairs.x && v.y === stairs.y) {
+        ch = STAIRS;
+      }
+      v.char = ch;
+    }
+    buf += v.char;
+  }
+  buf += "\n";
+
+  // Status Bar
+  let hpStr = player.hp + "/" + player.maxHp;
+  let atkStr = player.atk;
+  let flrStr = floor;
+  document.getElementById('hp-val').textContent = hpStr;
+  document.getElementById('atk-val').textContent = atkStr;
+  document.getElementById('floor-val').textContent = flrStr;
+
+  let status = "";
+  if (gameOver) status = "GAME OVER - Press R to Restart";
+  else if (gameWon) status = "YOU WIN! - Press R to Restart";
+  else if (msgLog.length > 0) status = msgLog[msgLog.length-1];
+
+  document.getElementById('status-bar').textContent = status;
+
+  document.getElementById('screen').textContent = buf;
+}
+
+/* --- GAME LOGIC --- */
+function handleInput(e) {
+  if (gameOver || gameWon) {
+    if (e.key === 'r' || e.key === 'R') {
+      init();
+    }
+    return;
+  }
+
+  if (e.key === 'q' || e.key === 'Q') {
+    gameOver = true;
+    render();
+    return;
+  }
+
+  let dx = 0, dy = 0;
+  if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') dy = -1;
+  else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') dy = 1;
+  else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') dx = -1;
+  else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') dx = 1;
+  else if (e.key === 'Enter') {
+    attack();
+    return;
+  }
+  else if (e.key === 'r' || e.key === 'R') {
+    rest();
+    return;
+  }
+  else return;
+
+  e.preventDefault();
+
+  // Move
+  let nx = player.x + dx;
+  let ny = player.y + dy;
+
+  // Wall check
+  if (map[ny][nx] === WALL) return;
+
+  // Entity check
+  let target = null;
+  for (let e of entities) {
+    if (e.alive && e.x === nx && e.y === ny) {
+      target = e;
+      break;
+    }
+  }
+
+  if (target) {
+    // Attack
+    let dmg = player.atk + Math.floor(Math.random() * 2);
+    target.hp -= dmg;
+    msgLog.push(target.name + " takes " + dmg + " dmg!");
+    if (target.hp <= 0) {
+      target.alive = false;
+      msgLog.push(target.name + " dies!");
+      // Drop loot
+      if (Math.random() > 0.5) {
+        entities.push({
+          x: nx, y: ny,
+          type: 'potion',
+          val: 2,
+          sym: ITEM_P,
+          color: '#0ff',
+          alive: true
+        });
+      }
+    }
+  } else {
+    player.x = nx;
+    player.y = ny;
+  }
+
+  // Stairs
+  if (player.x === stairs.x && player.y === stairs.y) {
+    floor++;
+    msgLog.push("Descended to floor " + floor);
+    generateDungeon();
+  }
+
+  // Update
+  updateEnemies();
+  render();
+}
+
+function attack() {
+  // Attack adjacent enemies
+  let adjacent = [];
+  for (let e of entities) {
+    if (!e.alive) continue;
+    if (Math.abs(e.x - player.x) + Math.abs(e.y - player.y) === 1) {
+      adjacent.push(e);
+    }
+  }
+  if (adjacent.length === 0) return;
+
+  // Attack strongest first
+  adjacent.sort((a, b) => b.hp - a.hp);
+
+  for (let e of adjacent) {
+    let dmg = player.atk + Math.floor(Math.random() * 2);
+    e.hp -= dmg;
+    msgLog.push(e.name + " takes " + dmg + " dmg!");
+    if (e.hp <= 0) {
+      e.alive = false;
+      msgLog.push(e.name + " dies!");
+      if (Math.random() > 0.5) {
+        entities.push({
+          x: e.x, y: e.y,
+          type: 'potion',
+          val: 2,
+          sym: ITEM_P,
+          color: '#0ff',
+          alive: true
+        });
+      }
+    }
+  }
+  updateEnemies();
+  render();
+}
+
+function rest() {
+  if (player.hp < player.maxHp) {
+    player.hp = player.maxHp;
+    msgLog.push("You rested and recovered HP.");
+    updateEnemies();
+    render();
+  } else {
+    msgLog.push("You are already at full HP.");
+    render();
+  }
+}
+
+function updateEnemies() {
+  // Simple AI: Move towards player if adjacent
+  for (let e of entities) {
+    if (!e.alive) continue;
+    if (Math.abs(e.x - player.x) + Math.abs(e.y - player.y) === 1) {
+      // Attack player
+      let dmg = e.atk + Math.floor(Math.random() * 2);
+      player.hp -= dmg;
+      msgLog.push(e.name + " attacks you for " + dmg + "!");
+      if (player.hp <= 0) {
+        gameOver = true;
+      }
+    } else {
+      // Move towards player
+      let dx = 0, dy = 0;
+      if (player.x > e.x) dx = 1;
+      else if (player.x < e.x) dx = -1;
+      else if (player.y > e.y) dy = 1;
+      else if (player.y < e.y) dy = -1;
+
+      // Try move
+      let nx = e.x + dx;
+      let ny = e.y + dy;
+      if (map[ny][nx] !== WALL && !isEntityAt(nx, ny)) {
+        e.x = nx;
+        e.y = ny;
+      } else {
+        // Try random
+        let rx = e.x + (Math.random() > 0.5 ? 1 : -1);
+        let ry = e.y + (Math.random() > 0.5 ? 1 : -1);
+        if (map[ry][rx] !== WALL && !isEntityAt(rx, ry)) {
+          e.x = rx;
+          e.y = ry;
+        }
+      }
+    }
+  }
+}
+
+function isEntityAt(x, y) {
+  for (let e of entities) {
+    if (e.alive && e.x === x && e.y === y) return true;
+  }
+  return false;
+}
+
+/* --- START --- */
+document.addEventListener('keydown', handleInput);
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !document.getElementById('overlay').classList.contains('hidden')) {
+    init();
+    document.getElementById('overlay').classList.add('hidden');
+  }
+});
+
+init();
+
+</script>
+</body>
+</html>

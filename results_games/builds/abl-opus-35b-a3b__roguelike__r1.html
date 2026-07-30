@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #ccc; font-family: monospace; overflow: hidden; }
+#game { display: flex; height: 100vh; }
+#map { flex: 1; display: flex; align-items: center; justify-content: center; }
+#sidebar { width: 260px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+#stats { font-size: 14px; line-height: 1.6; }
+#log { flex: 1; overflow-y: auto; font-size: 13px; line-height: 1.5; color: #888; }
+#log .dmg { color: #f44; }
+#log .heal { color: #4f4; }
+#log .info { color: #88f; }
+#log .gold { color: #ff0; }
+#log .level { color: #f8f; }
+#controls { font-size: 12px; color: #555; line-height: 1.6; }
+canvas { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="map"><canvas id="c"></canvas></div>
+  <div id="sidebar">
+    <div id="stats"></div>
+    <div id="log"></div>
+    <div id="controls">
+      WASD/Arrows: move &amp; attack<br>
+      I: inventory &amp; use potion<br>
+      &gt;: descend stairs<br>
+      Space: wait<br>
+      R: new game
+    </div>
+  </div>
+</div>
+<script>
+const W=80,H=25,CELL=14;
+const c=document.getElementById('c');
+const ctx=c.getContext('2d');
+c.width=W*CELL; c.height=H*CELL;
+ctx.font=`${CELL-1}px monospace`;
+ctx.textBaseline='top';
+
+const TILES={WALL:'#',FLOOR:'.',CORRIDOR:'.',STAIRS:'>',PLAYER:'@',
+  MONSTERS:['M','O','R','S','T','Z'],ITEMS:['i','w','p'],
+  COLORS:{WALL:'#333',FLOOR:'#111',CORRIDOR:'#222',STAIRS:'#ff0',
+    PLAYER:'#0f0',MONSTER:'#f44',ITEM:'#4f4',GOLD:'#ff0',
+    POTION:'#f44',WEAPON:'#44f',ARMOR:'#4f4'}};
+
+let map,vis,exp,player,monsters,items,stairs,msgs,level,gameOver,turn;
+let inv={potion:3,weapon:0,armor:0};
+let msgEl=document.getElementById('log');
+let statEl=document.getElementById('stats');
+
+function log(t,c){msgs.push({t,c});msgEl.innerHTML=msgs.map(m=>`<div class="${m.c}">${m.t}</div>`).join('');msgEl.scrollTop=msgEl.scrollHeight;}
+
+function rng(a,b){return a+Math.floor(Math.random()*(b-a));}
+function dist(x1,y1,x2,y2){return Math.sqrt((x1-x2)**2+(y1-y2)**2);}
+
+function genDungeon(){
+  map=[];vis=[];exp=[];
+  for(let y=0;y<H;y++){map[y]=[];vis[y]=[];exp[y]=[];for(let x=0;x<W;x++){map[y][x]=TILES.WALL;vis[y][x]=false;exp[y][x]=false;}}
+  let rooms=[];
+  for(let i=0;i<200;i++){
+    let rw=rng(3,8),rh=rng(3,7),rx=rng(1,W-rw-1),ry=rng(1,H-rh-1);
+    let ok=true;
+    for(let r of rooms)if(rx<r.x+r.w+1&&rx+rw+1>r.x&&ry<r.y+r.h+1&&ry+rh+1>r.y){ok=false;break;}
+    if(!ok)continue;
+    rooms.push({x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)});
+    for(let y=ry;y<ry+rh;y++)for(let x=rx;x<rx+rw;x++)map[y][x]=TILES.FLOOR;
+    if(rooms.length>=30)break;
+  }
+  for(let i=1;i<rooms.length;i++){
+    let a=rooms[i-1],b=rooms[i];
+    let x=a.cx,y=a.cy;
+    while(x!==b.cx){map[y][x]=TILES.CORRIDOR;x+=x<b.cx?1:-1;}
+    while(y!==b.cy){map[y][x]=TILES.CORRIDOR;y+=y<b.cy?1:-1;}
+  }
+  player={x:rooms[0].cx,y:rooms[0].cy,hp:30,maxHp:30,atk:5,def:2,level:1,xp:0,xpNext:20};
+  stairs={x:rooms[rooms.length-1].cx,y:rooms[rooms.length-1].cy};
+  monsters=[];items=[];
+  for(let i=1;i<rooms.length;i++){
+    let r=rooms[i];
+    let n=rng(1,3);
+    for(let j=0;j<n;j++)monsters.push({x:r.cx+rng(-1,1),y:r.cy+rng(-1,1),hp:rng(5,15+level*3),maxHp:0,atk:rng(2,4+level),type:rng(0,TILES.MONSTERS.length-1),name:['Rat','Orc','Skeleton','Troll','Dragon'][rng(0,4)]});
+  }
+  for(let i=0;i<rng(3,6);i++){
+    let r=rooms[rng(0,rooms.length-1)];
+    items.push({x:r.cx+rng(-1,1),y:r.cy+rng(-1,1),type:rng(0,2),name:['Potion','Weapon','Armor'][rng(0,2)]});
+  }
+  for(let m of monsters)m.maxHp=m.hp;
+  updateVis();
+}
+
+function updateVis(){
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)vis[y][x]=false;
+  let r=8+player.level;
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    if(dist(player.x,player.y,x,y)<=r)vis[y][x]=true;
+  }
+}
+
+function render(){
+  ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,c.width,c.height);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+    if(!exp[y][x])continue;
+    let t=map[y][x],c=vis[y][x]?TILES.COLORS[t]:TILES.COLORS[t].replace('3','2').replace('1','0');
+    if(t===TILES.WALL)c='#333';
+    if(t===TILES.FLOOR)c='#111';
+    if(t===TILES.CORRIDOR)c='#222';
+    if(t===TILES.STAIRS)c='#ff0';
+    ctx.fillStyle=c;
+    ctx.fillText(t,x*CELL,y*CELL);
+  }
+  for(let m of monsters){
+    if(vis[m.y][m.x]){
+      ctx.fillStyle='#f44';ctx.fillText(TILES.MONSTERS[m.type],m.x*CELL,m.y*CELL);
+      ctx.fillStyle='#f44';ctx.fillRect(m.x*CELL+1,m.y*CELL+1,CELL-2,2);
+      ctx.fillStyle='#000';ctx.fillRect(m.x*CELL+1,m.y*CELL+1,(CELL-2)*(m.hp/m.maxHp),2);
+    }
+  }
+  for(let it of items){
+    if(vis[it.y][it.x]){
+      ctx.fillStyle=TILES.COLORS[it.type===0?'POTION':it.type===1?'WEAPON':'ARMOR'];
+      ctx.fillText(it.type===0?'p':it.type===1?'w':'a',it.x*CELL,it.y*CELL);
+    }
+  }
+  ctx.fillStyle=TILES.COLORS.PLAYER;
+  ctx.fillText(TILES.PLAYER,player.x*CELL,player.y*CELL);
+  ctx.fillStyle='#fff';
+  ctx.fillText('>',stairs.x*CELL,stairs.y*CELL);
+}
+
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  let nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=W||ny<0||ny>=H)return;
+  if(map[ny][nx]===TILES.WALL)return;
+  let m=monsters.find(m=>m.x===nx&&m.y===ny);
+  if(m){
+    let dmg=Math.max(1,player.atk-m.hp<10?0:0);
+    dmg=Math.max(1,player.atk-m.def?0:0);
+    m.hp-=dmg;
+    log(`Hit ${m.name} for ${dmg} dmg.`,'dmg');
+    if(m.hp<=0){
+      log(`${m.name} dies!`,'info');
+      monsters=monsters.filter(x=>x!==m);
+      player.xp+=m.maxHp;
+      if(player.xp>=player.xpNext){
+        player.level++;player.xp-=player.xpNext;player.xpNext=Math.floor(player.xpNext*1.5);
+        player.maxHp+=5;player.hp=player.maxHp;player.atk+=2;
+        log(`Level up! Now level ${player.level}.`,'level');
+      }
+    }
+  }else{
+    player.x=nx;player.y=ny;
+  }
+  for(let it of items){
+    if(it.x===player.x&&it.y===player.y){
+      if(it.type===0){inv.potion++;log('Picked up potion.','heal');}
+      if(it.type===1){inv.weapon++;player.atk+=3;log('Picked up weapon! +3 ATK.','info');}
+      if(it.type===2){inv.armor++;player.def+=2;log('Picked up armor! +2 DEF.','info');}
+      items=items.filter(x=>x!==it);
+    }
+  }
+  if(player.x===stairs.x&&player.y===stairs.y){
+    level++;genDungeon();log(`Descended to level ${level}.`,'info');
+  }
+  for(let m of monsters){
+    if(dist(m.x,m.y,player.x,player.y)<=6){
+      let dmg=Math.max(1,m.atk-player.def);
+      player.hp-=dmg;
+      log(`${m.name} hits you for ${dmg}.`,'dmg');
+      if(player.hp<=0){gameOver=true;log('You die! Press R to restart.','dmg');}
+    }
+  }
+  updateVis();render();updateStats();
+}
+
+function updateStats(){
+  statEl.innerHTML=`<div>Level ${player.level} | XP: ${player.xp}/${player.xpNext}</div>
+    <div>HP: ${player.hp}/${player.maxHp}</div>
+    <div>ATK: ${player.atk} | DEF: ${player.def}</div>
+    <div>Potions: ${inv.potion} | Weapons: ${inv.weapon} | Armor: ${inv.armor}</div>
+    <div>Level: ${level}</div>`;
+}
+
+document.addEventListener('keydown',e=>{
+  if(gameOver&&e.key==='r'){gameOver=false;player.hp=player.maxHp;genDungeon();updateStats();}
+  if(gameOver)return;
+  switch(e.key){
+    case 'w':case 'ArrowUp':movePlayer(0,-1);break;
+    case 's':case 'ArrowDown':movePlayer(0,1);break;
+    case 'a':case 'ArrowLeft':movePlayer(-1,0);break;
+    case 'd':case 'ArrowRight':movePlayer(1,0);break;
+    case 'i':
+      if(inv.potion>0){inv.potion--;player.hp=Math.min(player.maxHp,player.hp+10+player.level*2);log('Used potion. +HP.','heal');updateStats();}
+      else log('No potions!','info');
+      break;
+    case ' ':movePlayer(0,0);break;
+  }
+});
+
+genDungeon();updateStats();render();
+</script>
+</body>
+</html>

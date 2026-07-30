@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Roguelike</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: monospace; }
+  #game { color: #ccc; font-size: 16px; line-height: 1.1; white-space: pre; user-select: none; }
+  #ui { color: #888; font-family: monospace; font-size: 14px; margin-top: 8px; text-align: center; }
+  .wall { color: #555; }
+  .floor { color: #333; }
+  .floor-vis { color: #aaa; }
+  .player { color: #0f0; font-weight: bold; }
+  .goblin { color: #f80; }
+  .orc { color: #f00; }
+  .potion { color: #f0f; }
+  .stairs { color: #ff0; font-weight: bold; }
+  .weapon { color: #0ff; }
+  .armor { color: #0af; }
+  .corpse { color: #633; }
+  .message { color: #ff0; }
+  .dead { color: #f00; }
+</style>
+</head>
+<body>
+<div>
+<pre id="game"></pre>
+<div id="ui"></div>
+</div>
+<script>
+const COLS = 72, ROWS = 28;
+const MAX_ROOMS = 12, MIN_ROOM = 4, MAX_ROOM = 10;
+const MAX_ENEMIES = 8, MAX_ITEMS = 6;
+
+const T = { WALL: 0, FLOOR: 1, DOOR: 2 };
+const CHARS = { [T.WALL]: '#', [T.FLOOR]: '.', [T.DOOR]: '+' };
+
+let map, revealed, visible, player, enemies, items, stairs, messages, level, turn, gameOver;
+
+function rng(a, b) { return Math.floor(Math.random() * (b - a + 1)) + a; }
+function dist(x1, y1, x2, y2) { return Math.sqrt((x1-x2)**2 + (y1-y2)**2); }
+
+function generateDungeon() {
+  map = Array.from({length: ROWS}, () => Array(COLS).fill(T.WALL));
+  revealed = Array.from({length: ROWS}, () => Array(COLS).fill(false));
+  visible = Array.from({length: ROWS}, () => Array(COLS).fill(false));
+  let rooms = [];
+
+  for (let attempt = 0; attempt < 200 && rooms.length < MAX_ROOMS; attempt++) {
+    let w = rng(MIN_ROOM, MAX_ROOM), h = rng(MIN_ROOM, MAX_ROOM);
+    let x = rng(1, COLS - w - 1), y = rng(1, ROWS - h - 1);
+    let room = {x, y, w, h, cx: Math.floor(x + w/2), cy: Math.floor(y + h/2)};
+    let overlap = false;
+    for (let r of rooms) {
+      if (x - 1 < r.x + r.w && x + w + 1 > r.x && y - 1 < r.y + r.h && y + h + 1 > r.y) {
+        overlap = true; break;
+      }
+    }
+    if (overlap) continue;
+    for (let dy = 0; dy < h; dy++)
+      for (let dx = 0; dx < w; dx++)
+        map[y + dy][x + dx] = T.FLOOR;
+    rooms.push(room);
+  }
+
+  for (let i = 1; i < rooms.length; i++) {
+    let a = rooms[i-1], b = rooms[i];
+    let ax = a.cx, ay = a.cy, bx = b.cx, by = b.cy;
+    if (Math.random() < 0.5) {
+      carveCorridorH(ay, ax, bx);
+      carveCorridorV(bx, ay, by);
+    } else {
+      carveCorridorV(ax, ay, by);
+      carveCorridorH(by, ax, bx);
+    }
+  }
+
+  if (rooms.length < 2) { rooms = [{x:1,y:1,w:8,h:8,cx:5,cy:5}]; map[5][5] = T.FLOOR; }
+
+  player = { x: rooms[0].cx, y: rooms[0].cy, hp: 30, maxHp: 30, atk: 4, def: 2, lvl: 1, xp: 0, xpNext: 10, weapon: 0, armor: 0 };
+  enemies = [];
+  items = [];
+  messages = [];
+
+  let startRoom = rooms[0];
+  player.x = startRoom.cx; player.y = startRoom.cy;
+
+  for (let i = 1; i < rooms.length; i++) {
+    let r = rooms[i];
+    let numEnemies = rng(1, Math.min(3, 1 + Math.floor(level / 2)));
+    for (let e = 0; e < numEnemies; e++) {
+      let ex = rng(r.x + 1, r.x + r.w - 2);
+      let ey = rng(r.y + 1, r.y + r.h - 2);
+      if (map[ey][ex] === T.FLOOR && !(ex === player.x && ey === player.y)) {
+        let isOrc = Math.random() < 0.2 + level * 0.05;
+        enemies.push({
+          x: ex, y: ey,
+          name: isOrc ? 'Orc' : 'Goblin',
+          hp: isOrc ? 12 + level * 3 : 6 + level * 2,
+          maxHp: isOrc ? 12 + level * 3 : 6 + level * 2,
+          atk: isOrc ? 3 + level : 2 + Math.floor(level / 2),
+          def: isOrc ? 1 + Math.floor(level / 2) : 0,
+          char: isOrc ? 'O' : 'g',
+          color: isOrc ? '#f00' : '#f80',
+          xp: isOrc ? 5 : 2
+        });
+      }
+    }
+    let numItems = rng(0, 2);
+    for (let i2 = 0; i2 < numItems; i2++) {
+      let ix = rng(r.x + 1, r.x + r.w - 2);
+      let iy = rng(r.y + 1, r.y + r.h - 2);
+      if (map[iy][ix] === T.FLOOR) {
+        let roll = Math.random();
+        if (roll < 0.4) {
+          items.push({x: ix, y: iy, name: 'Health Potion', char: '!', color: '#f0f', type: 'potion', value: rng(8, 15)});
+        } else if (roll < 0.7) {
+          let bonus = rng(1, 1 + Math.floor(level / 2));
+          items.push({x: ix, y: iy, name: 'Dagger +' + bonus, char: '/', color: '#0ff', type: 'weapon', value: bonus});
+        } else {
+          let bonus = rng(1, Math.floor(level / 2) + 1);
+          items.push({x: ix, y: iy, name: 'Leather Armor +' + bonus, char: '[', color: '#0af', type: 'armor', value: bonus});
+        }
+      }
+    }
+  }
+
+  let endRoom = rooms[rooms.length - 1];
+  stairs = { x: endRoom.cx, y: endRoom.cy };
+  map[stairs.y][stairs.x] = T.FLOOR;
+
+  addMessage('Welcome to the dungeon! Use arrow keys or WASD to move.', '#ff0');
+  addMessage('Find the stairs > to descend deeper.', '#ff0');
+}
+
+function carveCorridorH(y, x1, x2) {
+  let s = Math.min(x1, x2), e = Math.max(x1, x2);
+  for (let x = s; x <= e; x++) map[y][x] = T.FLOOR;
+}
+function carveCorridorV(x, y1, y2) {
+  let s = Math.min(y1, y2), e = Math.max(y1, y2);
+  for (let y = s; y <= e; y++) map[y][x] = T.FLOOR;
+}
+
+function addMessage(text, color) {
+  messages.push({text, color: color || '#ccc'});
+  if (messages.length > 50) messages.shift();
+}
+
+function computeFOV() {
+  visible = Array.from({length: ROWS}, () => Array(COLS).fill(false));
+  let radius = 8 + Math.floor(player.lvl / 2);
+  for (let angle = 0; angle < 360; angle += 1) {
+    let rad = angle * Math.PI / 180;
+    let dx = Math.cos(rad), dy = Math.sin(rad);
+    let cx = player.x + 0.5, cy = player.y + 0.5;
+    for (let d = 0; d < radius; d++) {
+      let tx = Math.floor(cx), ty = Math.floor(cy);
+      if (tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) break;
+      visible[ty][tx] = true;
+      revealed[ty][tx] = true;
+      if (map[ty][tx] === T.WALL) break;
+      cx += dx * 0.5; cy += dy * 0.5;
+    }
+  }
+}
+
+function getEnemyAt(x, y) {
+  return enemies.find(e => e.x === x && e.y === y && e.hp > 0);
+}
+function getItemAt(x, y) {
+  return items.find(i => i.x === x && i.y === y);
+}
+
+function movePlayer(dx, dy) {
+  if (gameOver) return;
+  let nx = player.x + dx, ny = player.y + dy;
+  if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return;
+  if (map[ny][nx] === T.WALL) return;
+
+  let enemy = getEnemyAt(nx, ny);
+  if (enemy) {
+    attack(enemy);
+    endTurn();
+    return;
+  }
+
+  player.x = nx; player.y = ny;
+
+  let item = getItemAt(nx, ny);
+  if (item) {
+    if (item.type === 'potion') {
+      let heal = Math.min(item.value, player.maxHp - player.hp);
+      player.hp += heal;
+      addMessage('Drink potion. Healed ' + heal + ' HP.', '#f0f');
+      items = items.filter(i => i !== item);
+    } else if (item.type === 'weapon') {
+      player.weapon = item.value;
+      addMessage('Equip ' + item.name + ' (+' + item.value + ' atk).', '#0ff');
+      items = items.filter(i => i !== item);
+    } else if (item.type === 'armor') {
+      player.armor = item.value;
+      addMessage('Equip ' + item.name + ' (+' + item.value + ' def).', '#0af');
+      items = items.filter(i => i !== item);
+    }
+  }
+
+  if (nx === stairs.x && ny === stairs.y) {
+    level++;
+    addMessage('You descend to level ' + level + '...', '#ff0');
+    generateDungeon();
+    computeFOV();
+    render();
+    return;
+  }
+
+  endTurn();
+}
+
+function attack(target) {
+  let dmg = Math.max(1, player.atk + player.weapon - target.def + rng(-1, 1));
+  target.hp -= dmg;
+  addMessage('Hit ' + target.name + ' for ' + dmg + ' damage.', '#ff0');
+  if (target.hp <= 0) {
+    addMessage(target.name + ' dies!', '#0f0');
+    player.xp += target.xp;
+    checkLevelUp();
+  }
+}
+
+function checkLevelUp() {
+  while (player.xp >= player.xpNext) {
+    player.xp -= player.xpNext;
+    player.lvl++;
+    player.xpNext = Math.floor(player.xpNext * 1.6);
+    player.maxHp += 5;
+    player.hp = Math.min(player.hp + 10, player.maxHp);
+    player.atk += 1;
+    player.def += 1;
+    addMessage('Level up! You are now level ' + player.lvl + '!', '#0f0');
+  }
+}
+
+function endTurn() {
+  computeFOV();
+  for (let e of enemies) {
+    if (e.hp <= 0) continue;
+    let d = dist(e.x, e.y, player.x, player.y);
+    if (d > 8) continue;
+    if (d < 1.5) {
+      let dmg = Math.max(1, e.atk - player.def - player.armor + rng(-1, 1));
+      player.hp -= dmg;
+      addMessage(e.name + ' hits you for ' + dmg + ' damage.', '#f88');
+      if (player.hp <= 0) {
+        gameOver = true;
+        addMessage('You have died! Press R to restart.', '#f00');
+      }
+    } else {
+      let dx = Math.sign(player.x - e.x), dy = Math.sign(player.y - e.y);
+      let moves = [];
+      if (Math.abs(player.x - e.x) >= Math.abs(player.y - e.y)) {
+        moves.push([dx, 0]);
+        if (dx !== 0) moves.push([0, dy]);
+      } else {
+        moves.push([0, dy]);
+        if (dy !== 0) moves.push([dx, 0]);
+      }
+      for (let [mx, my] of moves) {
+        let nx = e.x + mx, ny = e.y + my;
+        if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
+        if (map[ny][nx] === T.WALL) continue;
+        if (getEnemyAt(nx, ny)) continue;
+        if (nx === player.x && ny === player.y) continue;
+        e.x = nx; e.y = ny;
+        break;
+      }
+    }
+  }
+  enemies = enemies.filter(e => e.hp > 0);
+  render();
+}
+
+function render() {
+  let html = '';
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      if (!revealed[y][x]) {
+        html += ' ';
+      } else if (visible[y][x]) {
+        if (x === player.x && y === player.y) {
+          html += '<span class="player">@</span>';
+        } else {
+          let ch = CHARS[map[y][x]];
+          let cls = map[y][x] === T.WALL ? 'wall' : 'floor-vis';
+          let enemy = getEnemyAt(x, y);
+          if (enemy) { ch = enemy.char; cls = 'goblin'; }
+          let item = getItemAt(x, y);
+          if (item) { ch = item.char; cls = item.color === '#f0f' ? 'potion' : item.color === '#0ff' ? 'weapon' : 'armor'; }
+          if (x === stairs.x && y === stairs.y) { ch = '>'; cls = 'stairs'; }
+          html += '<span class="' + cls + '">' + ch + '</span>';
+        }
+      } else {
+        if (map[y][x] === T.WALL) html += '<span class="wall">#</span>';
+        else html += '<span class="floor">.</span>';
+      }
+    }
+    html += '\n';
+  }
+
+  let ui = 'HP: ' + player.hp + '/' + player.maxHp + '  ATK: ' + (player.atk + player.weapon) + '  DEF: ' + (player.def + player.armor) + '  Lvl: ' + player.lvl + '  XP: ' + player.xp + '/' + player.xpNext + '  Floor: ' + level;
+  if (gameOver) ui += '  <span class="dead">GAME OVER - Press R to restart</span>';
+
+  let msgHtml = messages.slice(-4).map(m => '<span style="color:' + m.color + '">' + m.text + '</span>').join('  ');
+
+  document.getElementById('game').innerHTML = html;
+  document.getElementById('ui').innerHTML = ui + '<br>' + msgHtml;
+}
+
+document.addEventListener('keydown', function(e) {
+  if (gameOver && e.key === 'r') {
+    level = 1; gameOver = false;
+    generateDungeon();
+    computeFOV();
+    render();
+    return;
+  }
+  if (gameOver) return;
+
+  let handled = false;
+  switch(e.key) {
+    case 'ArrowUp': case 'w': case 'W': movePlayer(0, -1); handled = true; break;
+    case 'ArrowDown': case 's': case 'S': movePlayer(0, 1); handled = true; break;
+    case 'ArrowLeft': case 'a': case 'A': movePlayer(-1, 0); handled = true; break;
+    case 'ArrowRight': case 'd': case 'D': movePlayer(1, 0); handled = true; break;
+    case ' ': endTurn(); render(); handled = true; break;
+  }
+  if (handled) e.preventDefault();
+});
+
+level = 1; gameOver = false;
+generateDungeon();
+computeFOV();
+render();
+</script>
+</body>
+</html>

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump Clone</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background-color: #1a1a2e;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        font-family: 'Courier New', Courier, monospace;
+        color: #fff;
+    }
+    canvas {
+        background-color: #f0f0f0;
+        border: 4px solid #16213e;
+        box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        display: block;
+    }
+    #ui {
+        position: absolute;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        text-align: center;
+        pointer-events: none;
+    }
+    #score {
+        font-size: 24px;
+        font-weight: bold;
+        color: #16213e;
+        text-shadow: 1px 1px 0 #fff;
+    }
+    #gameover {
+        display: none;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.85);
+        padding: 30px;
+        border-radius: 10px;
+        text-align: center;
+        border: 2px solid #e94560;
+    }
+    #gameover h1 { margin-top: 0; color: #e94560; font-size: 32px; }
+    #gameover p { font-size: 18px; color: #fff; }
+    #gameover button {
+        margin-top: 15px;
+        padding: 10px 20px;
+        font-size: 16px;
+        font-family: inherit;
+        background: #e94560;
+        color: white;
+        border: none;
+        cursor: pointer;
+        border-radius: 5px;
+    }
+    #gameover button:hover { background: #c23152; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+    <div id="score">Score: 0</div>
+</div>
+
+<div id="gameover">
+    <h1>GAME OVER</h1>
+    <p id="final-score">Score: 0</p>
+    <button onclick="resetGame()">Try Again</button>
+</div>
+
+<canvas id="gameCanvas" width="400" height="600"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const goEl = document.getElementById('gameover');
+    const finalScoreEl = document.getElementById('final-score');
+
+    // --- Game State ---
+    let gameRunning = true;
+    let score = 0;
+    let cameraY = 0;
+
+    // --- Player ---
+    const player = {
+        x: 200,
+        y: 450,
+        w: 30,
+        h: 40,
+        vx: 0,
+        vy: 0,
+        speed: 5,
+        jumpForce: -10,
+        friction: 0.85,
+        grounded: true,
+        color: '#e94560',
+        animFrame: 0
+    };
+
+    // --- Platforms ---
+    let platforms = [];
+    const PLATFORM_MIN_W = 50;
+    const PLATFORM_MAX_W = 90;
+    const PLATFORM_MIN_H = 12;
+    const PLATFORM_MAX_H = 20;
+    const PLATFORM_GAP = 110; // Max vertical gap between platforms
+
+    // --- Input ---
+    const keys = {
+        left: false,
+        right: false
+    };
+
+    document.addEventListener('keydown', (e) => {
+        if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
+        if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
+        if ((e.code === 'ArrowLeft' || e.code === 'KeyA' || e.code === 'ArrowRight' || e.code === 'KeyD') && !gameRunning) {
+            resetGame();
+        }
+    });
+
+    document.addEventListener('keyup', (e) => {
+        if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = false;
+        if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
+    });
+
+    // --- Initialization ---
+    function init() {
+        platforms = [];
+        score = 0;
+        cameraY = 0;
+        gameRunning = true;
+        goEl.style.display = 'none';
+        scoreEl.innerText = 'Score: 0';
+
+        // Create initial platform under player
+        platforms.push({
+            x: 185,
+            y: 550,
+            w: 60,
+            h: 15,
+            color: '#4ecca3'
+        });
+
+        // Create a few more to give headroom
+        for (let i = 0; i < 5; i++) {
+            addPlatform();
+        }
+    }
+
+    function addPlatform() {
+        const highestPlat = platforms[platforms.length - 1];
+        const x = Math.random() * (canvas.width - PLATFORM_MIN_W);
+        const w = PLATFORM_MIN_W + Math.random() * (PLATFORM_MAX_W - PLATFORM_MIN_W);
+        const h = PLATFORM_MIN_H + Math.random() * (PLATFORM_MAX_H - PLATFORM_MIN_H);
+        const y = highestPlat.y - (PLATFORM_GAP + Math.random() * 40);
+        
+        // Color palette
+        const colors = ['#4ecca3', '#45aaf2', '#f5a623', '#9b59b6', '#e94560', '#00d2d3'];
+        const color = colors[Math.floor(Math.random() * colors.length)];
+
+        platforms.push({ x, y, w, h, color });
+    }
+
+    function resetGame() {
+        init();
+        loop();
+    }
+
+    // --- Physics & Logic ---
+    function update() {
+        if (!gameRunning) return;
+
+        // Horizontal Movement
+        if (keys.left) player.vx = -player.speed;
+        else if (keys.right) player.vx = player.speed;
+        else player.vx *= player.friction;
+
+        player.x += player.vx;
+        player.y += player.vy;
+        player.vy += 0.45; // Gravity
+
+        // Screen wrapping
+        if (player.x + player.w < 0) player.x = canvas.width;
+        if (player.x > canvas.width) player.x = -player.w;
+
+        // Jumping
+        if (player.grounded) {
+            player.vy = player.jumpForce;
+            player.grounded = false;
+            player.animFrame = 0;
+        }
+
+        // Platform Collision
+        player.grounded = false;
+        for (let plat of platforms) {
+            // Simple AABB collision
+            if (player.x < plat.x + plat.w &&
+                player.x + player.w > plat.x &&
+                player.y < plat.y + plat.h &&
+                player.y + player.h > plat.y) {
+                
+                // Only collide if falling and hitting the top
+                if (player.vy > 0 && player.y + player.h - player.vy <= plat.y + 5) {
+                    player.grounded = true;
+                    player.vy = 0;
+                    player.y = plat.y - player.h;
+                }
+            }
+        }
+
+        // Scoring
+        if (player.y < cameraY) {
+            cameraY = player.y;
+            score++;
+            scoreEl.innerText = 'Score: ' + score;
+        }
+
+        // Game Over
+        if (player.y > canvas.height) {
+            gameRunning = false;
+            finalScoreEl.innerText = 'Score: ' + score;
+            goEl.style.display = 'block';
+        }
+
+        // Procedural Generation
+        // Remove platforms below screen
+        platforms = platforms.filter(p => p.y < canvas.height + 50);
+
+        // Add platforms above
+        if (platforms.length === 0 || platforms[platforms.length - 1].y > cameraY + PLATFORM_GAP) {
+            addPlatform();
+        }
+    }
+
+    // --- Rendering ---
+    function draw() {
+        // Clear
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Draw Background Grid (Parallax feel)
+        ctx.strokeStyle = '#e0e0e0';
+        ctx.lineWidth = 1;
+        const gridSize = 40;
+        const offset = cameraY % gridSize;
+        for (let y = -offset; y < canvas.height; y += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(canvas.width, y);
+            ctx.stroke();
+        }
+        for (let x = 0; x < canvas.width; x += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+        }
+
+        // Draw Platforms
+        for (let plat of platforms) {
+            const drawY = plat.y - cameraY;
+            if (drawY > canvas.height || drawY + plat.h < 0) continue;
+
+            // Shadow
+            ctx.fillStyle = 'rgba(0,0,0,0.1)';
+            ctx.fillRect(plat.x + 3, drawY + 3, plat.w, plat.h);
+
+            // Main body
+            ctx.fillStyle = plat.color;
+            ctx.fillRect(plat.x, drawY, plat.w, plat.h);
+
+            // Top highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.3)';
+            ctx.fillRect(plat.x, drawY, plat.w, 3);
+        }
+
+        // Draw Player (Doodle Style)
+        const drawX = player.x - cameraY; // Player doesn't move vertically relative to camera
+        const drawY = player.y - cameraY;
+
+        ctx.save();
+        ctx.translate(drawX + player.w / 2, drawY + player.h / 2);
+
+        // Bobbing animation
+        if (player.grounded) {
+            player.animFrame += 0.15;
+            const bob = Math.sin(player.animFrame) * 3;
+            ctx.translate(0, bob);
+        }
+
+        // Legs
+        ctx.strokeStyle = player.color;
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        const legSwing = player.grounded ? Math.sin(player.animFrame * 2) * 8 : 0;
+        
+        ctx.beginPath();
+        ctx.moveTo(0, 10);
+        ctx.lineTo(-10 + legSwing, 20);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, 10);
+        ctx.lineTo(10 - legSwing, 20);
+        ctx.stroke();
+
+        // Body
+        ctx.strokeStyle = player.color;
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(0, 15);
+        ctx.lineTo(0, -10);
+        ctx.stroke();
+
+        // Head
+        ctx.fillStyle = player.color;
+        ctx.beginPath();
+        ctx.arc(0, -14, 10, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Eyes
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.arc(-3, -16, 3, 0, Math.PI * 2);
+        ctx.arc(3, -16, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'black';
+        ctx.beginPath();
+        ctx.arc(-3, -16, 1.5, 0, Math.PI * 2);
+        ctx.arc(3, -16, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Arms
+        ctx.strokeStyle = player.color;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-5, -5);
+        ctx.lineTo(-12, -12);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(5, -5);
+        ctx.lineTo(12, -12);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
+    // --- Game Loop ---
+    function loop() {
+        update();
+        draw();
+        if (gameRunning) {
+            requestAnimationFrame(loop);
+        }
+    }
+
+    // Start
+    init();
+    loop();
+
+</script>
+</body>
+</html>

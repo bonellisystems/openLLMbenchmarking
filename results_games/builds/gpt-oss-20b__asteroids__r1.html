@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Asteroids</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#000;color:#fff;font-family:sans-serif;}
+canvas{display:block;}
+#score{position:absolute;top:10px;left:10px;font-size:20px;}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="score">Score: 0</div>
+<script>
+(() => {
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+let W=canvas.width=window.innerWidth;
+let H=canvas.height=window.innerHeight;
+window.addEventListener('resize',()=>{W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;});
+
+const ship={
+  x:W/2,y:H/2,angle:0,vel:{x:0,y:0},radius:10,rotSpeed:0.07,thrust:0.1,friction:0.99
+};
+const keys={left:false,right:false,up:false,space:false};
+window.addEventListener('keydown',e=>{
+  if(e.code==='ArrowLeft')keys.left=true;
+  if(e.code==='ArrowRight')keys.right=true;
+  if(e.code==='ArrowUp')keys.up=true;
+  if(e.code==='Space')keys.space=true;
+});
+window.addEventListener('keyup',e=>{
+  if(e.code==='ArrowLeft')keys.left=false;
+  if(e.code==='ArrowRight')keys.right=false;
+  if(e.code==='ArrowUp')keys.up=false;
+  if(e.code==='Space')keys.space=false;
+});
+
+const bullets=[];
+const asteroids=[];
+let score=0;
+const maxAsteroids=5;
+function init(){
+  ship.x=W/2;ship.y=H/2;ship.angle=0;ship.vel={x:0,y:0};
+  bullets.length=0;
+  asteroids.length=0;
+  for(let i=0;i<maxAsteroids;i++)createAsteroid();
+  score=0;
+  updateScore();
+}
+function createAsteroid(size='large',x=null,y=null){
+  const s=size;
+  const r={large:60,medium:30,small:15}[s];
+  const a={large:8,medium:6,small:4}[s];
+  const shape=[];
+  for(let i=0;i<a;i++){
+    const angle=2*Math.PI*i/a;
+    const rad=r*(0.7+0.6*Math.random());
+    shape.push({x:rad*Math.cos(angle),y:rad*Math.sin(angle)});
+  }
+  const pos={x:x!==null?x:Math.random()*W,y:y!==null?y:Math.random()*H};
+  const vel={x:(Math.random()-0.5)*2, y:(Math.random()-0.5)*2};
+  asteroids.push({pos,vel,shape,radius:r,size:s});
+}
+function splitAsteroid(asteroid){
+  if(asteroid.size==='small')return;
+  const newSize={large:'medium',medium:'small'}[asteroid.size];
+  for(let i=0;i<2;i++){
+    const pos={x:asteroid.pos.x,y:asteroid.pos.y};
+    const vel={x:asteroid.vel.x+ (Math.random()-0.5)*2, y:asteroid.vel.y+ (Math.random()-0.5)*2};
+    const shape=[];
+    const a={medium:6,small:4}[newSize];
+    const r={medium:30,small:15}[newSize];
+    for(let j=0;j<a;j++){
+      const angle=2*Math.PI*j/a;
+      const rad=r*(0.7+0.6*Math.random());
+      shape.push({x:rad*Math.cos(angle),y:rad*Math.sin(angle)});
+    }
+    asteroids.push({pos,vel,shape,radius:r,size:newSize});
+  }
+}
+function fire(){
+  const speed=5;
+  const rad=ship.angle;
+  const vx=ship.vel.x+speed*Math.cos(rad);
+  const vy=ship.vel.y+speed*Math.sin(rad);
+  bullets.push({pos:{x:ship.x,y:ship.y},vel:{x:vx,y:vy},life:60});
+}
+function update(){
+  // ship controls
+  if(keys.left)ship.angle-=ship.rotSpeed;
+  if(keys.right)ship.angle+=ship.rotSpeed;
+  if(keys.up){
+    ship.vel.x+=ship.thrust*Math.cos(ship.angle);
+    ship.vel.y+=ship.thrust*Math.sin(ship.angle);
+  }
+  if(keys.space){fire();keys.space=false;}
+  // ship movement
+  ship.x+=ship.vel.x;
+  ship.y+=ship.vel.y;
+  ship.vel.x*=ship.friction;
+  ship.vel.y*=ship.friction;
+  // wrap
+  if(ship.x<0)ship.x+=W; if(ship.x>W)ship.x-=W;
+  if(ship.y<0)ship.y+=H; if(ship.y>H)ship.y-=H;
+  // bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b=bullets[i];
+    b.pos.x+=b.vel.x;
+    b.pos.y+=b.vel.y;
+    b.life--;
+    if(b.life<=0||b.pos.x<0||b.pos.x>W||b.pos.y<0||b.pos.y>H)bullets.splice(i,1);
+  }
+  // asteroids
+  for(let i=0;i<asteroids.length;i++){
+    const a=asteroids[i];
+    a.pos.x+=a.vel.x;
+    a.pos.y+=a.vel.y;
+    if(a.pos.x<0)a.pos.x+=W; if(a.pos.x>W)a.pos.x-=W;
+    if(a.pos.y<0)a.pos.y+=H; if(a.pos.y>H)a.pos.y-=H;
+  }
+  // collisions
+  // bullet-asteroid
+  for(let i=bullets.length-1;i>=0;i--){
+    const b=bullets[i];
+    for(let j=asteroids.length-1;j>=0;j--){
+      const a=asteroids[j];
+      const dx=b.pos.x-a.pos.x;
+      const dy=b.pos.y-a.pos.y;
+      const dist=Math.hypot(dx,dy);
+      if(dist<a.radius){
+        bullets.splice(i,1);
+        asteroids.splice(j,1);
+        splitAsteroid(a);
+        score+={large:20,medium:50,small:100}[a.size];
+        updateScore();
+        break;
+      }
+    }
+  }
+  // ship-asteroid
+  for(let i=0;i<asteroids.length;i++){
+    const a=asteroids[i];
+    const dx=ship.x-a.pos.x;
+    const dy=ship.y-a.pos.y;
+    const dist=Math.hypot(dx,dy);
+    if(dist<ship.radius+a.radius){
+      init();
+      break;
+    }
+  }
+}
+function draw(){
+  ctx.fillStyle='#000';
+  ctx.fillRect(0,0,W,H);
+  // draw ship
+  ctx.save();
+  ctx.translate(ship.x,ship.y);
+  ctx.rotate(ship.angle);
+  ctx.strokeStyle='#fff';
+  ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(0,-15);
+  ctx.lineTo(10,10);
+  ctx.lineTo(-10,10);
+  ctx.closePath();
+  ctx.stroke();
+  ctx.restore();
+  // draw bullets
+  ctx.fillStyle='#ff0';
+  for(const b of bullets){
+    ctx.beginPath();
+    ctx.arc(b.pos.x,b.pos.y,2,0,2*Math.PI);
+    ctx.fill();
+  }
+  // draw asteroids
+  ctx.strokeStyle='#fff';
+  for(const a of asteroids){
+    ctx.save();
+    ctx.translate(a.pos.x,a.pos.y);
+    ctx.beginPath();
+    const s=a.shape;
+    ctx.moveTo(s[0].x,s[0].y);
+    for(let i=1;i<s.length;i++)ctx.lineTo(s[i].x,s[i].y);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+function updateScore(){document.getElementById('score').textContent='Score: '+score;}
+function loop(){
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+init();
+loop();
+})();
+</script>
+</body>
+</html>

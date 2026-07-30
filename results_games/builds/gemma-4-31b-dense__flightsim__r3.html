@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Flight Sim</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; font-family: monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #hud {
+            position: absolute; top: 20px; left: 20px; color: #0f0;
+            pointer-events: none; text-shadow: 1px 1px 2px #000;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        ALT: <span id="alt">0</span><br>
+        SPD: <span id="spd">0</span><br>
+        POS: <span id="pos">0,0</span><br>
+        <div style="margin-top:10px; font-size: 12px; color: #8f8;">
+            W/S: Pitch | A/D: Roll
+        </div>
+    </div>
+    <canvas id="canvas"></canvas>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const altEl = document.getElementById('alt');
+        const spdEl = document.getElementById('spd');
+        const posEl = document.getElementById('pos');
+
+        let width, height;
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        const state = {
+            x: 0, y: 100, z: 0,
+            pitch: 0, yaw: 0, roll: 0,
+            speed: 2,
+            keys: {}
+        };
+
+        window.addEventListener('keydown', e => state.keys[e.code] = true);
+        window.addEventListener('keyup', e => state.keys[e.code] = false);
+
+        const buildings = [];
+        const citySize = 20;
+        const spacing = 400;
+        for (let i = -citySize; i < citySize; i++) {
+            for (let j = -citySize; j < citySize; j++) {
+                buildings.push({
+                    x: i * spacing + (Math.random() - 0.5) * 100,
+                    z: j * spacing + (Math.random() - 0.5) * 100,
+                    w: 50 + Math.random() * 100,
+                    h: 100 + Math.random() * 600
+                });
+            }
+        }
+
+        function rotate(x, y, z, p, y_rot, r) {
+            // Yaw
+            let cosY = Math.cos(y_rot), sinY = Math.sin(y_rot);
+            let x1 = x * cosY - z * sinY;
+            let z1 = x * sinY + z * cosY;
+            // Pitch
+            let cosP = Math.cos(p), sinP = Math.sin(p);
+            let y2 = y * cosP - z1 * sinP;
+            let z2 = y * sinP + z1 * cosP;
+            // Roll
+            let cosR = Math.cos(r), sinR = Math.sin(r);
+            let x3 = x1 * cosR - y2 * sinR;
+            let y3 = x1 * sinR + y2 * cosR;
+            return { x: x3, y: y3, z: z2 };
+        }
+
+        function project(x, y, z) {
+            const relX = x - state.x;
+            const relY = y - state.y;
+            const relZ = z - state.z;
+            const rot = rotate(relX, relY, relZ, state.pitch, state.yaw, state.roll);
+            if (rot.z < 1) return null;
+            const f = 600;
+            return {
+                x: (rot.x * f) / rot.z + width / 2,
+                y: (rot.y * f) / rot.z + height / 2,
+                z: rot.z
+            };
+        }
+
+        function loop() {
+            // Controls
+            if (state.keys['KeyW']) state.pitch -= 0.02;
+            if (state.keys['KeyS']) state.pitch += 0.02;
+            if (state.keys['KeyA']) state.roll -= 0.03;
+            if (state.keys['KeyD']) state.roll += 0.03;
+
+            // Simple flight physics: roll affects yaw
+            state.yaw += state.roll * 0.01;
+            state.roll *= 0.98;
+
+            // Movement
+            const vx = Math.cos(state.pitch) * Math.sin(state.yaw);
+            const vy = Math.sin(state.pitch);
+            const vz = Math.cos(state.pitch) * Math.cos(state.yaw);
+            
+            state.x += vx * state.speed;
+            state.y += vy * state.speed;
+            state.z += vz * state.speed;
+
+            // Ground collision
+            if (state.y < 0) state.y = 0;
+
+            // Render
+            ctx.fillStyle = '#112';
+            ctx.fillRect(0, 0, width, height);
+
+            // Horizon/Ground
+            ctx.fillStyle = '#050';
+            ctx.fillRect(0, height/2 + (state.pitch * 500), width, height/2);
+
+            const sortedBuildings = buildings.map(b => {
+                const p = project(b.x, 0, b.z);
+                return p ? { ...b, p } : null;
+            }).filter(b => b !== null).sort((a, b) => b.p.z - a.p.z);
+
+            ctx.strokeStyle = '#0f0';
+            ctx.lineWidth = 1;
+
+            sortedBuildings.forEach(b => {
+                const w2 = b.w / 2;
+                const h = b.h;
+                const pts = [
+                    project(b.x - w2, 0, b.z - w2), project(b.x + w2, 0, b.z - w2),
+                    project(b.x + w2, 0, b.z + w2), project(b.x - w2, 0, b.z + w2),
+                    project(b.x - w2, -h, b.z - w2), project(b.x + w2, -h, b.z - w2),
+                    project(b.x + w2, -h, b.z + w2), project(b.x - w2, -h, b.z + w2)
+                ];
+
+                if (pts.some(p => p === null)) return;
+
+                const drawLine = (i, j) => {
+                    ctx.beginPath();
+                    ctx.moveTo(pts[i].x, pts[i].y);
+                    ctx.lineTo(pts[j].x, pts[j].y);
+                    ctx.stroke();
+                };
+
+                // Bottom
+                drawLine(0, 1); drawLine(1, 2); drawLine(2, 3); drawLine(3, 0);
+                // Top
+                drawLine(4, 5); drawLine(5, 6); drawLine(6, 7); drawLine(7, 4);
+                // Pillars
+                drawLine(0, 4); drawLine(1, 5); drawLine(2, 6); drawLine(3, 7);
+            });
+
+            // HUD update
+            altEl.innerText = Math.round(state.y);
+            spdEl.innerText = Math.round(state.speed * 100);
+            posEl.innerText = `${Math.round(state.x)}, ${Math.round(state.z)}`;
+
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>

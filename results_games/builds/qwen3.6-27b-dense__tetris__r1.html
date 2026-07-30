@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tetris</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #0a0a0a;
+display: flex;
+justify-content: center;
+align-items: center;
+min-height: 100vh;
+font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+color: #fff;
+overflow: hidden;
+}
+#game-container {
+display: flex;
+gap: 20px;
+align-items: flex-start;
+}
+canvas {
+border: 2px solid #333;
+border-radius: 4px;
+}
+#side-panel {
+display: flex;
+flex-direction: column;
+gap: 15px;
+min-width: 140px;
+}
+.panel-box {
+background: #1a1a2e;
+border: 2px solid #333;
+border-radius: 8px;
+padding: 12px;
+text-align: center;
+}
+.panel-box h3 {
+font-size: 12px;
+text-transform: uppercase;
+letter-spacing: 2px;
+color: #888;
+margin-bottom: 8px;
+}
+.panel-box .value {
+font-size: 24px;
+font-weight: bold;
+color: #0ff;
+}
+#next-canvas, #hold-canvas {
+display: block;
+margin: 0 auto;
+}
+#controls {
+font-size: 11px;
+color: #666;
+line-height: 1.8;
+}
+#controls kbd {
+background: #333;
+padding: 2px 6px;
+border-radius: 3px;
+font-size: 10px;
+color: #ccc;
+}
+#game-over-overlay {
+display: none;
+position: fixed;
+top: 0; left: 0; right: 0; bottom: 0;
+background: rgba(0,0,0,0.8);
+justify-content: center;
+align-items: center;
+flex-direction: column;
+z-index: 100;
+}
+#game-over-overlay.show { display: flex; }
+#game-over-overlay h1 {
+font-size: 48px;
+color: #f44;
+margin-bottom: 10px;
+}
+#game-over-overlay p {
+font-size: 20px;
+color: #aaa;
+margin-bottom: 20px;
+}
+#game-over-overlay button {
+padding: 12px 30px;
+font-size: 18px;
+background: #0ff;
+color: #000;
+border: none;
+border-radius: 6px;
+cursor: pointer;
+font-weight: bold;
+}
+#game-over-overlay button:hover { background: #0dd; }
+#pause-overlay {
+display: none;
+position: fixed;
+top: 0; left: 0; right: 0; bottom: 0;
+background: rgba(0,0,0,0.7);
+justify-content: center;
+align-items: center;
+z-index: 99;
+}
+#pause-overlay.show { display: flex; }
+#pause-overlay h1 { font-size: 48px; color: #ff0; }
+</style>
+</head>
+<body>
+<div id="game-container">
+<div id="left-panel" style="display:flex;flex-direction:column;gap:15px;min-width:140px;">
+<div class="panel-box">
+<h3>Hold</h3>
+<canvas id="hold-canvas" width="100" height="80"></canvas>
+</div>
+<div class="panel-box">
+<h3>Score</h3>
+<div class="value" id="score">0</div>
+</div>
+<div class="panel-box">
+<h3>Level</h3>
+<div class="value" id="level">1</div>
+</div>
+<div class="panel-box">
+<h3>Lines</h3>
+<div class="value" id="lines">0</div>
+</div>
+</div>
+<canvas id="game-canvas" width="300" height="600"></canvas>
+<div id="side-panel">
+<div class="panel-box">
+<h3>Next</h3>
+<canvas id="next-canvas" width="100" height="280"></canvas>
+</div>
+<div class="panel-box" id="controls">
+<h3>Controls</h3>
+<kbd>←</kbd> <kbd>→</kbd> Move<br>
+<kbd>↑</kbd> Rotate CW<br>
+<kbd>Z</kbd> Rotate CCW<br>
+<kbd>↓</kbd> Soft Drop<br>
+<kbd>Space</kbd> Hard Drop<br>
+<kbd>C</kbd> Hold<br>
+<kbd>P</kbd> Pause
+</div>
+</div>
+</div>
+<div id="game-over-overlay">
+<h1>GAME OVER</h1>
+<p>Final Score: <span id="final-score">0</span></p>
+<button onclick="restartGame()">Play Again</button>
+</div>
+<div id="pause-overlay"><h1>PAUSED</h1></div>
+
+<script>
+const COLS = 10;
+const ROWS = 20;
+const BLOCK = 30;
+const canvas = document.getElementById('game-canvas');
+const ctx = canvas.getContext('2d');
+const nextCanvas = document.getElementById('next-canvas');
+const nextCtx = nextCanvas.getContext('2d');
+const holdCanvas = document.getElementById('hold-canvas');
+const holdCtx = holdCanvas.getContext('2d');
+
+const COLORS = {
+I: '#00f0f0',
+O: '#f0f000',
+T: '#a000f0',
+S: '#00f000',
+Z: '#f00000',
+J: '#0000f0',
+L: '#f0a000'
+};
+
+const SHAPES = {
+I: [[0,0],[1,0],[2,0],[3,0]],
+O: [[0,0],[1,0],[0,1],[1,1]],
+T: [[0,0],[1,0],[2,0],[1,1]],
+S: [[1,0],[2,0],[0,1],[1,1]],
+Z: [[0,0],[1,0],[1,1],[2,1]],
+J: [[0,0],[0,1],[1,1],[2,1]],
+L: [[2,0],[0,1],[1,1],[2,1]]
+};
+
+const WALL_KICKS = {
+normal: {
+'0>1': [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+'1>0': [[0,0],[1,0],[1,1],[0,-2],[1,-2]],
+'1>2': [[0,0],[1,0],[1,1],[0,-2],[1,-2]],
+'2>1': [[0,0],[-1,0],[-1,-1],[0,2],[-1,2]],
+'2>3': [[0,0],[1,0],[1,-1],[0,2],[1,2]],
+'3>2': [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+'3>0': [[0,0],[-1,0],[-1,1],[0,-2],[-1,-2]],
+'0>3': [[0,0],[1,0],[1,-1],[0,2],[1,2]]
+},
+I: {
+'0>1': [[0,0],[-2,0],[1,0],[-2,1],[1,-2]],
+'1>0': [[0,0],[2,0],[-1,0],[2,-1],[-1,2]],
+'1>2': [[0,0],[-1,0],[2,0],[-1,-2],[2,1]],
+'2>1': [[0,0],[1,0],[-2,0],[1,2],[-2,-1]],
+'2>3': [[0,0],[2,0],[-1,0],[2,-1],[-1,2]],
+'3>2': [[0,0],[-2,0],[1,0],[-2,1],[1,-2]],
+'3>0': [[0,0],[1,0],[-2,0],[1,2],[-2,-1]],
+'0>3': [[0,0],[-1,0],[2,0],[-1,-2],[2,1]]
+}
+};
+
+let board = [];
+let currentPiece = null;
+let nextPieces = [];
+let holdPiece = null;
+let canHold = true;
+let score = 0;
+let level = 1;
+let lines = 0;
+let gameOver = false;
+let paused = false;
+let dropTimer = 0;
+let lastTime = 0;
+let lockDelay = 0;
+let lockDelayMax = 500;
+let lockMoves = 0;
+let lockMovesMax = 15;
+let isLocking = false;
+let bag = [];
+let animatingRows = [];
+let animTimer = 0;
+const ANIM_DURATION = 300;
+
+function createBoard() {
+board = [];
+for (let r = 0; r < ROWS; r++) {
+board.push(new Array(COLS).fill(null));
+}
+}
+
+function generateBag() {
+let pieces = ['I','O','T','S','Z','J','L'];
+for (let i = pieces.length - 1; i > 0; i--) {
+const j = Math.floor(Math.random() * (i + 1));
+[pieces[i], pieces[j]] = [pieces[j], pieces[i]];
+}
+return pieces;
+}
+
+function getNextPiece() {
+if (bag.length === 0) bag = generateBag();
+return bag.pop();
+}
+
+function fillNextPieces() {
+while (nextPieces.length < 4) {
+nextPieces.push(getNextPiece());
+}
+}
+
+function spawnPiece(type) {
+const blocks = SHAPES[type].map(b => [...b]);
+const piece = {
+type: type,
+blocks: blocks,
+rotation: 0,
+x: Math.floor(COLS / 2) - 2,
+y: 0
+};
+// Adjust starting position
+if (type === 'I') piece.x = Math.floor(COLS / 2) - 2;
+if (type === 'O') piece.x = Math.floor(COLS / 2) - 1;
+return piece;
+}
+
+function initGame() {
+createBoard();
+bag = [];
+nextPieces = [];
+fillNextPieces();
+holdPiece = null;
+canHold = true;
+score = 0;
+level = 1;
+lines = 0;
+gameOver = false;
+paused = false;
+dropTimer = 0;
+lockDelay = 0;
+isLocking = false;
+lockMoves = 0;
+animatingRows = [];
+animTimer = 0;
+currentPiece = spawnPiece(nextPieces.shift());
+fillNextPieces();
+updateUI();
+document.getElementById('game-over-overlay').classList.remove('show');
+document.getElementById('pause-overlay').classList.remove('show');
+}
+
+function getDropSpeed() {
+const speeds = [800,720,630,550,470,380,300,220,150,100,80,65,50,40,30];
+return speeds[Math.min(level - 1, speeds.length - 1)];
+}
+
+function getAbsoluteBlocks(piece) {
+return piece.blocks.map(b => [b[0] + piece.x, b[1] + piece.y]);
+}
+
+function isValid(piece, boardRef) {
+const abs = getAbsoluteBlocks(piece);
+for (const [x, y] of abs) {
+if (x < 0 || x >= COLS || y >= ROWS) return false;
+if (y < 0) continue;
+if (boardRef[y][x] !== null) return false;
+}
+return true;
+}
+
+function rotateCW(blocks) {
+// Find bounding box and rotate
+let maxX = 0, maxY = 0;
+for (const [x, y] of blocks) {
+if (x > maxX) maxX = x;
+if (y > maxY) maxY = y;
+}
+return blocks.map(([x, y]) => [maxY - y, x]);
+}
+
+function rotateCCW(blocks) {
+let minX = 0, minY = 0;
+for (const [x, y] of blocks) {
+if (x < minX) minX = x;
+if (y < minY) minY = y;
+}
+return blocks.map(([x, y]) => [y, -x + minX + maxY]);
+}
+
+function tryRotate(dir) {
+if (!currentPiece || currentPiece.type === 'O') return;
+const oldRotation = currentPiece.rotation;
+const newRotation = (oldRotation + (dir === 1 ? 1 : 3)) % 4;
+const newBlocks = dir === 1 ? rotateCW(currentPiece.blocks) : rotateCCW(currentPiece.blocks);
+const kickKey = `${oldRotation}>${newRotation}`;
+const kicks = currentPiece.type === 'I' ? WALL_KICKS.I[kickKey] : WALL_KICKS.normal[kickKey];
+if (!kicks) return;
+for (const [kx, ky] of kicks) {
+const testPiece = {
+...currentPiece,
+blocks: newBlocks.map(b => [...b]),
+x: currentPiece.x + kx,
+y: currentPiece.y - ky,
+rotation: newRotation
+};
+if (isValid(testPiece, board)) {
+currentPiece.blocks = testPiece.blocks;
+currentPiece.x = testPiece.x;
+currentPiece.y = testPiece.y;
+currentPiece.rotation = newRotation;
+onPieceMove();
+return;
+}
+}
+}
+
+function movePiece(dx, dy) {
+if (!currentPiece) return false;
+currentPiece.x += dx;
+currentPiece.y += dy;
+if (!isValid(currentPiece, board)) {
+currentPiece.x -= dx;
+currentPiece.y -= dy;
+return false;
+}
+if (dx !== 0) onPieceMove();
+return true;
+}
+
+function onPieceMove() {
+if (isLocking) {
+if (lockMoves < lockMovesMax) {
+lockDelay = 0;
+lockMoves++;
+}
+}
+}
+
+function hardDrop() {
+if (!currentPiece) return;
+let dropped = 0;
+while (movePiece(0, 1)) dropped++;
+score += dropped * 2;
+lockPiece();
+}
+
+function getGhostY() {
+if (!currentPiece) return 0;
+let gy = currentPiece.y;
+const testPiece = { ...currentPiece, y: gy };
+while (true) {
+testPiece.y++;
+if (!isValid(testPiece, board)) {
+testPiece.y--;
+return testPiece.y;
+}
+}
+}
+
+function lockPiece() {
+if (!currentPiece) return;
+const abs = getAbsoluteBlocks(currentPiece);
+for (const [x, y] of abs) {
+if (y < 0) {
+triggerGameOver();
+return;
+}
+board[y][x] = currentPiece.type;
+}
+isLocking = false;
+lockDelay = 0;
+lockMoves = 0;
+canHold = true;
+clearLines();
+currentPiece = spawnPiece(nextPieces.shift());
+fillNextPieces();
+if (!isValid(currentPiece, board)) {
+triggerGameOver();
+}
+}
+
+function clearLines() {
+let cleared = [];
+for (let r = ROWS - 1; r >= 0; r--) {
+if (board[r].every(cell => cell !== null)) {
+cleared.push(r);
+}
+}
+if (cleared.length > 0) {
+animatingRows = cleared;
+animTimer = ANIM_DURATION;
+}
+}
+
+function removeClearedRows() {
+for (const r of animatingRows.sort((a, b) => b - a)) {
+board.splice(r, 1);
+board.unshift(new Array(COLS).fill(null));
+}
+const count = animatingRows.length;
+animatingRows = [];
+const points = [0, 100, 300, 500, 800];
+score += (points[count] || 0) * level;
+lines += count;
+level = Math.floor(lines / 10) + 1;
+updateUI();
+}
+
+function doHold() {
+if (!canHold || !currentPiece) return;
+canHold = false;
+const type = currentPiece.type;
+if (holdPiece) {
+const tmp = holdPiece;
+holdPiece = type;
+currentPiece = spawnPiece(tmp);
+} else {
+holdPiece = type;
+currentPiece = spawnPiece(nextPieces.shift());
+fillNextPieces();
+}
+isLocking = false;
+lockDelay = 0;
+lockMoves = 0;
+}
+
+function triggerGameOver() {
+gameOver = true;
+document.getElementById('final-score').textContent = score;
+document.getElementById('game-over-overlay').classList.add('show');
+}
+
+function updateUI() {
+document.getElementById('score').textContent = score;
+document.getElementById('level').textContent = level;
+document.getElementById('lines').textContent = lines;
+}
+
+function drawBlock(context, x, y, color, size, alpha) {
+const a = alpha || 1;
+context.globalAlpha = a;
+context.fillStyle = color;
+context.fillRect(x * size, y * size, size, size);
+// Highlight
+context.fillStyle = 'rgba(255,255,255,0.3)';
+context.fillRect(x * size, y * size, size, 2);
+context.fillRect(x * size, y * size, 2, size);
+// Shadow
+context.fillStyle = 'rgba(0,0,0,0.3)';
+context.fillRect(x * size + size - 2, y * size, 2, size);
+context.fillRect(x * size, y * size + size - 2, size, 2);
+// Border
+context.strokeStyle = 'rgba(0,0,0,0.5)';
+context.lineWidth = 1;
+context.strokeRect(x * size + 0.5, y * size + 0.5, size - 1, size - 1);
+context.globalAlpha = 1;
+}
+
+function drawBoard() {
+ctx.fillStyle = '#0f0f1a';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+// Grid
+ctx.strokeStyle = '#1a1a2e';
+ctx.lineWidth = 0.5;
+for (let x = 0; x <= COLS; x++) {
+ctx.beginPath();
+ctx.moveTo(x * BLOCK, 0);
+ctx.lineTo(x * BLOCK, canvas.height);
+ctx.stroke();
+}
+for (let y = 0; y <= ROWS; y++) {
+ctx.beginPath();
+ctx.moveTo(0, y * BLOCK);
+ctx.lineTo(canvas.width, y * BLOCK);
+ctx.stroke();
+}
+// Board cells
+for (let r = 0; r < ROWS; r++) {
+for (let c = 0; c < COLS; c++) {
+if (board[r][c]) {
+const isAnimating = animatingRows.includes(r);
+if (isAnimating) {
+const progress = 1 - (animTimer / ANIM_DURATION);
+const alpha = 1 - progress;
+const scale = 1 - progress * 0.3;
+ctx.save();
+ctx.translate(c * BLOCK + BLOCK / 2, r * BLOCK + BLOCK / 2);
+ctx.scale(scale, scale);
+ctx.translate(-(c * BLOCK + BLOCK / 2), -(r * BLOCK + BLOCK / 2));
+drawBlock(ctx, c, r, COLORS[board[r][c]], BLOCK, alpha);
+ctx.restore();
+} else {
+drawBlock(ctx, c, r, COLORS[board[r][c]], BLOCK);
+}
+}
+}
+}
+}
+
+function drawPiece(context, piece, offsetX, offsetY, alpha, size) {
+const s = size || BLOCK;
+const ox = offsetX || 0;
+const oy = offsetY || 0;
+for (const [bx, by] of piece.blocks) {
+drawBlock(context, bx + piece.x + ox, by + piece.y + oy, COLORS[piece.type], s, alpha);
+}
+}
+
+function drawGhost() {
+if (!currentPiece) return;
+const ghostY = getGhostY();
+if (ghostY === currentPiece.y) return;
+const ghostPiece = { ...currentPiece, y: ghostY };
+for (const [bx, by] of ghostPiece.blocks) {
+const x = bx + ghostPiece.x;
+const y = by + ghostPiece.y;
+if (y < 0) continue;
+ctx.globalAlpha = 0.2;
+ctx.fillStyle = COLORS[currentPiece.type];
+ctx.fillRect(x * BLOCK, y * BLOCK, BLOCK, BLOCK);
+ctx.strokeStyle = COLORS[currentPiece.type];
+ctx.lineWidth = 1;
+ctx.strokeRect(x * BLOCK + 0.5, y * BLOCK + 0.5, BLOCK - 1, BLOCK - 1);
+ctx.globalAlpha = 1;
+}
+}
+
+function drawPreview(context, canvasEl, pieces, blockSize) {
+const bs = blockSize || 20;
+context.clearRect(0, 0, canvasEl.width, canvasEl.height);
+for (let i = 0; i < Math.min(pieces.length, 4); i++) {
+const type = pieces[i];
+const blocks = SHAPES[type];
+// Center the piece
+let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+for (const [x, y] of blocks) {
+if (x < minX) minX = x;
+if (x > maxX) maxX = x;
+if (y < minY) minY = y;
+if (y > maxY) maxY = y;
+}
+const pw = (maxX - minX + 1) * bs;
+const ph = (maxY - minY + 1) * bs;
+const ox = (canvasEl.width - pw) / 2 - minX * bs;
+const oy = i * 70 + (70 - ph) / 2 - minY * bs;
+for (const [bx, by] of blocks) {
+const px = ox + bx * bs;
+const py = oy + by * bs;
+context.fillStyle = COLORS[type];
+context.fillRect(px, py, bs, bs);
+context.fillStyle = 'rgba(255,255,255,0.3)';
+context.fillRect(px, py, bs, 2);
+context.fillRect(px, py, 2, bs);
+context.fillStyle = 'rgba(0,0,0,0.3)';
+context.fillRect(px + bs - 2, py, 2, bs);
+context.fillRect(px, py + bs - 2, bs, 2);
+context.strokeStyle = 'rgba(0,0,0,0.5)';
+context.lineWidth = 1;
+context.strokeRect(px + 0.5, py + 0.5, bs - 1, bs - 1);
+}
+}
+}
+
+function drawHold() {
+holdCtx.clearRect(0, 0, holdCanvas.width, holdCanvas.height);
+if (!holdPiece) return;
+const blocks = SHAPES[holdPiece];
+let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+for (const [x, y] of blocks) {
+if (x < minX) minX = x;
+if (x > maxX) maxX = x;
+if (y < minY) minY = y;
+if (y > maxY) maxY = y;
+}
+const bs = 20;
+const pw = (maxX - minX + 1) * bs;
+const ph = (maxY - minY + 1) * bs;
+const ox = (holdCanvas.width - pw) / 2 - minX * bs;
+const oy = (holdCanvas.height - ph) / 2 - minY * bs;
+const alpha = canHold ? 1 : 0.3;
+for (const [bx, by] of blocks) {
+const px = ox + bx * bs;
+const py = oy + by * bs;
+holdCtx.globalAlpha = alpha;
+holdCtx.fillStyle = COLORS[holdPiece];
+holdCtx.fillRect(px, py, bs, bs);
+holdCtx.fillStyle = 'rgba(255,255,255,0.3)';
+holdCtx.fillRect(px, py, bs, 2);
+holdCtx.fillRect(px, py, 2, bs);
+holdCtx.fillStyle = 'rgba(0,0,0,0.3)';
+holdCtx.fillRect(px + bs - 2, py, 2, bs);
+holdCtx.fillRect(px, py + bs - 2, bs, 2);
+holdCtx.strokeStyle = 'rgba(0,0,0,0.5)';
+holdCtx.lineWidth = 1;
+holdCtx.strokeRect(px + 0.5, py + 0.5, bs - 1, bs - 1);
+holdCtx.globalAlpha = 1;
+}
+}
+
+function gameLoop(time) {
+requestAnimationFrame(gameLoop);
+if (gameOver || paused) return;
+const dt = time - lastTime;
+lastTime = time;
+if (animatingRows.length > 0) {
+animTimer -= dt;
+if (animTimer <= 0) {
+removeClearedRows();
+}
+drawBoard();
+drawGhost();
+if (currentPiece) drawPiece(ctx, currentPiece);
+drawPreview(nextCtx, nextCanvas, nextPieces);
+drawHold();
+return;
+}
+dropTimer += dt;
+if (currentPiece) {
+const onGround = !isValid({ ...currentPiece, y: currentPiece.y + 1 }, board);
+if (onGround) {
+if (!isLocking) {
+isLocking = true;
+lockDelay = 0;
+}
+lockDelay += dt;
+if (lockDelay >= lockDelayMax) {
+lockPiece();
+dropTimer = 0;
+}
+} else {
+isLocking = false;
+lockDelay = 0;
+if (dropTimer >= getDropSpeed()) {
+movePiece(0, 1);
+dropTimer = 0;
+}
+}
+}
+drawBoard();
+drawGhost();
+if (currentPiece) drawPiece(ctx, currentPiece);
+drawPreview(nextCtx, nextCanvas, nextPieces);
+drawHold();
+}
+
+// DAS (Delayed Auto Shift)
+let dasTimer = 0;
+let dasDirection = 0;
+const DAS_DELAY = 170;
+const DAS_REPEAT = 50;
+let dasActive = false;
+
+document.addEventListener('keydown', (e) => {
+if (gameOver) return;
+if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
+paused = !paused;
+document.getElementById('pause-overlay').classList.toggle('show', paused);
+return;
+}
+if (paused) return;
+switch (e.key) {
+case 'ArrowLeft':
+e.preventDefault();
+if (dasDirection !== -1) {
+dasDirection = -1;
+dasTimer = 0;
+dasActive = false;
+movePiece(-1, 0);
+}
+break;
+case 'ArrowRight':
+e.preventDefault();
+if (dasDirection !== 1) {
+dasDirection = 1;
+dasTimer = 0;
+dasActive = false;
+movePiece(1, 0);
+}
+break;
+case 'ArrowDown':
+e.preventDefault();
+if (movePiece(0, 1)) {
+score += 1;
+dropTimer = 0;
+updateUI();
+}
+break;
+case 'ArrowUp':
+e.preventDefault();
+tryRotate(1);
+break;
+case 'z':
+case 'Z':
+tryRotate(-1);
+break;
+case ' ':
+e.preventDefault();
+hardDrop();
+updateUI();
+break;
+case 'c':
+case 'C':
+doHold();
+break;
+}
+});
+
+document.addEventListener('keyup', (e) => {
+if (e.key === 'ArrowLeft' && dasDirection === -1) dasDirection = 0;
+if (e.key === 'ArrowRight' && dasDirection === 1) dasDirection = 0;
+});
+
+// DAS handling in game loop
+const origGameLoop = gameLoop;
+function gameLoopWithDAS(time) {
+requestAnimationFrame(gameLoopWithDAS);
+if (gameOver || paused) return;
+if (dasDirection !== 0) {
+dasTimer += time - (lastTime || time);
+if (!dasActive && dasTimer >= DAS_DELAY) {
+dasActive = true;
+dasTimer = 0;
+}
+if (dasActive && dasTimer >= DAS_REPEAT) {
+movePiece(dasDirection, 0);
+dasTimer = 0;
+}
+}
+}
+
+function restartGame() {
+initGame();
+}
+
+initGame();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

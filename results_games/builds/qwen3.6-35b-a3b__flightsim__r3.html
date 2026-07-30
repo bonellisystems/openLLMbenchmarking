@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>City Flight Simulator</title>
+<style>
+*{margin:0;padding:0;overflow:hidden}
+body{background:#000}
+canvas{display:block;width:100vw;height:100vh}
+#hud{position:fixed;top:10px;left:10px;color:#0f0;font:14px monospace;pointer-events:none;text-shadow:0 0 4px #000}
+#crosshair{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;color:rgba(255,255,255,0.4);font:20px monospace}
+#info{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.5);font:12px monospace;pointer-events:none;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="crosshair">+</div>
+<div id="info">W/S: Pitch | A/D: Roll | Q/E: Yaw | Shift: Boost | Space: Brake</div>
+<script>
+const canvas=document.getElementById('c');
+const gl=canvas.getContext('webgl',{antialias:true,alpha:false});
+if(!gl){document.body.innerHTML='<h1 style="color:white;text-align:center;margin-top:40vh">WebGL not supported</h1>';throw'no webgl';}
+
+function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;gl.viewport(0,0,canvas.width,canvas.height);}
+window.addEventListener('resize',resize);resize();
+
+// Matrix math
+const mat4={
+  create(){return new Float32Array(16)},
+  identity(o){o.fill(0);o[0]=o[5]=o[10]=o[15]=1;return o},
+  perspective(o,fov,asp,n,f){const t=1/Math.tan(fov/2);o.fill(0);o[0]=t/asp;o[5]=t;o[10]=(f+n)/(n-f);o[11]=-1;o[14]=2*f*n/(n-f);return o},
+  lookAt(o,eye,ctr,up){let zx=eye[0]-ctr[0],zy=eye[1]-ctr[1],zz=eye[2]-ctr[2];let l=1/Math.sqrt(zx*zx+zy*zy+zz*zz);zx*=l;zy*=l;zz*=l;let xx=up[1]*zz-up[2]*zy,xy=up[2]*zx-up[0]*zz,xz=up[0]*zy-up[1]*zx;l=Math.sqrt(xx*xx+xy*xy+xz*xz);if(l){l=1/l;xx*=l;xy*=l;xz*=l;}else{xx=xy=xz=0;}let yx=zy*xz-zz*xy,yy=zz*xx-zx*xz,yz=zx*xy-zy*xx;o[0]=xx;o[1]=yx;o[2]=zx;o[3]=0;o[4]=xy;o[5]=yy;o[6]=zy;o[7]=0;o[8]=xz;o[9]=yz;o[10]=zz;o[11]=0;o[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]);o[13]=-(yx*eye[0]+yy*eye[1]+yz*eye[2]);o[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);o[15]=1;return o},
+  multiply(o,a,b){const t=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[i+k*4]*b[k+j*4];t[i+j*4]=s;}o.set(t);return o},
+  translate(o,a,v){const t=mat4.create();mat4.identity(t);t[12]=v[0];t[13]=v[1];t[14]=v[2];return mat4.multiply(o,a,t)},
+  rotateX(o,a,r){const t=mat4.create();mat4.identity(t);const c=Math.cos(r),s=Math.sin(r);t[5]=c;t[6]=s;t[9]=-s;t[10]=c;return mat4.multiply(o,a,t)},
+  rotateY(o,a,r){const t=mat4.create();mat4.identity(t);const c=Math.cos(r),s=Math.sin(r);t[0]=c;t[2]=-s;t[8]=s;t[10]=c;return mat4.multiply(o,a,t)},
+  rotateZ(o,a,r){const t=mat4.create();mat4.identity(t);const c=Math.cos(r),s=Math.sin(r);t[0]=c;t[1]=s;t[4]=-s;t[5]=c;return mat4.multiply(o,a,t)},
+  scale(o,a,v){const t=mat4.create();mat4.identity(t);t[0]=v[0];t[5]=v[1];t[10]=v[2];return mat4.multiply(o,a,t)},
+  invert(o,a){const a00=a[0],a01=a[1],a02=a[2],a03=a[3],a10=a[4],a11=a[5],a12=a[6],a13=a[7],a20=a[8],a21=a[9],a22=a[10],a23=a[11],a30=a[12],a31=a[13],a32=a[14],a33=a[15];const b00=a00*a11-a01*a10,b01=a00*a12-a02*a10,b02=a00*a13-a03*a10,b03=a01*a12-a02*a11,b04=a01*a13-a03*a11,b05=a02*a13-a03*a12,b06=a20*a31-a21*a30,b07=a20*a32-a22*a30,b08=a20*a33-a23*a30,b09=a21*a32-a22*a31,b10=a21*a33-a23*a31,b11=a22*a33-a23*a32;let d=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;if(!d)return null;d=1/d;o[0]=(a11*b11-a12*b10+a13*b09)*d;o[1]=(a02*b10-a01*b11-a03*b09)*d;o[2]=(a31*b05-a32*b04+a33*b03)*d;o[3]=(a22*b04-a21*b05-a23*b03)*d;o[4]=(a12*b08-a10*b11-a13*b07)*d;o[5]=(a00*b11-a02*b08+a03*b07)*d;o[6]=(a32*b02-a30*b05-a33*b01)*d;o[7]=(a20*b05-a22*b02+a23*b01)*d;o[8]=(a10*b10-a11*b08+a13*b06)*d;o[9]=(a01*b08-a00*b10-a03*b06)*d;o[10]=(a30*b04-a31*b02+a33*b00)*d;o[11]=(a21*b02-a20*b04-a23*b00)*d;o[12]=(a11*b07-a10*b09-a12*b06)*d;o[13]=(a00*b09-a01*b07+a02*b06)*d;o[14]=(a31*b01-a30*b03-a32*b00)*d;o[15]=(a20*b03-a21*b01+a22*b00)*d;return o},
+  transpose(o,a){const t=new Float32Array(16);t[0]=a[0];t[1]=a[4];t[2]=a[8];t[3]=a[12];t[4]=a[1];t[5]=a[5];t[6]=a[9];t[7]=a[13];t[8]=a[2];t[9]=a[6];t[10]=a[10];t[11]=a[14];t[12]=a[3];t[13]=a[7];t[14]=a[11];t[15]=a[15];o.set(t);return o}
+};
+
+// Shaders
+const vsSource=`
+attribute vec3 aPos;
+attribute vec3 aNorm;
+attribute vec3 aCol;
+uniform mat4 uProj;
+uniform mat4 uView;
+uniform mat4 uModel;
+varying vec3 vNorm;
+varying vec3 vCol;
+varying vec3 vWorldPos;
+void main(){
+  vec4 wp=uModel*vec4(aPos,1.0);
+  vWorldPos=wp.xyz;
+  vCol=aCol;
+  vNorm=mat3(uModel)*aNorm;
+  gl_Position=uProj*uView*wp;
+}`;
+
+const fsSource=`
+precision mediump float;
+varying vec3 vNorm;
+varying vec3 vCol;
+varying vec3 vWorldPos;
+uniform vec3 uLightDir;
+uniform vec3 uCamPos;
+uniform float uFogDist;
+uniform vec3 uFogCol;
+void main(){
+  vec3 n=normalize(vNorm);
+  float diff=max(dot(n,uLightDir),0.0);
+  float amb=0.35;
+  vec3 col=vCol*(amb+diff*0.65);
+  // specular
+  vec3 viewDir=normalize(uCamPos-vWorldPos);
+  vec3 halfDir=normalize(uLightDir+viewDir);
+  float spec=pow(max(dot(n,halfDir),0.0),32.0)*0.3;
+  col+=spec;
+  // fog
+  float dist=length(uCamPos-vWorldPos);
+  float fog=1.0-exp(-dist*dist/(uFogDist*uFogDist));
+  fog=clamp(fog,0.0,1.0);
+  col=mix(col,uFogCol,fog);
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+const vsSky=`
+attribute vec3 aPos;
+uniform mat4 uProj;
+uniform mat4 uView;
+void main(){
+  mat4 v=uView;
+  v[12]=v[13]=v[14]=0.0;
+  gl_Position=(uProj*v*vec4(aPos*500.0,1.0)).xyww;
+}`;
+
+const fsSky=`
+precision mediump float;
+uniform vec3 uTopCol;
+uniform vec3 uBotCol;
+void main(){
+  float h=gl_FragCoord.y/float(${canvas.height.toFixed(0)});
+  gl_FragColor=vec4(mix(uBotCol,uTopCol,h),1.0);
+}`;
+
+function compileShader(src,type){
+  const s=gl.createShader(type);
+  gl.shaderSource(s,src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}
+  return s;
+}
+
+function createProgram(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compileShader(vs,gl.VERTEX_SHADER));
+  gl.attachShader(p,compileShader(fs,gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){console.error(gl.getProgramInfoLog(p));return null;}
+  return p;
+}
+
+const prog=createProgram(vsSource,fsSource);
+const skyProg=createProgram(vsSky,fsSky);
+
+const uProj=gl.getUniformLocation(prog,'uProj');
+const uView=gl.getUniformLocation(prog,'uView');
+const uModel=gl.getUniformLocation(prog,'uModel');
+const uLightDir=gl.getUniformLocation(prog,'uLightDir');
+const uCamPos=gl.getUniformLocation(prog,'uCamPos');
+const uFogDist=gl.getUniformLocation(prog,'uFogDist');
+const uFogCol=gl.getUniformLocation(prog,'uFogCol');
+
+const skyUProj=gl.getUniformLocation(skyProg,'uProj');
+const skyUView=gl.getUniformLocation(skyProg,'uView');
+const skyUTop=gl.getUniformLocation(skyProg,'uTopCol');
+const skyUBot=gl.getUniformLocation(skyProg,'uBotCol');
+
+const aPos=gl.getAttribLocation(prog,'aPos');
+const aNorm=gl.getAttribLocation(prog,'aNorm');
+const aCol=gl.getAttribLocation(prog,'aCol');
+
+// Building geometry
+const BSIZE=12;
+const GRID=40;
+const HALF=GRID*BSIZE/2;
+const buildings=[];
+const rng=(s)=>{s=Math.sin(s)*43758.5453;return s-Math.floor(s);};
+
+for(let gx=-GRID/2;gx<GRID/2;gx++){
+  for(let gz=-GRID/2;gz<GRID/2;gz++){
+    const d=Math.sqrt(gx*gx+gz*gz);
+    if(d>GRID/2-1)continue;
+    const r=rng(gx*1000+gz*7+42);
+    if(r<0.15)continue; // gaps
+    const h=5+Math.pow(rng(gx*13+gz*17+99),1.5)*80*Math.max(0,1-d/(GRID/2));
+    const w=3+rng(gx*23+gz*31+55)*6;
+    const d2=3+rng(gx*37+gz*41+13)*6;
+    const hue=rng(gx*53+gz*59+77);
+    const sat=0.1+hue*0.3;
+    const light=0.35+rng(gx*61+gz*67+3)*0.35;
+    const r2=Math.floor((0.5+Math.sin(hue*6.28)*0.5)*255);
+    const g2=Math.floor((0.5+Math.sin(hue*6.28+2.09)*0.5)*255);
+    const b2=Math.floor((0.5+Math.sin(hue*6.28+4.18)*0.5)*255);
+    buildings.push({x:gx*BSIZE,z:gz*BSIZE,w:d2,h,h2:h,d:w,r:r2/255,g:g2/255,b:b2/255});
+  }
+}
+
+// Build geometry
+function makeBox(cx,cy,cz,w,h,d,r,g,b){
+  const hw=w/2,hd=d/2;
+  const verts=[];
+  const faces=[
+    {n:[0,0,1],v:[[-hw,-hd,0],[hw,-hd,0],[hw,hd,0],[-hw,hd,0]]},
+    {n:[0,0,-1],v:[[hw,-hd,0],[-hw,-hd,0],[-hw,hd,0],[hw,hd,0]]},
+    {n:[1,0,0],v:[[hw,-hd,0],[hw,hd,0],[-hw,hd,0],[-hw,-hd,0]]},
+    {n:[-1,0,0],v:[[-hw,-hd,0],[-hw,hd,0],[hw,hd,0],[hw,-hd,0]]},
+    {n:[0,1,0],v:[[-hw,hd,0],[hw,hd,0],[hw,hd,d],[-hw,hd,d]]},
+    {n:[0,-1,0],v:[[-hw,-hd,d],[hw,-hd,d],[hw,-hd,0],[-hw,-hd,0]]}
+  ];
+  for(const f of faces){
+    for(const v of f.v){
+      verts.push(v[0]+cx,v[1]+cy,v[2]+cz,f.n[0],f.n[1],f.n[2],r,g,b);
+    }
+  }
+  return new Float32Array(verts);
+}
+
+const allVerts=[];
+for(const b of buildings){
+  const col=b.r*0.7+0.3;
+  const verts=makeBox(b.x,0,b.z,b.w,b.h,b.d,b.r*col,b.g*col,b.b*col);
+  allVerts.push(verts);
+}
+
+// Ground
+function makeGround(){
+  const s=500;
+  const verts=[];
+  const col=0.15;
+  // 4 triangles for ground
+  const v=[[-s,0,-s,0,1,0,col,col,col],[s,0,-s,0,1,0,col,col,col],[s,0,s,0,1,0,col,col,col],[-s,0,-s,0,1,0,col,col,col],[s,0,s,0,1,0,col,col,col],[-s,0,s,0,1,0,col,col,col]];
+  for(const v2 of v)verts.push(...v2);
+  return new Float32Array(verts);
+}
+const groundVerts=makeGround();
+
+// Sky sphere (icosphere-ish, just a large box)
+function makeSkyBox(){
+  const s=1;
+  const verts=[];
+  const faces=[
+    {n:[0,0,1],v:[[-s,-s,s],[s,-s,s],[s,s,s],[-s,s,s]]},
+    {n:[0,0,-1],v:[[s,-s,s],[-s,-s,s],[-s,s,s],[s,s,s]]},
+    {n:[1,0,0],v:[[s,-s,s],[s,s,s],[-s,s,s],[-s,-s,s]]},
+    {n:[-1,0,0],v:[[-s,-s,s],[-s,s,s],[s,s,s],[s,-s,s]]},
+    {n:[0,1,0],v:[[-s,s,s],[s,s,s],[s,s,-s],[-s,s,-s]]},
+    {n:[0,-1,0],v:[[-s,-s,-s],[s,-s,-s],[s,-s,s],[-s,-s,s]]}
+  ];
+  for(const f of faces){
+    for(const v of f.v){
+      verts.push(...v,0,0,0);
+    }
+  }
+  return new Float32Array(verts);
+}
+const skyVerts=makeSkyBox();
+
+// Create buffers
+function createBuffer(data){
+  const b=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+  return b;
+}
+
+const buildingBuf=createBuffer(new Float32Array(allVerts.flat()));
+const groundBuf=createBuffer(groundVerts);
+const skyBuf=createBuffer(skyVerts);
+
+// Build indices for buildings
+const buildingIndices=[];
+let offset=0;
+for(const b of buildings){
+  for(let i=0;i<6;i++){
+    const base=offset+i*4;
+    buildingIndices.push(base,base+1,base+2,base,base+2,base+3);
+  }
+  offset+=4;
+}
+const buildingIdxBuf=createBuffer(new Uint16Array(buildingIndices));
+
+const groundIdxBuf=createBuffer(new Uint16Array([0,1,2,0,2,3]));
+const skyIdxBuf=createBuffer(new Uint16Array([0,1,2,0,2,3,4,5,6,4,6,7,8,9,10,8,10,11,12,13,14,12,14,15,16,17,18,16,18,19,20,21,22,20,22,23]));
+
+// State
+const proj=mat4.create();
+const view=mat4.create();
+const model=mat4.create();
+const tmp=mat4.create();
+
+let camX=0,camY=120,camZ=200;
+let pitch=0,yaw=0,roll=0;
+let speed=0.8;
+let boost=false;
+let brake=false;
+
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.code]=true;e.preventDefault();});
+window.addEventListener('keyup',e=>{keys[e.code]=false;});
+
+const hud=document.getElementById('hud');
+
+let lastTime=performance.now();
+
+function update(dt){
+  const turnRate=2.0*dt;
+  const pitchRate=1.5*dt;
+  const rollRate=2.0*dt;
+  const maxSpeed=2.0;
+  const minSpeed=0.3;
+
+  if(keys['ShiftLeft']||keys['ShiftRight']){
+    speed=Math.min(speed+dt*0.5,maxSpeed);
+  }else if(keys['Space']){
+    speed=Math.max(speed-dt*0.8,minSpeed);
+  }else{
+    // gentle cruise
+    if(speed<1.0)speed+=dt*0.1;
+    if(speed>1.0)speed-=dt*0.05;
+  }
+
+  if(keys['KeyW'])pitch-=pitchRate;
+  if(keys['KeyS'])pitch+=pitchRate;
+  if(keys['KeyA'])roll-=rollRate;
+  if(keys['KeyD'])roll+=rollRate;
+  if(keys['KeyQ'])yaw-=turnRate;
+  if(keys['KeyE'])yaw+=turnRate;
+
+  // auto-level roll slightly
+  if(!keys['KeyA']&&!keys['KeyD'])roll*=0.98;
+  // auto-level pitch slightly
+  if(!keys['KeyW']&&!keys['KeyS'])pitch*=0.99;
+
+  // Clamp
+  pitch=Math.max(-Math.PI/2.2,Math.min(Math.PI/2.2,pitch));
+  roll=Math.max(-Math.PI/2,Math.min(Math.PI/2,roll));
+
+  // Compute forward vector
+  const cp=Math.cos(pitch),sp=Math.sin(pitch);
+  const cy=Math.cos(yaw),sy=Math.sin(yaw);
+  const cr=Math.cos(roll),sr=Math.sin(roll);
+
+  // Forward direction
+  const fx=-sy*cp;
+  const fy=sp;
+  const fz=-cy*cp;
+
+  // Right vector (for roll)
+  const rx=cr*cy+sr*sp*sy;
+  const ry=-sr*cp;
+  const rz=cr*-cy*cp+sr*sp*sy; // simplified
+
+  // Actually let me compute proper rotation
+  // Forward = -Z in local space
+  // Apply yaw, pitch, roll to get world direction
+  const fwdX=-Math.sin(yaw)*Math.cos(pitch);
+  const fwdY=Math.sin(pitch);
+  const fwdZ=-Math.cos(yaw)*Math.cos(pitch);
+
+  camX+=fwdX*speed*dt*60;
+  camY+=fwdY*speed*dt*60;
+  camZ+=fwdZ*speed*dt*60;
+
+  // Keep above ground
+  if(camY<5){camY=5;pitch=Math.max(pitch,0);}
+
+  // Wrap around
+  const wrap=GRID*BSIZE;
+  camX=((camX%wrap)+wrap)%wrap;
+  camZ=((camZ%wrap)+wrap)%wrap;
+}
+
+function render(){
+  gl.clearColor(0.4,0.6,0.85,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  mat4.perspective(proj,Math.PI/3,canvas.width/canvas.height,1,2000);
+
+  // Camera rotation matrix
+  const rot=mat4.create();
+  mat4.identity(rot);
+  mat4.rotateZ(rot,rot,roll);
+  mat4.rotateX(rot,rot,pitch);
+  mat4.rotateY(rot,rot,yaw);
+
+  const fwdX=-Math.sin(yaw)*Math.cos(pitch);
+  const fwdY=Math.sin(pitch);
+  const fwdZ=-Math.cos(yaw)*Math.cos(pitch);
+  const eye=[camX,camY,camZ];
+  const ctr=[camX+fwdX,camY+fwdY,camZ+fwdZ];
+  const up=[0,1,0];
+
+  mat4.lookAt(view,eye,ctr,up);
+
+  // Sky
+  gl.disable(gl.DEPTH_TEST);
+  gl.useProgram(skyProg);
+  gl.uniformMatrix4fv(skyUProj,false,proj);
+  gl.uniformMatrix4fv(skyUView,false,view);
+  gl.uniform3f(skyUTop,0.2,0.4,0.8);
+  gl.uniform3f(skyUBot,0.6,0.75,0.9);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,skyBuf);
+  const sa=gl.getAttribLocation(skyProg,'aPos');
+  gl.enableVertexAttribArray(sa);
+  gl.vertexAttribPointer(sa,3,gl.FLOAT,false,0,0);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,skyIdxBuf);
+  gl.drawElements(gl.TRIANGLES,24,gl.UNSIGNED_SHORT,0);
+  gl.disableVertexAttribArray(sa);
+  gl.enable(gl.DEPTH_TEST);
+
+  // Buildings
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(uProj,false,proj);
+  gl.uniformMatrix4fv(uView,false,view);
+  gl.uniform3f(uLightDir,0.3,0.8,0.5);
+  gl.uniform3f(uCamPos,camX,camY,camZ);
+  gl.uniform1f(uFogDist,600);
+  gl.uniform3f(uFogCol,0.5,0.65,0.85);
+
+  mat4.identity(model);
+  gl.uniformMatrix4fv(uModel,false,model);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,buildingBuf);
+  const stride=9*4;
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos,3,gl.FLOAT,false,stride,0);
+  gl.enableVertexAttribArray(aNorm);
+  gl.vertexAttribPointer(aNorm,3,gl.FLOAT,false,stride,12);
+  gl.enableVertexAttribArray(aCol);
+  gl.vertexAttribPointer(aCol,3,gl.FLOAT,false,stride,24);
+
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,buildingIdxBuf);
+  gl.drawElements(gl.TRIANGLES,buildingIndices.length,gl.UNSIGNED_SHORT,0);
+
+  gl.disableVertexAttribArray(aPos);
+  gl.disableVertexAttribArray(aNorm);
+  gl.disableVertexAttribArray(aCol);
+
+  // Ground
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(uModel,false,model);
+  gl.bindBuffer(gl.ARRAY_BUFFER,groundBuf);
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos,3,gl.FLOAT,false,36,0);
+  gl.enableVertexAttribArray(aNorm);
+  gl.vertexAttribPointer(aNorm,3,gl.FLOAT,false,36,12);
+  gl.enableVertexAttribArray(aCol);
+  gl.vertexAttribPointer(aCol,3,gl.FLOAT,false,36,24);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,groundIdxBuf);
+  gl.drawElements(gl.TRIANGLES,6,gl.UNSIGNED_SHORT,0);
+  gl.disableVertexAttribArray(aPos);
+  gl.disableVertexAttribArray(aNorm);
+  gl.disableVertexAttribArray(aCol);
+
+  // HUD
+  const spd=Math.round(speed*200);
+  const alt=Math.round(camY);
+  hud.innerHTML=`SPEED: ${spd} km/h<br>ALT: ${alt} m<br>POS: ${Math.round(camX)}, ${Math.round(camZ)}`;
+}
+
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,0.05);
+  lastTime=now;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

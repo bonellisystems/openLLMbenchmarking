@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>3D Browser Flight Simulator</title>
+<style>
+  body { margin: 0; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="glcanvas"></canvas>
+<script>
+const canvas = document.getElementById('glcanvas');
+const gl = canvas.getContext('webgl2');
+if (!gl) throw 'WebGL2 not supported';
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const vertexShaderSource = `
+  attribute vec3 position;
+  uniform mat4 modelViewMatrix;
+  uniform mat4 projectionMatrix;
+  void main() {
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const fragmentShaderSource = `
+  precision mediump float;
+  uniform vec3 color;
+  void main() {
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vertexShader, vertexShaderSource);
+gl.compileShader(vertexShader);
+if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+  throw 'Vertex shader compilation failed: ' + gl.getShaderInfoLog(vertexShader);
+}
+
+const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fragmentShader, fragmentShaderSource);
+gl.compileShader(fragmentShader);
+if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+  throw 'Fragment shader compilation failed: ' + gl.getShaderInfoLog(fragmentShader);
+}
+
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+  throw 'Program linking failed: ' + gl.getProgramInfoLog(program);
+}
+gl.useProgram(program);
+
+const positionAttributeLocation = gl.getAttribLocation(program, 'position');
+
+const buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+
+const vertices = [];
+function addCube(x, y, z, size, color) {
+  const half = size / 2;
+  const p = [
+    -half, -half,  half,
+     half, -half,  half,
+     half,  half,  half,
+    -half,  half,  half,
+   ];
+  for (let i = 0; i < p.length; i += 3) {
+    vertices.push(
+      x + p[i],   y + p[i+1], z + p[i+2],
+      color[0], color[1], color[2]
+    );
+  }
+  // front
+  addFace(x-half, y-half, z+half, size, size, color);
+  // back
+  addFace(x+half, y-half, z-half, size, size, color);
+  // left
+  addFace(x-half, y-half, z-half, size, size, color);
+  // right
+  addFace(x+half, y-half, z+half, size, size, color);
+  // top
+  addFace(x-half, y+half, z-half, size, size, color);
+}
+
+function addFace(x, y, z, width, height, color) {
+  const halfW = width / 2;
+  const halfH = height / 2;
+  const verts = [
+    x-halfW, y, z-halfH, // 0
+    x+halfW, y, z-halfH, // 1
+    x+halfW, y, z+halfH, // 2
+    x-halfW, y, z+halfH, // 3
+  ];
+  // two triangles
+  vertices.push(...verts, ...color);
+  vertices.push(...verts, ...color);
+  vertices.push(...verts.slice(2), ...color);
+  vertices.push(...verts[0], ...color);
+  vertices.push(...verts[2], ...color);
+}
+
+for (let i = -10; i < 10; i++) {
+  for (let j = -10; j < 10; j++) {
+    const size = Math.random() * 5 + 2;
+    const color = [Math.random(), Math.random(), Math.random()];
+    addCube(i * 12, 0, j * 12, size, color);
+  }
+}
+
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+const positionHandle = gl.getAttribLocation(program, "position");
+gl.enableVertexAttribArray(positionHandle);
+gl.vertexAttribPointer(positionHandle, 3, gl.FLOAT, false, 6 * 4, 0);
+
+const colorHandle = gl.getAttribLocation(program, "color");
+gl.enableVertexAttribArray(colorHandle);
+gl.vertexAttribPointer(colorHandle, 3, gl.FLOAT, false, 6 * 4, 3 * 4);
+
+const fieldOfView = 45 * Math.PI / 180;
+const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+const zNear = 0.1;
+const zFar = 100.0;
+const projectionMatrix = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+
+function setMatrixUniforms() {
+  const modelViewMatrix = new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]);
+
+  gl.uniformMatrix4fv(
+    gl.getUniformLocation(program, "projectionMatrix"),
+    false,
+    projectionMatrix
+  );
+
+  gl.uniformMatrix4fv(
+    gl.getUniformLocation(program, "modelViewMatrix"),
+    false,
+    modelViewMatrix
+  );
+}
+
+let keys = {};
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+});
+window.addEventListener('keyup', (e) => {
+  keys[e.code] = false;
+});
+
+let posX = 0, posY = 0, posZ = -50;
+let rotX = 0, rotY = 0;
+
+function update() {
+  if (keys['KeyW']) posZ -= 0.1;
+  if (keys['KeyS']) posZ += 0.1;
+  if (keys['KeyA']) posX -= 0.1;
+  if (keys['KeyD']) posX += 0.1;
+  if (keys['Space']) posY += 0.1;
+  if (keys['ShiftLeft']) posY -= 0.1;
+  if (keys['ArrowUp']) rotX -= 0.05;
+  if (keys['ArrowDown']) rotX += 0.05;
+  if (keys['ArrowLeft']) rotY -= 0.05;
+  if (keys['ArrowRight']) rotY += 0.05;
+
+  const modelViewMatrix = new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    posX, posY, posZ, 1,
+  ]);
+
+  gl.uniformMatrix4fv(
+    gl.getUniformLocation(program, "modelViewMatrix"),
+    false,
+    modelViewMatrix
+  );
+
+  requestAnimationFrame(update);
+}
+
+update();
+
+function render() {
+  gl.clearColor(0.0, 0.0, 0.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 6);
+  requestAnimationFrame(render);
+}
+render();
+</script>
+</body>
+</html>

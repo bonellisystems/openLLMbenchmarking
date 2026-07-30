@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Asteroids</title>
+<style>
+  body { margin: 0; overflow: hidden; background: black; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const GAME_STATE = { TITLE: 0, PLAYING: 1, GAME_OVER: 2 };
+let gameState = GAME_STATE.TITLE;
+
+const ROCK_SIZES = [20, 10];
+const ROCK_SPEED = 2;
+const SHIP_SPEED = 5;
+const BULLET_SPEED = 10;
+const ROTATION_SPEED = Math.PI / 90;
+
+let ship;
+let bullets = [];
+let rocks = [];
+
+function Ship() {
+  this.x = canvas.width / 2;
+  this.y = canvas.height / 2;
+  this.angle = Math.PI / 2;
+  this.radius = 15;
+  this.thrust = false;
+  this.bulletCooldown = 0;
+}
+
+Ship.prototype.draw = function() {
+  ctx.save();
+  ctx.translate(this.x, this.y);
+  ctx.rotate(this.angle);
+  ctx.beginPath();
+  ctx.moveTo(0, -this.radius * 2);
+  ctx.lineTo(-this.radius, this.radius * 2);
+  ctx.lineTo(this.radius, this.radius * 2);
+  ctx.closePath();
+  ctx.fillStyle = 'white';
+  ctx.fill();
+  ctx.restore();
+};
+
+Ship.prototype.thrustForward = function() {
+  this.thrust = true;
+};
+
+Ship.prototype.stopThrust = function() {
+  this.thrust = false;
+};
+
+Ship.prototype.rotateLeft = function() {
+  this.angle -= ROTATION_SPEED;
+};
+
+Ship.prototype.rotateRight = function() {
+  this.angle += ROTATION_SPEED;
+};
+
+Ship.prototype.shoot = function() {
+  if (this.bulletCooldown <= 0) {
+    bullets.push({
+      x: this.x,
+      y: this.y,
+      angle: this.angle,
+      radius: 3
+    });
+    this.bulletCooldown = 10;
+  }
+};
+
+Ship.prototype.update = function() {
+  if (this.thrust) {
+    this.x += Math.cos(this.angle) * SHIP_SPEED;
+    this.y += Math.sin(this.angle) * SHIP_SPEED;
+  }
+  this.x = (this.x + canvas.width) % canvas.width;
+  this.y = (this.y + canvas.height) % canvas.height;
+  if (this.bulletCooldown > 0) this.bulletCooldown--;
+};
+
+function Rock(x, y, size, angle) {
+  this.x = x;
+  this.y = y;
+  this.size = size;
+  this.radius = size / 2;
+  this.angle = angle;
+  this.dx = Math.cos(angle) * ROCK_SPEED;
+  this.dy = Math.sin(angle) * ROCK_SPEED;
+}
+
+Rock.prototype.draw = function() {
+  ctx.beginPath();
+  ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'gray';
+  ctx.fill();
+};
+
+Rock.prototype.update = function() {
+  this.x += this.dx;
+  this.y += this.dy;
+  this.x = (this.x + canvas.width) % canvas.width;
+  this.y = (this.y + canvas.height) % canvas.height;
+};
+
+function Bullet(x, y, angle, radius) {
+  this.x = x;
+  this.y = y;
+  this.angle = angle;
+  this.radius = radius;
+}
+
+Bullet.prototype.draw = function() {
+  ctx.beginPath();
+  ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'yellow';
+  ctx.fill();
+};
+
+Bullet.prototype.update = function() {
+  this.x += Math.cos(this.angle) * BULLET_SPEED;
+  this.y += Math.sin(this.angle) * BULLET_SPEED;
+  this.x = (this.x + canvas.width) % canvas.width;
+  this.y = (this.y + canvas.height) % canvas.height;
+};
+
+function checkCollisions() {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    let bullet = bullets[i];
+    for (let j = rocks.length - 1; j >= 0; j--) {
+      let rock = rocks[j];
+      if (Math.hypot(rock.x - bullet.x, rock.y - bullet.y) <= rock.radius + bullet.radius) {
+        bullets.splice(i, 1);
+        if (rock.radius > ROCK_SIZES[1]) {
+          rocks.splice(j, 1);
+          let newSize = ROCK_SIZES[ROCK_SIZES.indexOf(rock.size) - 1];
+          rocks.push(new Rock(rock.x, rock.y, newSize, rock.angle + Math.PI / 4));
+          rocks.push(new Rock(rock.x, rock.y, newSize, rock.angle - Math.PI / 4));
+        } else {
+          rocks.splice(j, 1);
+        }
+        break;
+      }
+    }
+  }
+  for (let i = rocks.length - 1; i >= 0; i--) {
+    let rock = rocks[i];
+    if (Math.hypot(rock.x - ship.x, rock.y - ship.y) <= rock.radius + ship.radius) {
+      gameState = GAME_STATE.GAME_OVER;
+      return;
+    }
+  }
+}
+
+function spawnRocks(numRocks) {
+  for (let i = 0; i < numRocks; i++) {
+    let size = ROCK_SIZES[0];
+    let angle = Math.random() * Math.PI * 2;
+    rocks.push(new Rock(Math.random() * canvas.width, Math.random() * canvas.height, size, angle));
+  }
+}
+
+function drawText(text, x, y, size = 24, color = 'white') {
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.font = `${size}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.translate(x, y);
+  ctx.rotate(Math.PI);
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
+function gameLoop() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (gameState === GAME_STATE.TITLE) {
+    drawText('Asteroids', canvas.width / 2, canvas.height / 2);
+    drawText('Press Space to Start', canvas.width / 2, canvas.height / 2 + 30);
+    if (keys[' '] && !titlePressed) {
+      titlePressed = true;
+      gameState = GAME_STATE.PLAYING;
+      ship = new Ship();
+      rocks = [];
+      bullets = [];
+      spawnRocks(5);
+    }
+  } else if (gameState === GAME_STATE.PLAYING) {
+    ship.update();
+    bullets.forEach(b => b.update());
+    rocks.forEach(r => r.update());
+    checkCollisions();
+    ship.draw();
+    bullets.forEach(b => b.draw());
+    rocks.forEach(r => r.draw());
+    if (rocks.length === 0) {
+      spawnRocks(5);
+    }
+  } else if (gameState === GAME_STATE.GAME_OVER) {
+    drawText('Game Over', canvas.width / 2, canvas.height / 2);
+    drawText('Press R to Restart', canvas.width / 2, canvas.height / 2 + 30);
+    if (keys['r'] && !gameOverPressed) {
+      gameOverPressed = true;
+      gameState = GAME_STATE.TITLE;
+      titlePressed = false;
+      ship = null;
+      rocks = [];
+      bullets = [];
+    }
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+let keys = {};
+let titlePressed = false;
+let gameOverPressed = false;
+
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (gameState === GAME_STATE.PLAYING && ship) {
+    if (e.code === 'ArrowUp') ship.thrustForward();
+    if (e.code === 'ArrowLeft') ship.rotateLeft();
+    if (e.code === 'ArrowRight') ship.rotateRight();
+    if (e.code === 'Space') ship.shoot();
+  }
+});
+
+document.addEventListener('keyup', e => {
+  keys[e.code] = false;
+  if (gameState === GAME_STATE.PLAYING && ship) {
+    if (e.code === 'ArrowUp') ship.stopThrust();
+  }
+});
+
+gameLoop();
+</script>
+</body>
+</html>

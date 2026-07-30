@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Fly Pieter Style</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+<script>
+// Minimal WebGL flight sim over procedural city
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+const gl = canvas.getContext('webgl') || canvas.getContext('moz-webgl');
+if (!gl) { alert("WebGL not supported"); throw new Error("No WebGL"); }
+
+let width = canvas.width = window.innerWidth;
+let height = canvas.height = window.innerHeight;
+window.addEventListener('resize', () => {
+    width = canvas.width = window.innerWidth;
+    height = canvas.height = window.innerHeight;
+    gl.viewport(0, 0, width, height);
+});
+
+// Shaders
+const vs = `
+attribute vec3 aPos;
+attribute vec3 aColor;
+uniform mat4 uMVP;
+varying vec3 vColor;
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    vColor = aColor;
+}
+`;
+
+const fs = `
+precision mediump float;
+varying vec3 vColor;
+void main() {
+    gl_FragColor = vec4(vColor, 1.0);
+}
+`;
+
+function compileShader(src, type) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(s));
+    }
+    return s;
+}
+
+const vertShader = compileShader(vs, gl.VERTEX_SHADER);
+const fragShader = compileShader(fs, gl.FRAGMENT_SHADER);
+const program = gl.createProgram();
+gl.attachShader(program, vertShader);
+gl.attachShader(program, fragShader);
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const posLoc = gl.getAttribLocation(program, 'aPos');
+const colorLoc = gl.getAttribLocation(program, 'aColor');
+const mvpLoc = gl.getUniformLocation(program, 'uMVP');
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+gl.cullFace(gl.BACK);
+
+// Simple matrix math
+function mat4Identity() {
+    return new Float32Array([
+        1,0,0,0,
+        0,1,0,0,
+        0,0,1,0,
+        0,0,0,1
+    ]);
+}
+
+function mat4Perspective(fovy, aspect, near, far) {
+    const f = 1.0 / Math.tan(fovy / 2);
+    const nf = 1 / (near - far);
+    const out = new Float32Array(16);
+    out[0] = f / aspect;
+    out[5] = f;
+    out[10] = (far + near) * nf;
+    out[11] = -1;
+    out[14] = (2 * far * near) * nf;
+    return out;
+}
+
+function mat4Multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+            out[i*4+j] = a[i*4+0]*b[0*4+j] + a[i*4+1]*b[1*4+j] + a[i*4+2]*b[2*4+j] + a[i*4+3]*b[3*4+j];
+        }
+    }
+    return out;
+}
+
+function mat4Translate(m, x, y, z) {
+    const t = mat4Identity();
+    t[12] = x; t[13] = y; t[14] = z;
+    return mat4Multiply(m, t);
+}
+
+function mat4RotateX(m, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const r = new Float32Array([
+        1,0,0,0,
+        0,c,-s,0,
+        0,s,c,0,
+        0,0,0,1
+    ]);
+    return mat4Multiply(m, r);
+}
+
+function mat4RotateY(m, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const r = new Float32Array([
+        c,0,s,0,
+        0,1,0,0,
+        -s,0,c,0,
+        0,0,0,1
+    ]);
+    return mat4Multiply(m, r);
+}
+
+function mat4RotateZ(m, angle) {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    const r = new Float32Array([
+        c,-s,0,0,
+        s,c,0,0,
+        0,0,1,0,
+        0,0,0,1
+    ]);
+    return mat4Multiply(m, r);
+}
+
+// Procedural city generation
+const buildings = [];
+const BUILDING_COUNT = 500;
+const CITY_SIZE = 2000;
+
+for (let i = 0; i < BUILDING_COUNT; i++) {
+    const x = (Math.random() - 0.5) * CITY_SIZE;
+    const z = (Math.random() - 0.5) * CITY_SIZE;
+    const w = 10 + Math.random() * 40;
+    const h = 20 + Math.random() * 200;
+    const d = 10 + Math.random() * 40;
+    const r = Math.random() * 0.3;
+    const g = Math.random() * 0.3;
+    const b = Math.random() * 0.3 + 0.4;
+    buildings.push({x, z, w, h, d, r, g, b});
+}
+
+// Ground plane
+const groundSize = CITY_SIZE * 2;
+const groundVerts = [
+    -groundSize, -1, -groundSize,
+     groundSize, -1, -groundSize,
+     groundSize, -1,  groundSize,
+    -groundSize, -1,  groundSize
+];
+const groundIndices = [0,1,2, 0,2,3];
+const groundColors = [
+    0.2, 0.2, 0.2,
+    0.2, 0.2, 0.2,
+    0.2, 0.2, 0.2,
+    0.2, 0.2, 0.2
+];
+
+// Create buffers
+const groundPosBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, groundPosBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(groundVerts), gl.STATIC_DRAW);
+
+const groundColorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, groundColorBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(groundColors), gl.STATIC_DRAW);
+
+const groundIndexBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, groundIndexBuffer);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(groundIndices), gl.STATIC_DRAW);
+
+// Building geometry (cube)
+const cubeVerts = [
+    // Front
+    -1,-1, 1,  1,-1, 1,  1,1, 1, -1,1, 1,
+    // Back
+    -1,-1,-1, -1,1,-1,  1,1,-1,  1,-1,-1,
+    // Top
+    -1, 1, 1, -1,1,-1,  1,1,-1,  1,1, 1,
+    // Bottom
+    -1,-1, 1,  1,-1, 1,  1,-1,-1, -1,-1,-1,
+    // Right
+     1,-1, 1,  1,-1,-1,  1,1,-1,  1,1, 1,
+    // Left
+    -1,-1, 1, -1,1, 1, -1,1,-1, -1,-1,-1
+];
+
+const cubeIndices = [
+    0,1,2, 0,2,3,
+    4,5,6, 4,6,7,
+    8,9,10, 8,10,11,
+    12,13,14, 12,14,15,
+    16,17,18, 16,18,19,
+    20,21,22, 20,22,23
+];
+
+const cubePosBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cubePosBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cubeVerts), gl.STATIC_DRAW);
+
+const cubeIndexBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(cubeIndices), gl.STATIC_DRAW);
+
+// Plane geometry (simple triangle)
+const planeVerts = [
+    0, 0.5, 0,
+   -0.5,-0.5, 0,
+    0.5,-0.5, 0
+];
+const planeColors = [
+    1, 0, 0,
+    0, 1, 0,
+    0, 0, 1
+];
+
+const planePosBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, planePosBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(planeVerts), gl.STATIC_DRAW);
+
+const planeColorBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, planeColorBuffer);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(planeColors), gl.STATIC_DRAW);
+
+// Camera state
+let camX = 0, camY = 50, camZ = 100;
+let pitch = 0, yaw = 0;
+let vel = 0;
+const keys = {};
+
+document.addEventListener('keydown', (e) => {
+    keys[e.code] = true;
+    if (e.code === 'Space') vel = 0.5;
+});
+document.addEventListener('keyup', (e) => {
+    keys[e.code] = false;
+    if (e.code === 'Space') vel = 0;
+});
+
+// Enable keyboard without focus
+canvas.tabIndex = 1;
+canvas.focus();
+
+function drawBuilding(x, z, w, h, d, r, g, b) {
+    let model = mat4Identity();
+    model = mat4Translate(model, x, h/2, z);
+    model = mat4Scale(model, w, h, d);
+    
+    const view = mat4Identity();
+    let temp = mat4RotateX(view, pitch);
+    temp = mat4RotateY(temp, yaw);
+    temp = mat4Translate(temp, -camX, -camY, -camZ);
+    
+    const proj = mat4Perspective(Math.PI/4, width/height, 0.1, 2000);
+    const mvp = mat4Multiply(proj, mat4Multiply(temp, model));
+    
+    gl.uniformMatrix4fv(mvpLoc, false, mvp);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, cubePosBuffer);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeIndexBuffer);
+    gl.drawElements(gl.TRIANGLES, cubeIndices.length, gl.UNSIGNED_SHORT, 0);
+}
+
+function drawGround() {
+    let model = mat4Identity();
+    model = mat4Translate(model, 0, 0, 0);
+    model = mat4Scale(model, groundSize, 1, groundSize);
+    
+    const view = mat4Identity();
+    let temp = mat4RotateX(view, pitch);
+    temp = mat4RotateY(temp, yaw);
+    temp = mat4Translate(temp, -camX, -camY, -camZ);
+    
+    const proj = mat4Perspective(Math.PI/4, width/height, 0.1, 2000);
+    const mvp = mat4Multiply(proj, mat4Multiply(temp, model));
+    
+    gl.uniformMatrix4fv(mvpLoc, false, mvp);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, groundPosBuffer);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, groundColorBuffer);
+    gl.enableVertexAttribArray(colorLoc);
+    gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, groundIndexBuffer);
+    gl.drawElements(gl.TRIANGLES, groundIndices.length, gl.UNSIGNED_SHORT, 0);
+}
+
+function drawPlane() {
+    let model = mat4Identity();
+    model = mat4Translate(model, camX, camY, camZ);
+    model = mat4RotateX(model, pitch);
+    model = mat4RotateY(model, yaw);
+    model = mat4Scale(model, 2, 2, 2);
+    
+    const view = mat4Identity();
+    let temp = mat4RotateX(view, pitch);
+    temp = mat4RotateY(temp, yaw);
+    temp = mat4Translate(temp, -camX, -camY, -camZ);
+    
+    const proj = mat4Perspective(Math.PI/4, width/height, 0.1, 2000);
+    const mvp = mat4Multiply(proj, mat4Multiply(temp, model));
+    
+    gl.uniformMatrix4fv(mvpLoc, false, mvp);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, planePosBuffer);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, planeColorBuffer);
+    gl.enableVertexAttribArray(colorLoc);
+    gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+    
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+function mat4Scale(m, x, y, z) {
+    const s = new Float32Array([
+        x,0,0,0,
+        0,y,0,0,
+        0,0,z,0,
+        0,0,0,1
+    ]);
+    return mat4Multiply(m, s);
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    
+    // Controls
+    if (keys['ArrowUp']) pitch -= 0.02;
+    if (keys['ArrowDown']) pitch += 0.02;
+    if (keys['ArrowLeft']) yaw -= 0.02;
+    if (keys['ArrowRight']) yaw += 0.02;
+    if (keys['KeyW']) vel += 0.01;
+    if (keys['KeyS']) vel -= 0.01;
+    vel = Math.max(-1, Math.min(1, vel));
+    
+    // Move camera forward based on pitch/yaw
+    const speed = vel * 2;
+    camX += Math.sin(yaw) * Math.cos(pitch) * speed;
+    camZ += Math.cos(yaw) * Math.cos(pitch) * speed;
+    camY += Math.sin(pitch) * speed;
+    
+    // Keep above ground
+    if (camY < 10) camY = 10;
+    
+    // Clear
+    gl.viewport(0, 0, width, height);
+    gl.clearColor(0.5, 0.7, 0.9, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    
+    // Draw
+    drawGround();
+    for (const b of buildings) {
+        drawBuilding(b.x, b.z, b.w, b.h, b.d, b.r, b.g, b.b);
+    }
+    drawPlane();
+}
+
+animate();
+</script>
+</body>
+</html>

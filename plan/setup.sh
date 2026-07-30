@@ -15,14 +15,23 @@ npm install -g opencode-ai >>/root/setup.log 2>&1 || echo "opencode install fail
 # whether THIS image has it is an empirical question, not an assumption. B5/B7 are
 # timing-authoritative at spec=ngram32 and skip themselves if the answer is no.
 : > /root/caps
-if /app/llama-server --help 2>&1 | grep -q -- '--spec-type'; then
-  if /app/llama-server --help 2>&1 | grep -q 'ngram-mod'; then
-    echo "ngram=1" >> /root/caps
-  else
-    echo "ngram=0  # --spec-type present but no ngram-mod value" >> /root/caps
-  fi
+# LD_LIBRARY_PATH IS REQUIRED EVEN TO READ --help. Without it the binary dies with
+# "libllama-server-impl.so: cannot open shared object file" and every grep below finds
+# nothing - which the first version of this probe recorded as "no --spec-type flag in
+# this build", silently disqualifying B5/B7 on a build that supports ngram-mod fine.
+export LD_LIBRARY_PATH=/app
+HELP=$(/app/llama-server --help 2>&1)
+NLINES=$(printf '%s
+' "$HELP" | wc -l)
+if [ "$NLINES" -lt 20 ]; then
+  echo "ngram=0  # PROBE FAILED - --help produced $NLINES lines:" >> /root/caps
+  printf '%s
+' "$HELP" | head -3 | sed 's/^/#   /' >> /root/caps
+elif printf '%s
+' "$HELP" | grep -q 'ngram-mod'; then
+  echo "ngram=1" >> /root/caps
 else
-  echo "ngram=0  # no --spec-type flag in this build" >> /root/caps
+  echo "ngram=0  # build has no ngram-mod spec type" >> /root/caps
 fi
 /app/llama-server --version >> /root/caps 2>&1 || true
 echo "--- caps ---"; cat /root/caps

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#ccc;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{font-size:14px;line-height:14px;letter-spacing:2px;white-space:pre;background:#111;padding:8px;border:1px solid #333;border-radius:4px}
+#ui{width:800px;margin-top:8px;display:flex;justify-content:space-between;font-size:13px;color:#888}
+#log{width:800px;height:80px;overflow-y:auto;margin-top:4px;font-size:12px;color:#666;border-top:1px solid #222;padding:4px 8px}
+#log div{margin:1px 0}
+#log .dmg{color:#e44}
+#log .heal{color:#4e4}
+#log .info{color:#48f}
+#log .gold{color:#fd4}
+#log .lvl{color:#f4f}
+#title{color:#fff;font-size:18px;margin-bottom:8px;letter-spacing:4px}
+#help{color:#555;font-size:11px;margin-top:6px}
+</style>
+</head>
+<body>
+<div id="game">
+<div id="title">⚔ DUNGEON OF SHADOWS ⚔</div>
+<div id="map"></div>
+<div id="ui">
+<span id="stats"></span>
+<span id="level"></span>
+</div>
+<div id="log"></div>
+<div id="help">WASD/Arrows: Move &amp; Attack | .: Wait | &gt;: Descend stairs | G: Pick up | Q: Quit</div>
+</div>
+<script>
+const W=60,H=20,TILE=14;
+const WALL='#',FLOOR='.',CORRIDOR='.',STAIRS='>',INV=' ';
+const COLORS={
+  '#':'#444','.':'#222','>':'#ff0',
+  '@':'#0ff','>':'#ff0',
+  'r':'#f44','g':'#4f4','b':'#44f','o':'#fa0',
+  's':'#f0f','!':'#f4f','?':'#4ff','$':'#fd4',
+  'R':'#f22','G':'#2f2','B':'#22f','O':'#f80',
+  'S':'#f0f','D':'#888','P':'#a0a'
+};
+let map,rooms,player,enemies,items,particles,level,log,fov,explored,turn,gameOver;
+const $=id=>document.getElementById(id);
+
+function rng(a,b){return a+Math.floor(Math.random()*(b-a+1))}
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+
+function genDungeon(){
+  map=[];rooms=[];
+  for(let y=0;y<H;y++){map[y]=[];for(let x=0;x<W;x++)map[y][x]=WALL;}
+  const count=rng(6,10);
+  for(let i=0;i<count*20;i++){
+    const rw=rng(4,9),rh=rng(3,6);
+    const rx=rng(1,W-rw-1),ry=rng(1,H-rh-1);
+    let ok=true;
+    for(const r of rooms){
+      if(rx-1<r.x+r.w&&rx+rw+1>r.x&&ry-1<r.y+r.h&&ry+rh+1>r.y){ok=false;break;}
+    }
+    if(ok){
+      rooms.push({x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)});
+      for(let dy=0;dy<rh;dy++)for(let dx=0;dx<rw;dx++)map[ry+dy][rx+dx]=FLOOR;
+      if(rooms.length>=count)break;
+    }
+  }
+  for(let i=1;i<rooms.length;i++){
+    let cx=rooms[i-1].cx,cy=rooms[i-1].cy;
+    const tx=rooms[i].cx,ty=rooms[i].cy;
+    while(cx!==tx){cx+=cx<tx?1:-1;if(map[cy][cx]===WALL)map[cy][cx]=CORRIDOR;}
+    while(cy!==ty){cy+=cy<ty?1:-1;if(map[cy][cx]===WALL)map[cy][cx]=CORRIDOR;}
+  }
+}
+
+function placeEntities(){
+  enemies=[];items=[];
+  const lastRoom=rooms[rooms.length-1];
+  map[lastRoom.cy][lastRoom.cx]=STAIRS;
+  const firstRoom=rooms[0];
+  player.x=firstRoom.cx;player.y=firstRoom.cy;
+  const eTypes=[
+    {ch:'r',name:'Rat',hp:4,atk:1,def:0,xp:2},
+    {ch:'g',name:'Goblin',hp:8,atk:2,def:1,xp:5},
+    {ch:'b',name:'Bat',hp:3,atk:1,def:0,xp:2},
+    {ch:'o',name:'Orc',hp:14,atk:3,def:2,xp:10},
+    {ch:'s',name:'Skeleton',hp:10,atk:3,def:1,xp:8},
+    {ch:'B',name:'Ogre',hp:20,atk:5,def:3,xp:15},
+    {ch:'S',name:'Snake',hp:6,atk:2,def:0,xp:4},
+    {ch:'D',name:'Demon',hp:25,atk:6,def:4,xp:25},
+  ];
+  const iTypes=[
+    {ch:'!',name:'Health Potion',type:'potion',value:15},
+    {ch:'?',name:'Strength Potion',type:'strpot',value:1},
+    {ch:'$',name:'Gold',type:'gold',value:0},
+  ];
+  for(let i=1;i<rooms.length-1;i++){
+    const r=rooms[i];
+    const nE=rng(0,Math.min(2,level));
+    for(let j=0;j<nE;j++){
+      const ex=rng(r.x,r.x+r.w-1),ey=rng(r.y,r.y+r.h-1);
+      if(map[ey][ex]===FLOOR&&!enemies.find(e=>e.x===ex&&e.y===ey)){
+        const t=eTypes[Math.min(rng(0,Math.floor(level/2)+1),eTypes.length-1)];
+        enemies.push({...t,x:ex,y:ey,maxHp:t.hp,curHp:t.hp,level:level});
+      }
+    }
+    if(Math.random()<0.5){
+      const ix=rng(r.x,r.x+r.w-1),iy=rng(r.y,r.y+r.h-1);
+      if(map[iy][ix]===FLOOR&&!items.find(it=>it.x===ix&&it.y===iy)){
+        const t=iTypes[rng(0,iTypes.length-1)];
+        const item={...t,x:ix,y:iy};
+        if(t.type==='gold')item.value=rng(5,15+level*5);
+        items.push(item);
+      }
+    }
+  }
+}
+
+function computeFOV(){
+  fov=[];explored=[];
+  for(let y=0;y<H;y++){fov[y]=[];explored[y]=[];for(let x=0;x<W;x++){fov[y][x]=false;explored[y][x]=false;}}
+  const R=8;
+  for(let dy=-R;dy<=R;dy++)for(let dx=-R;dx<=R;dx++){
+    const tx=player.x+dx,ty=player.y+dy;
+    if(tx<0||tx>=W||ty<0||ty>=H)continue;
+    if(dx*dx+dy*dy>R*R)continue;
+    if(los(player.x,player.y,tx,ty)){
+      fov[ty][tx]=true;explored[ty][tx]=true;
+    }
+  }
+}
+
+function los(x0,y0,x1,y1){
+  let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0);
+  let sx=x0<x1?1:-1,sy=y0<y1?1:-1;
+  let err=dx-dy;
+  let cx=x0,cy=y0;
+  while(true){
+    if(cx===x1&&cy===y1)return true;
+    if(map[cy][cx]===WALL&&(cx!==x0||cy!==y0))return false;
+    const e2=2*err;
+    if(e2>-dy){err-=dy;cx+=sx;}
+    if(e2<dx){err+=dx;cy+=sy;}
+  }
+}
+
+function render(){
+  let html='';
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      if(!explored[y][x]){html+='<span style="color:#111"> </span>';continue;}
+      const visible=fov[y][x];
+      const c=visible?'':'#333';
+      if(x===player.x&&y===player.y){
+        html+=`<span style="color:${COLORS['@']}">${'@'}</span>`;
+      }else{
+        const en=enemies.find(e=>e.x===x&&e.y===y&&visible);
+        const it=items.find(i=>i.x===x&&i.y===y&&visible);
+        if(en){
+          html+=`<span style="color:${COLORS[en.ch]||'#f44'}">${en.ch}</span>`;
+        }else if(it){
+          html+=`<span style="color:${COLORS[it.ch]||'#ff0'}">${it.ch}</span>`;
+        }else{
+          const t=map[y][x];
+          const col=visible?(COLORS[t]||'#888'):'#333';
+          html+=`<span style="color:${col}">${t}</span>`;
+        }
+      }
+    }
+    html+='\n';
+  }
+  $('map').innerHTML=html;
+  $('stats').innerHTML=`HP:${player.hp}/${player.maxHp} ATK:${player.atk} DEF:${player.def} XP:${player.xp}/${player.nextXp} Gold:${player.gold} Floor:${level}`;
+  $('level').innerHTML=`Level ${player.level}`;
+}
+
+function addLog(msg,cls=''){
+  const d=document.createElement('div');
+  d.className=cls;d.textContent=msg;
+  $('log').appendChild(d);
+  $('log').scrollTop=$('log').scrollHeight;
+}
+
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  const nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=W||ny<0||ny>=H)return;
+  if(map[ny][nx]===WALL)return;
+  const en=enemies.find(e=>e.x===nx&&e.y===ny);
+  if(en){
+    attack(en);
+  }else{
+    player.x=nx;player.y=ny;
+    const it=items.find(i=>i.x===nx&&i.y===ny);
+    if(it&&it.type==='gold'){
+      player.gold+=it.value;
+      addLog(`Picked up ${it.value} gold!`,'gold');
+      items.splice(items.indexOf(it),1);
+    }
+  }
+  endTurn();
+}
+
+function attack(target){
+  const dmg=Math.max(1,player.atk-target.def+rng(-1,1));
+  target.curHp-=dmg;
+  addLog(`You hit ${target.name} for ${dmg} damage!`,'dmg');
+  if(target.curHp<=0){
+    addLog(`${target.name} dies! +${target.xp} XP`,'dmg');
+    player.xp+=target.xp;
+    enemies.splice(enemies.indexOf(target),1);
+    checkLevelUp();
+  }
+}
+
+function checkLevelUp(){
+  while(player.xp>=player.nextXp){
+    player.xp-=player.nextXp;
+    player.level++;
+    player.maxHp+=5;player.hp=player.maxHp;
+    player.atk+=1;player.def+=1;
+    player.nextXp=Math.floor(player.nextXp*1.5);
+    addLog(`LEVEL UP! You are now level ${player.level}!`,'lvl');
+  }
+}
+
+function enemyTurn(){
+  for(const e of enemies){
+    const d=dist(e,player);
+    if(d>12)continue;
+    if(d<=1){
+      const dmg=Math.max(1,e.atk-player.def+rng(-1,1));
+      player.hp-=dmg;
+      addLog(`${e.name} hits you for ${dmg} damage!`,'dmg');
+      if(player.hp<=0){
+        player.hp=0;gameOver=true;
+        addLog('You have died! Press Q to quit.','dmg');
+        return;
+      }
+    }else{
+      const dx=Math.sign(player.x-e.x),dy=Math.sign(player.y-e.y);
+      let nx=e.x+dx,ny=e.y;
+      if(!canMove(nx,ny)){nx=e.x;ny=e.y+dy;}
+      if(canMove(nx,ny)){e.x=nx;e.y=ny;}
+    }
+  }
+}
+
+function canMove(x,y){
+  if(x<0||x>=W||y<0||y>=H)return false;
+  if(map[y][x]===WALL)return false;
+  if(enemies.find(e=>e.x===x&&e.y===y))return false;
+  if(x===player.x&&y===player.y)return false;
+  return true;
+}
+
+function pickup(){
+  const it=items.find(i=>i.x===player.x&&i.y===player.y);
+  if(!it)return;
+  if(it.type==='potion'){
+    const heal=Math.min(it.value,player.maxHp-player.hp);
+    player.hp+=heal;
+    addLog(`Drank ${it.name}. Healed ${heal} HP!`,'heal');
+    items.splice(items.indexOf(it),1);
+  }else if(it.type==='strpot'){
+    player.atk+=it.value;
+    addLog(`Drank ${it.name}. ATK +${it.value}!`,'heal');
+    items.splice(items.indexOf(it),1);
+  }else if(it.type==='gold'){
+    player.gold+=it.value;
+    addLog(`Picked up ${it.value} gold!`,'gold');
+    items.splice(items.indexOf(it),1);
+  }
+  endTurn();
+}
+
+function descend(){
+  if(map[player.y][player.x]!==STAIRS){addLog("No stairs here.");return;}
+  level++;
+  addLog(`Descended to floor ${level}...`,'info');
+  genDungeon();
+  placeEntities();
+  computeFOV();
+  render();
+}
+
+function wait(){endTurn();}
+
+function endTurn(){
+  turn++;
+  enemyTurn();
+  computeFOV();
+  render();
+}
+
+function init(){
+  level=1;turn=0;gameOver=false;
+  player={x:0,y:0,hp:30,maxHp:30,atk:4,def:1,xp:0,nextXp:10,level:1,gold:0};
+  $('log').innerHTML='';
+  genDungeon();
+  placeEntities();
+  computeFOV();
+  render();
+  addLog('Welcome to the Dungeon of Shadows!','info');
+  addLog('Find the stairs (>) to descend deeper.','info');
+}
+
+document.addEventListener('keydown',e=>{
+  if(gameOver&&e.key.toLowerCase()==='q'){init();return;}
+  switch(e.key){
+    case'ArrowUp':case'w':case'W':movePlayer(0,-1);e.preventDefault();break;
+    case'ArrowDown':case's':case'S':movePlayer(0,1);e.preventDefault();break;
+    case'ArrowLeft':case'a':case'A':movePlayer(-1,0);e.preventDefault();break;
+    case'ArrowRight':case'd':case'D':movePlayer(1,0);e.preventDefault();break;
+    case'.':wait();e.preventDefault();break;
+    case'>':descend();e.preventDefault();break;
+    case'g':case'G':pickup();e.preventDefault();break;
+    case'q':case'Q':if(gameOver)init();break;
+  }
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Flappy Bird</title>
+<style>
+    body { margin: 0; padding: 0; background-color: #333; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: Arial, sans-serif; }
+    canvas { display: block; background-color: #70c5ce; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="320" height="480"></canvas>
+<script>
+(function() {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // Game Constants
+    const GRAVITY = 0.25;
+    const JUMP = -4.5;
+    const PIPE_WIDTH = 50;
+    const PIPE_GAP = 120;
+    const PIPE_SPAWN_RATE = 100; // frames
+
+    // Game State
+    let frames = 0;
+    let score = 0;
+    let isGameOver = false;
+
+    // Bird Object
+    const bird = {
+        x: 50,
+        y: 150,
+        w: 20,
+        h: 20,
+        velocity: 0,
+        draw: function() {
+            ctx.fillStyle = '#ffeb3b';
+            ctx.fillRect(this.x, this.y, this.w, this.h);
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+        },
+        update: function() {
+            this.velocity += GRAVITY;
+            this.y += this.velocity;
+
+            // Floor collision
+            if (this.y + this.h >= canvas.height - 20) {
+                this.y = canvas.height - 20 - this.h;
+                gameOver();
+            }
+            // Ceiling collision
+            if (this.y < 0) {
+                this.y = 0;
+                this.velocity = 0;
+            }
+        },
+        flap: function() {
+            this.velocity = JUMP;
+        },
+        reset: function() {
+            this.y = 150;
+            this.velocity = 0;
+        }
+    };
+
+    // Pipes Array
+    const pipes = {
+        items: [],
+        draw: function() {
+            for (let i = 0; i < this.items.length; i++) {
+                let p = this.items[i];
+                ctx.fillStyle = '#2e7d32';
+                ctx.strokeStyle = '#000';
+                
+                // Top Pipe
+                ctx.fillRect(p.x, 0, PIPE_WIDTH, p.top);
+                ctx.strokeRect(p.x, 0, PIPE_WIDTH, p.top);
+                
+                // Bottom Pipe
+                ctx.fillRect(p.x, canvas.height - p.bottom, PIPE_WIDTH, p.bottom);
+                ctx.strokeRect(p.x, canvas.height - p.bottom, PIPE_WIDTH, p.bottom);
+            }
+        },
+        update: function() {
+            // Add new pipe
+            if (frames % PIPE_SPAWN_RATE === 0) {
+                let topHeight = Math.random() * (canvas.height - PIPE_GAP - 40) + 20;
+                let bottomHeight = canvas.height - PIPE_GAP - topHeight;
+                this.items.push({
+                    x: canvas.width,
+                    top: topHeight,
+                    bottom: bottomHeight,
+                    passed: false
+                });
+            }
+
+            for (let i = 0; i < this.items.length; i++) {
+                let p = this.items[i];
+                p.x -= PIPE_SPEED;
+
+                // Collision Detection
+                // Horizontal overlap
+                if (bird.x < p.x + PIPE_WIDTH && bird.x + bird.w > p.x) {
+                    // Vertical overlap (Top pipe OR Bottom pipe)
+                    if (bird.y <= p.top || bird.y + bird.h >= canvas.height - p.bottom) {
+                        gameOver();
+                    }
+                }
+
+                // Score update
+                if (p.x + PIPE_WIDTH < bird.x && !p.passed) {
+                    score++;
+                    p.passed = true;
+                }
+
+                // Remove off-screen pipes
+                if (p.x + PIPE_WIDTH < 0) {
+                    this.items.shift();
+                    i--;
+                }
+            }
+        },
+        reset: function() {
+            this.items = [];
+        }
+    };
+
+    // Ground
+    const ground = {
+        h: 20,
+        draw: function() {
+            ctx.fillStyle = '#ded895';
+            ctx.fillRect(0, canvas.height - this.h, canvas.width, this.h);
+            ctx.strokeStyle = '#000';
+            ctx.beginPath();
+            ctx.moveTo(0, canvas.height - this.h);
+            ctx.lineTo(canvas.width, canvas.height - this.h);
+            ctx.stroke();
+        }
+    };
+
+    // Score
+    function drawScore() {
+        ctx.fillStyle = '#fff';
+        ctx.strokeStyle = '#000';
+        ctx.font = '30px Arial';
+        ctx.fillText(score, canvas.width / 2 - 10, 50);
+        ctx.strokeText(score, canvas.width / 2 - 10, 50);
+    }
+
+    // Game Over Screen
+    function drawGameOver() {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.fillStyle = '#fff';
+        ctx.font = '30px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2 - 20);
+        ctx.font = '20px Arial';
+        ctx.fillText('Press Space to Restart', canvas.width / 2, canvas.height / 2 + 20);
+        ctx.textAlign = 'start'; // Reset
+    }
+
+    function gameOver() {
+        isGameOver = true;
+    }
+
+    function resetGame() {
+        bird.reset();
+        pipes.reset();
+        score = 0;
+        frames = 0;
+        isGameOver = false;
+    }
+
+    // Main Loop
+    function loop() {
+        if (!isGameOver) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            pipes.update();
+            pipes.draw();
+            
+            bird.update();
+            bird.draw();
+            
+            ground.draw();
+            
+            drawScore();
+            
+            frames++;
+        } else {
+            // Keep drawing the last frame but overlay game over
+            pipes.draw();
+            bird.draw();
+            ground.draw();
+            drawScore();
+            drawGameOver();
+        }
+        
+        requestAnimationFrame(loop);
+    }
+
+    // Input Handling
+    function handleInput(e) {
+        // Prevent default scrolling for space/arrows
+        if (e.code === 'Space' || e.code === 'ArrowUp') {
+            e.preventDefault();
+        }
+
+        if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+            if (isGameOver) {
+                resetGame();
+            } else {
+                bird.flap();
+            }
+        }
+    }
+
+    // Initialize
+    document.addEventListener('keydown', handleInput);
+    loop();
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>City Flight Sim</title>
+<style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
+    canvas { display: block; }
+    #hud {
+        position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        pointer-events: none;
+        display: flex; flex-direction: column; justify-content: space-between;
+    }
+    #hud-top {
+        display: flex; justify-content: space-between; padding: 20px;
+        color: #0f0; text-shadow: 0 0 5px #0f0; font-size: 18px;
+    }
+    #hud-bottom {
+        display: flex; justify-content: space-between; padding: 20px;
+        color: #0f0; text-shadow: 0 0 5px #0f0; font-size: 16px;
+    }
+    #crosshair {
+        position: absolute; top: 50%; left: 50%;
+        width: 20px; height: 20px;
+        transform: translate(-50%, -50%);
+        border: 2px solid rgba(0, 255, 0, 0.5);
+        border-radius: 50%;
+    }
+    #crosshair::after {
+        content: ''; position: absolute; top: 50%; left: 50%;
+        width: 4px; height: 4px; background: #0f0;
+        transform: translate(-50%, -50%); border-radius: 50%;
+    }
+    #controls-hint {
+        position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+        color: rgba(0, 255, 0, 0.6); font-size: 12px; text-align: center;
+    }
+</style>
+</head>
+<body>
+
+<div id="hud">
+    <div id="hud-top">
+        <div id="hud-speed">SPEED: 0 KTS</div>
+        <div id="hud-alt">ALT: 0 FT</div>
+        <div id="hud-heading">HDG: 000°</div>
+    </div>
+    <div id="crosshair"></div>
+    <div id="hud-bottom">
+        <div id="hud-throttle">THR: 0%</div>
+        <div id="hud-fps">FPS: 60</div>
+    </div>
+    <div id="controls-hint">WASD / ARROWS to Fly &nbsp;|&nbsp; SHIFT to Boost &nbsp;|&nbsp; SPACE to Brake</div>
+</div>
+
+<script>
+/**
+ * MINIMAL WEBGL ENGINE
+ * Implements a custom WebGL pipeline to avoid CDN dependencies.
+ */
+
+// --- Math Helpers ---
+const Mat4 = {
+    identity: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+    perspective: (fovy, aspect, near, far) => {
+        const f = 1.0 / Math.tan(fovy / 2);
+        const nf = 1 / (near - far);
+        return new Float32Array([
+            f/aspect, 0, 0, 0,
+            0, f, 0, 0,
+            0, 0, (far+near)*nf, -1,
+            0, 0, 2*far*near*nf, 0
+        ]);
+    },
+    lookAt: (eye, center, up) => {
+        let z = new Float32Array(eye).slice();
+        z[0] -= center[0]; z[1] -= center[1]; z[2] -= center[2];
+        let len = Math.sqrt(z[0]*z[0]+z[1]*z[1]+z[2]*z[2]);
+        z[0]/=len; z[1]/=len; z[2]/=len;
+        let x = new Float32Array(up).slice();
+        let y = new Float32Array(eye).slice();
+        x[0] -= center[0]; x[1] -= center[1]; x[2] -= center[2];
+        y[0] = z[1]*x[2] - z[2]*x[1];
+        y[1] = z[2]*x[0] - z[0]*x[2];
+        y[2] = z[0]*x[1] - z[1]*x[0];
+        len = Math.sqrt(y[0]*y[0]+y[1]*y[1]+y[2]*y[2]);
+        y[0]/=len; y[1]/=len; y[2]/=len;
+        x[0] = y[1]*z[2] - y[2]*z[1];
+        x[1] = y[2]*z[0] - y[0]*z[2];
+        x[2] = y[0]*z[1] - y[1]*z[0];
+        return new Float32Array([
+            x[0],y[0],z[0],0,
+            x[1],y[1],z[1],0,
+            x[2],y[2],z[2],0,
+            -x[0]*eye[0]-y[0]*eye[1]-z[0]*eye[2],
+            -x[1]*eye[0]-y[1]*eye[1]-z[1]*eye[2],
+            -x[2]*eye[0]-y[2]*eye[1]-z[2]*eye[2],
+            1,0,0,0
+        ]);
+    },
+    multiply: (a, b) => {
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) {
+            for (let j = 0; j < 4; j++) {
+                let sum = 0;
+                for (let k = 0; k < 4; k++) sum += a[i*4+k] * b[k*4+j];
+                out[i*4+j] = sum;
+            }
+        }
+        return out;
+    },
+    translate: (m, v) => {
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = m[i*4+j];
+        out[0*4+3] = m[0]*v[0]+m[1]*v[1]+m[2]*v[2]+m[3]*v[3];
+        out[1*4+3] = m[4]*v[0]+m[5]*v[1]+m[6]*v[2]+m[7]*v[3];
+        out[2*4+3] = m[8]*v[0]+m[9]*v[1]+m[10]*v[2]+m[11]*v[3];
+        out[3*4+3] = m[12]*v[0]+m[13]*v[1]+m[14]*v[2]+m[15]*v[3];
+        return out;
+    },
+    rotateX: (m, rad) => {
+        const c = Math.cos(rad), s = Math.sin(rad);
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = m[i*4+j];
+        const m22 = m[5], m23 = m[6], m32 = m[9], m33 = m[10];
+        out[5] = m22*c + m32*s; out[6] = m23*c + m33*s;
+        out[9] = m32*c - m22*s; out[10] = m33*c - m23*s;
+        return out;
+    },
+    rotateY: (m, rad) => {
+        const c = Math.cos(rad), s = Math.sin(rad);
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = m[i*4+j];
+        const m11 = m[1], m12 = m[2], m21 = m[4], m22 = m[5];
+        out[1] = m11*c - m21*s; out[2] = m12*c - m22*s;
+        out[4] = m21*c - m11*s; out[5] = m22*c - m12*s;
+        return out;
+    },
+    rotateZ: (m, rad) => {
+        const c = Math.cos(rad), s = Math.sin(rad);
+        const out = new Float32Array(16);
+        for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = m[i*4+j];
+        const m01 = m[1], m02 = m[2], m11 = m[5], m12 = m[6];
+        out[1] = m01*c + m02*s; out[2] = -m01*s + m02*c;
+        out[5] = m11*c + m12*s; out[6] = -m11*s + m12*c;
+        return out;
+    }
+};
+
+// --- WebGL Context ---
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+const gl = canvas.getContext('webgl', { antialias: false, alpha: false });
+if (!gl) { alert("WebGL not supported"); return; }
+
+// --- Shaders ---
+function createShader(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(s));
+        return null;
+    }
+    return s;
+}
+
+const vsSource = `
+attribute vec3 aPos;
+attribute vec2 aTex;
+uniform mat4 uMVP;
+varying vec2 vTex;
+void main() {
+    vTex = aTex;
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+`;
+const fsSource = `
+precision mediump float;
+varying vec2 vTex;
+uniform vec3 uColor;
+void main() {
+    gl_FragColor = vec4(uColor, 1.0);
+}
+`;
+
+const program = gl.createProgram();
+gl.attachShader(program, createShader(gl.VERTEX_SHADER, vsSource));
+gl.attachShader(program, createShader(gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(program);
+gl.useProgram(program);
+
+const locs = {
+    aPos: gl.getAttribLocation(program, 'aPos'),
+    aTex: gl.getAttribLocation(program, 'aTex'),
+    uMVP: gl.getUniformLocation(program, 'uMVP'),
+    uColor: gl.getUniformLocation(program, 'uColor')
+};
+
+// --- Texture Generation (Procedural Windows) ---
+function createBuildingTexture() {
+    const c = document.createElement('canvas');
+    c.width = 64; c.height = 64;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#333';
+    ctx.fillRect(0,0,64,64);
+    ctx.fillStyle = '#555';
+    for(let i=0; i<64; i+=8) {
+        ctx.fillRect(i, 0, 1, 64);
+        ctx.fillRect(0, i, 64, 1);
+    }
+    ctx.fillStyle = '#FFD700';
+    for(let i=0; i<64; i+=12) {
+        for(let j=0; j<64; j+=12) {
+            if(Math.random()>0.3) ctx.fillRect(i+1, j+1, 4, 4);
+        }
+    }
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    return tex;
+}
+const buildingTex = createBuildingTexture();
+
+// --- Buffer Setup ---
+function createQuad() {
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1,-1, 0, 0,
+         1,-1, 1, 0,
+        -1, 1, 0, 1,
+         1, 1, 1, 1
+    ]), gl.STATIC_DRAW);
+    return buf;
+}
+const quadBuf = createQuad();
+
+// --- Sky Shader (Simple Gradient) ---
+const skyProgram = gl.createProgram();
+gl.attachShader(skyProgram, createShader(gl.VERTEX_SHADER, `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0, 1); }
+`));
+gl.attachShader(skyProgram, createShader(gl.FRAGMENT_SHADER, `
+precision mediump float;
+uniform vec3 uTop;
+uniform vec3 uBot;
+void main() {
+    vec2 p = gl_FragCoord.xy / vec2(1920, 1080);
+    vec3 c = mix(uBot, uTop, p.y);
+    gl_FragColor = vec4(c, 1.0);
+}
+`));
+gl.linkProgram(skyProgram);
+gl.useProgram(skyProgram);
+const skyLocs = {
+    aPos: gl.getAttribLocation(skyProgram, 'aPos'),
+    uTop: gl.getUniformLocation(skyProgram, 'uTop'),
+    uBot: gl.getUniformLocation(skyProgram, 'uBot')
+};
+const skyBuf = createQuad();
+
+// --- Ground Shader ---
+const groundProgram = gl.createProgram();
+gl.attachShader(groundProgram, createShader(gl.VERTEX_SHADER, `
+attribute vec3 aPos;
+void main() { gl_Position = vec4(aPos, 1.0); }
+`));
+gl.attachShader(groundProgram, createShader(gl.FRAGMENT_SHADER, `
+precision mediump float;
+void main() {
+    gl_FragColor = vec4(0.1, 0.3, 0.05, 1.0);
+}
+`));
+gl.linkProgram(groundProgram);
+gl.useProgram(groundProgram);
+const groundLocs = { aPos: gl.getAttribLocation(groundProgram, 'aPos') };
+const groundBuf = createQuad();
+
+// --- Plane Shader ---
+const planeProgram = gl.createProgram();
+gl.attachShader(planeProgram, createShader(gl.VERTEX_SHADER, `
+attribute vec3 aPos;
+uniform mat4 uMVP;
+void main() { gl_Position = uMVP * vec4(aPos, 1.0); }
+`));
+gl.attachShader(planeProgram, createShader(gl.FRAGMENT_SHADER, `
+precision mediump float;
+uniform vec3 uColor;
+void main() { gl_FragColor = vec4(uColor, 1.0); }
+`));
+gl.linkProgram(planeProgram);
+gl.useProgram(planeProgram);
+const planeLocs = {
+    aPos: gl.getAttribLocation(planeProgram, 'aPos'),
+    uMVP: gl.getUniformLocation(planeProgram, 'uMVP'),
+    uColor: gl.getUniformLocation(planeProgram, 'uColor')
+};
+
+// --- Plane Geometry ---
+function createPlaneMesh() {
+    // Simple low poly jet
+    const verts = [
+        // Fuselage
+        0,0,0, 0.3,0,1.5, 0.3,0,-1.5,
+        0,0,0, 0.3,0,-1.5, 0.3,0,1.5, 0.3,0,0,
+        0,0,0, -0.3,0,1.5, -0.3,0,-1.5,
+        0,0,0, -0.3,0,-1.5, -0.3,0,1.5, -0.3,0,0,
+        // Wings
+        0,0,0, 0.3,0,1.5, 0,0.3,0,
+        0,0,0, 0,0.3,0, 0.3,0,-1.5,
+        0,0,0, 0.3,0,-1.5, 0,0.3,0, -0.3,0,1.5,
+        0,0,0, -0.3,0,1.5, 0,0.3,0,
+        // Tail
+        0,0,0, -0.3,0,1.5, 0,-0.3,0,
+        0,0,0, 0,-0.3,0, -0.3,0,-1.5,
+        0,0,0, -0.3,0,-1.5, 0,-0.3,0,
+    ];
+    const indices = [
+        0,1,2, 0,2,3,
+        0,4,5, 0,5,1,
+        0,6,7, 0,7,3,
+        0,8,9, 0,9,4,
+    ];
+    return { verts, indices };
+}
+const planeMesh = createPlaneMesh();
+const planeVBO = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, planeVBO);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(planeMesh.verts), gl.STATIC_DRAW);
+const planeIBO = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIBO);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(planeMesh.indices), gl.STATIC_DRAW);
+
+// --- City Generation ---
+const CITY_SIZE = 40;
+const CITY_HALF = 20;
+const BUILDING_SPACING = 12;
+const buildings = [];
+
+function generateCity() {
+    buildings.length = 0;
+    for (let x = -CITY_HALF; x <= CITY_HALF; x += BUILDING_SPACING) {
+        for (let z = -CITY_HALF; z <= CITY_HALF; z += BUILDING_SPACING) {
+            const h = 20 + Math.random() * 80;
+            const w = 4 + Math.random() * 6;
+            const d = 4 + Math.random() * 6;
+            const color = Math.random() > 0.8 ? 
+                (Math.random() > 0.5 ? '#888' : '#6699cc') : '#aaa';
+            buildings.push({ x, z, w, d, h, color });
+        }
+    }
+}
+generateCity();
+
+// --- Game State ---
+const plane = {
+    x: 0, y: 50, z: 0,
+    vx: 0, vy: 0, vz: 0,
+    pitch: 0, roll: 0, yaw: 0,
+    throttle: 0.5,
+    speed: 0
+};
+
+const keys = {};
+let lastTime = performance.now();
+let frameCount = 0;
+let fpsTime = 0;
+
+// --- Input ---
+document.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// --- Physics ---
+function updatePhysics(dt) {
+    const thrust = plane.throttle * 800;
+    const drag = plane.speed * plane.speed * 0.0005;
+    const lift = plane.speed * plane.speed * 0.002;
+    const gravity = 9.8;
+
+    // Control surfaces
+    const pitchRate = (keys['KeyW'] ? 1 : 0) + (keys['KeyS'] ? -1 : 0);
+    const rollRate = (keys['KeyA'] ? 1 : 0) + (keys['KeyD'] ? -1 : 0);
+    const yawRate = (keys['KeyLeftArrow'] ? 1 : 0) + (keys['KeyRightArrow'] ? -1 : 0);
+
+    plane.pitch -= pitchRate * 2.5 * dt;
+    plane.roll -= rollRate * 3.0 * dt;
+    plane.yaw -= yawRate * 2.0 * dt;
+
+    // Clamp
+    plane.pitch = Math.max(-1.2, Math.min(1.2, plane.pitch));
+    plane.roll = Math.max(-1.5, Math.min(1.5, plane.roll));
+
+    // Boost / Brake
+    if (keys['ShiftLeft'] || keys['ShiftRight']) thrust *= 2.5;
+    if (keys['Space']) thrust *= 0.1;
+
+    // Calculate velocity vector based on orientation
+    const cosP = Math.cos(plane.pitch);
+    const sinP = Math.sin(plane.pitch);
+    const cosR = Math.cos(plane.roll);
+    const sinR = Math.sin(plane.roll);
+    const cosY = Math.cos(plane.yaw);
+    const sinY = Math.sin(plane.yaw);
+
+    // Forward vector
+    const fwdX = sinR * sinY;
+    const fwdY = -cosP;
+    const fwdZ = sinR * cosY;
+
+    // Right vector
+    const rgtX = -cosR * sinY;
+    const rgtY = 0;
+    const rgtZ = cosR * cosY;
+
+    // Up vector
+    const upX = cosR * cosP * sinY;
+    const upY = cosP * cosP; // simplified
+    const upZ = cosR * cosP * cosY;
+
+    // Apply forces
+    const ax = (thrust * fwdX - drag * plane.vx) * dt;
+    const ay = (thrust * fwdY - drag * plane.vy - gravity) * dt;
+    const az = (thrust * fwdZ - drag * plane.vz) * dt;
+
+    plane.vx += ax;
+    plane.vy += ay;
+    plane.vz += az;
+
+    plane.x += plane.vx * dt;
+    plane.y += plane.vy * dt;
+    plane.z += plane.vz * dt;
+
+    plane.speed = Math.sqrt(plane.vx*plane.vx + plane.vy*plane.vy + plane.vz*plane.vz);
+}
+
+// --- Rendering ---
+function render() {
+    const w = canvas.width = window.innerWidth;
+    const h = canvas.height = window.innerHeight;
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0.5, 0.7, 1.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    gl.enable(gl.CULL_FACE);
+
+    // Sky
+    gl.useProgram(skyProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, skyBuf);
+    gl.enableVertexAttribArray(skyLocs.aPos);
+    gl.vertexAttribPointer(skyLocs.aPos, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform3f(skyLocs.uTop, 0.1, 0.2, 0.5);
+    gl.uniform3f(skyLocs.uBot, 0.5, 0.7, 1.0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // Ground
+    gl.useProgram(groundProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, groundBuf);
+    gl.enableVertexAttribArray(groundLocs.aPos);
+    gl.vertexAttribPointer(groundLocs.aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // Buildings
+    gl.useProgram(program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.enableVertexAttribArray(locs.aPos);
+    gl.vertexAttribPointer(locs.aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf); // Re-bind for texture coords
+    gl.enableVertexAttribArray(locs.aTex);
+    gl.vertexAttribPointer(locs.aTex, 2, gl.FLOAT, false, 0, 0);
+
+    // Camera
+    const camDist = 60;
+    const camH = 20;
+    const camX = plane.x + camDist * Math.sin(plane.yaw);
+    const camY = plane.y + camH;
+    const camZ = plane.z + camDist * Math.cos(plane.yaw);
+
+    const view = Mat4.lookAt(
+        [camX, camY, camZ],
+        [plane.x, plane.y, plane.z],
+        [0, 1, 0]
+    );
+    const proj = Mat4.perspective(Math.PI / 4, w / h, 0.1, 500);
+    const mvp = Mat4.multiply(proj, view);
+
+    // Sort buildings by distance (Painter's Algorithm)
+    const sortedBuildings = [...buildings].map(b => {
+        const dx = b.x - plane.x;
+        const dz = b.z - plane.z;
+        return { ...b, dist: dx*dx + dz*dz };
+    }).sort((a, b) => b.dist - a.dist);
+
+    for (const b of sortedBuildings) {
+        // Only render if in front of camera roughly
+        if (b.x > plane.x - camDist - 50 && b.x < plane.x + camDist + 50 &&
+            b.z > plane.z - camDist - 50 && b.z < plane.z + camDist + 50) {
+            
+            const mvpB = Mat4.multiply(proj, Mat4.translate(view, [b.x, 0, b.z]));
+            gl.uniformMatrix4fv(locs.uMVP, false, mvpB);
+            gl.uniform3f(locs.uColor, 0.5, 0.5, 0.5);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, buildingTex);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+    }
+
+    // Plane
+    gl.useProgram(planeProgram);
+    gl.bindBuffer(gl.ARRAY_BUFFER, planeVBO);
+    gl.enableVertexAttribArray(planeLocs.aPos);
+    gl.vertexAttribPointer(planeLocs.aPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, planeIBO);
+
+    const mvpP = Mat4.multiply(proj, Mat4.translate(view, [plane.x, plane.y, plane.z]));
+    mvpP = Mat4.rotateY(mvpP, plane.yaw);
+    mvpP = Mat4.rotateX(mvpP, plane.pitch);
+    mvpP = Mat4.rotateZ(mvpP, plane.roll);
+    gl.uniformMatrix4fv(planeLocs.uMVP, false, mvpP);
+    gl.uniform3f(planeLocs.uColor, 0.8, 0.8, 0.8);
+    gl.drawElements(gl.TRIANGLES, planeMesh.indices.length, gl.UNSIGNED_SHORT, 0);
+
+    // HUD Update
+    const speedKts = Math.floor(plane.speed * 1.94);
+    const alt = Math.floor(plane.y);
+    const hdg = Math.floor(((plane.yaw * 180 / Math.PI) + 360) % 360);
+    document.getElementById('hud-speed').innerText = `SPEED: ${speedKts} KTS`;
+    document.getElementById('hud-alt').innerText = `ALT: ${alt} FT`;
+    document.getElementById('hud-heading').innerText = `HDG: ${String(hdg).padStart(3, '0')}°`;
+    document.getElementById('hud-throttle').innerText = `THR: ${Math.floor(plane.throttle * 100)}%`;
+
+    // FPS
+    frameCount++;
+    fpsTime += dt;
+    if (fpsTime >= 0.5) {
+        document.getElementById('hud-fps').innerText = `FPS: ${Math.floor(frameCount / fpsTime)}`;
+        frameCount = 0; fpsTime = 0;
+    }
+}
+
+// --- Loop ---
+function loop(now) {
+    const dt = Math.min((now - lastTime) / 1000, 0.05);
+    lastTime = now;
+    updatePhysics(dt);
+    render();
+    requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>

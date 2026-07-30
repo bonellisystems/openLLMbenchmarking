@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>City Flight Sim</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  #hud-top {
+    display: flex; justify-content: center; align-items: center;
+    padding-top: 20px;
+  }
+  #hud-bottom {
+    display: flex; justify-content: center; align-items: flex-end;
+    padding-bottom: 20px;
+  }
+  .hud-box {
+    background: rgba(0, 0, 0, 0.5);
+    border: 2px solid rgba(255, 255, 255, 0.8);
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 4px;
+    text-align: center;
+    min-width: 120px;
+  }
+  .hud-label { font-size: 10px; color: #aaa; text-transform: uppercase; letter-spacing: 2px; }
+  .hud-value { font-size: 24px; font-weight: bold; }
+  #controls-hint {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: rgba(255,255,255,0.3); font-size: 14px; text-align: center;
+    transition: opacity 1s;
+  }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div id="hud-top">
+    <div class="hud-box">
+      <div class="hud-label">Heading</div>
+      <div class="hud-value" id="hdg">000°</div>
+    </div>
+  </div>
+  <div id="hud-bottom">
+    <div class="hud-box">
+      <div class="hud-label">Speed</div>
+      <div class="hud-value" id="spd">0</div>
+    </div>
+    <div class="hud-box">
+      <div class="hud-label">Altitude</div>
+      <div class="hud-value" id="alt">0</div>
+    </div>
+  </div>
+</div>
+<div id="controls-hint">Use WASD / Arrows to Fly &bull; Space to Throttle Up &bull; Shift to Throttle Down</div>
+
+<script>
+// ============================================================
+// MINIMAL WEBGL ENGINE
+// ============================================================
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+if (!gl) { alert('WebGL not supported'); }
+
+// --- Math Helpers ---
+const M = {
+  identity: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  perspective: (fov, aspect, near, far) => {
+    const f = 1.0 / Math.tan(fov / 2);
+    const nf = 1 / (near - far);
+    return new Float32Array([
+      f/aspect, 0, 0, 0,
+      0, f, 0, 0,
+      0, 0, (far+near)*nf, -1,
+      0, 0, 2*far*near*nf, 0
+    ]);
+  },
+  lookAt: (eye, center, up) => {
+    const z = new Float32Array(eye).map((v,i) => v - center[i]);
+    const x = new Float32Array(up).map((v,i) => v - eye[i]);
+    const y = new Float32Array(3).map((_,i) => i);
+    const zx = new Float32Array(3).map((_,i) => z[i]*x[2] - z[2]*x[i]);
+    const len = Math.sqrt(zx[0]**2+zx[1]**2+zx[2]**2);
+    const nx = new Float32Array(zx).map(v => v/len);
+    const zy = new Float32Array(3).map((_,i) => z[i]*nx[2] - nx[i]*z[2]);
+    const len2 = Math.sqrt(zy[0]**2+zy[1]**2+zy[2]**2);
+    const ny = new Float32Array(zy).map(v => v/len2);
+    const nxy = new Float32Array(3).map((_,i) => nx[i]*ny[2] - ny[i]*nx[2]);
+    return new Float32Array([
+      nxy[0], ny[0], nz[0], 0,
+      nxy[1], ny[1], nz[1], 0,
+      nxy[2], ny[2], nz[2], 0,
+      -nxy[0]*eye[0]-ny[0]*eye[1]-nz[0]*eye[2],
+      -nxy[1]*eye[0]-ny[1]*eye[1]-nz[1]*eye[2],
+      -nxy[2]*eye[0]-ny[2]*eye[1]-nz[2]*eye[2],
+      1
+    ]);
+  },
+  mul: (a, b) => {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += a[i*4+k] * b[k*4+j];
+      out[i*4+j] = s;
+    }
+    return out;
+  },
+  translate: (m, v) => {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = i===3 ? v[j] : m[i*4+j];
+    return out;
+  },
+  rotateX: (m, rad) => {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = i===1||j===1 ? m[i*4+j] : (i===0||j===0 ? m[i*4+j] : (i===2||j===2 ? m[i*4+j] : 0));
+    out[2*4+2] = c; out[2*4+1] = s; out[1*4+2] = -s; out[1*4+1] = c;
+    return out;
+  },
+  rotateY: (m, rad) => {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = i===2||j===2 ? m[i*4+j] : (i===0||j===0 ? m[i*4+j] : (i===1||j===1 ? 0 : m[i*4+j]));
+    out[0*4+0] = c; out[0*4+1] = -s; out[1*4+0] = s; out[1*4+1] = c;
+    return out;
+  },
+  rotateZ: (m, rad) => {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) out[i*4+j] = i===0||j===0 ? m[i*4+j] : (i===1||j===1 ? m[i*4+j] : (i===2||j===2 ? m[i*4+j] : 0));
+    out[0*4+0] = c; out[0*4+1] = s; out[1*4+0] = -s; out[1*4+1] = c;
+    return out;
+  }
+};
+
+// --- Shaders ---
+const vsSource = `
+  attribute vec3 aPos;
+  attribute vec3 aNorm;
+  uniform mat4 uModel;
+  uniform mat4 uView;
+  uniform mat4 uProj;
+  varying vec3 vNorm;
+  varying vec3 vPos;
+  void main() {
+    vNorm = mat3(uModel) * aNorm;
+    vPos = (uModel * vec4(aPos, 1.0)).xyz;
+    gl_Position = uProj * uView * uModel * vec4(aPos, 1.0);
+  }
+`;
+const fsSource = `
+  precision mediump float;
+  varying vec3 vNorm;
+  varying vec3 vPos;
+  uniform vec3 uLight;
+  uniform vec3 uColor;
+  void main() {
+    vec3 light = normalize(uLight);
+    float diff = max(dot(vNorm, light), 0.0);
+    gl_FragColor = vec4(uColor * (0.4 + 0.6 * diff), 1.0);
+  }
+`;
+
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, createShader(gl.VERTEX_SHADER, vsSource));
+gl.attachShader(prog, createShader(gl.FRAGMENT_SHADER, fsSource));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const locs = {
+  aPos: gl.getAttribLocation(prog, 'aPos'),
+  aNorm: gl.getAttribLocation(prog, 'aNorm'),
+  uModel: gl.getUniformLocation(prog, 'uModel'),
+  uView: gl.getUniformLocation(prog, 'uView'),
+  uProj: gl.getUniformLocation(prog, 'uProj'),
+  uLight: gl.getUniformLocation(prog, 'uLight'),
+  uColor: gl.getUniformLocation(prog, 'uColor'),
+};
+
+// --- WebGL Helpers ---
+function createVBO(data) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  return buf;
+}
+
+function createIBO(indices) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+  return buf;
+}
+
+function drawMesh(mesh) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+  gl.vertexAttribPointer(locs.aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(locs.aPos);
+  gl.bindBuffer(gl.ARRAY_BUFFER, mesh.nbo);
+  gl.vertexAttribPointer(locs.aNorm, 3, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(locs.aNorm);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
+  gl.drawElements(gl.TRIANGLES, mesh.indices.length, gl.UNSIGNED_SHORT, 0);
+}
+
+// ============================================================
+// SCENE OBJECTS
+// ============================================================
+
+// --- City ---
+const CITY_SIZE = 60; // 60x60 blocks
+const BLOCK_W = 10;
+const BLOCK_H = 10;
+const CITY_VERTS = [];
+const CITY_INDICES = [];
+const CITY_COLORS = [];
+
+function addCityBlock(x, z, w, h, d, color) {
+  const cx = x + w/2, cz = z + d/2;
+  // Ground
+  CITY_VERTS.push(x, 0, z, 0, 0, 0, 0, 1);
+  CITY_VERTS.push(x+w, 0, z, 0, 0, 0, 0, 1);
+  CITY_VERTS.push(x+w, 0, z+d, 0, 0, 0, 0, 1);
+  CITY_VERTS.push(x, 0, z+d, 0, 0, 0, 0, 1);
+  CITY_INDICES.push(0,1,2, 0,2,3);
+  CITY_COLORS.push(color, color, color, color);
+
+  // Building faces
+  const verts = [
+    [cx, h, cz, 0, 1, 0], // Top
+    [cx, 0, cz, 0, 1, 0],
+    [cx, 0, cz+d, 0, 1, 0],
+    [cx, h, cz+d, 0, 1, 0],
+    [cx+w/2, 0, cz, 1, 0, 0],
+    [cx+w/2, 0, cz+d, 1, 0, 0],
+    [cx+w/2, h, cz+d, 1, 0, 0],
+    [cx+w/2, h, cz, 1, 0, 0],
+    [cx-w/2, 0, cz, -1, 0, 0],
+    [cx-w/2, 0, cz+d, -1, 0, 0],
+    [cx-w/2, h, cz+d, -1, 0, 0],
+    [cx-w/2, h, cz, -1, 0, 0],
+    [cx, 0, cz-d/2, 0, 0, 1],
+    [cx+w, 0, cz-d/2, 0, 0, 1],
+    [cx+w, h, cz-d/2, 0, 0, 1],
+    [cx, h, cz-d/2, 0, 0, 1],
+    [cx, 0, cz+d/2, 0, 0, -1],
+    [cx+w, 0, cz+d/2, 0, 0, -1],
+    [cx+w, h, cz+d/2, 0, 0, -1],
+    [cx, h, cz+d/2, 0, 0, -1],
+  ];
+
+  const faces = [
+    [0,1,2, 0,2,3], // Top
+    [4,5,6, 4,6,7], // Front
+    [8,9,10, 8,10,11], // Back
+    [12,13,14, 12,14,15], // Right
+    [16,17,18, 16,18,19], // Left
+  ];
+
+  for (let f = 0; f < faces.length; f++) {
+    for (let t = 0; t < 2; t++) {
+      const i = faces[f][t*3];
+      CITY_VERTS.push(verts[i][0], verts[i][1], verts[i][2], verts[i][3], verts[i][4], verts[i][5]);
+    }
+    CITY_INDICES.push(...faces[f].map(i => i*2));
+    CITY_COLORS.push(...color);
+  }
+}
+
+const PALETTES = [
+  [0.8, 0.2, 0.2], [0.2, 0.8, 0.2], [0.2, 0.2, 0.8],
+  [0.8, 0.6, 0.2], [0.6, 0.2, 0.6], [0.2, 0.6, 0.8],
+  [0.9, 0.9, 0.9], [0.7, 0.4, 0.4], [0.4, 0.7, 0.4],
+  [0.7, 0.7, 0.5], [0.9, 0.7, 0.7], [0.5, 0.5, 0.9]
+];
+
+for (let x = 0; x < CITY_SIZE; x++) {
+  for (let z = 0; z < CITY_SIZE; z++) {
+    const w = BLOCK_W + Math.random() * 5;
+    const d = BLOCK_W + Math.random() * 5;
+    const h = 5 + Math.random() * 60;
+    const color = PALETTES[Math.floor(Math.random() * PALETTES.length)];
+    addCityBlock(x * BLOCK_W, z * BLOCK_W, w, h, d, color);
+  }
+}
+
+const cityVBO = createVBO(new Float32Array(CITY_VERTS));
+const cityIBO = createIBO(CITY_INDICES);
+const cityNBO = createVBO(new Float32Array(CITY_VERTS)); // Normals same as pos for simplicity
+const cityColorData = new Float32Array(CITY_COLORS);
+
+// --- Plane ---
+function createPlane() {
+  const verts = [];
+  const norms = [];
+  const indices = [];
+  const color = [1.0, 0.1, 0.1]; // Red plane
+
+  // Helper to add a quad
+  function addQuad(x, y, z, nx, ny, nz, c) {
+    const v = [x,y,z, nx,ny,nz];
+    verts.push(...v); norms.push(...v);
+    indices.push(verts.length-1, verts.length-1, verts.length-2);
+    indices.push(verts.length-1, verts.length-3, verts.length-2);
+    for(let i=0;i<4;i++) CITY_COLORS.push(...c);
+  }
+
+  // Fuselage (Capsule-ish)
+  const steps = 12;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const r = 1.5 + (1-t)*0.5;
+    const y = t * 10;
+    const angle = t * Math.PI;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+    verts.push(x, y, z, 0, 0, 1);
+    norms.push(0, 0, 1);
+  }
+  for (let i = 0; i < steps; i++) {
+    indices.push(i*2, i*2+1, (i+1)*2);
+    indices.push(i*2, (i+1)*2, (i+1)*2+1);
+    for(let j=0;j<6;j++) CITY_COLORS.push(...color);
+  }
+
+  // Wings
+  addQuad(0, 0, 0, 0, 1, 0, color); // Top
+  addQuad(0, 0, 0, 0, -1, 0, color); // Bottom
+  addQuad(0, 0, 0, 1, 0, 0, color); // Right
+  addQuad(0, 0, 0, -1, 0, 0, color); // Left
+
+  // Tail
+  addQuad(-8, 0, 0, 0, 1, 0, color);
+  addQuad(-8, 0, 0, 0, -1, 0, color);
+  addQuad(-8, 0, 0, 1, 0, 0, color);
+  addQuad(-8, 0, 0, -1, 0, 0, color);
+
+  // Cockpit
+  for (let i = 0; i <= 8; i++) {
+    const t = i/8;
+    const r = 0.8 + (1-t)*0.3;
+    const y = t * 2;
+    const angle = t * Math.PI;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+    verts.push(x, y, z, 0, 0, 1);
+    norms.push(0, 0, 1);
+  }
+  for (let i = 0; i < 8; i++) {
+    indices.push(verts.length-9+i*2, verts.length-9+i*2+1, verts.length-9+(i+1)*2);
+    indices.push(verts.length-9+i*2, verts.length-9+(i+1)*2, verts.length-9+(i+1)*2+1);
+    for(let j=0;j<6;j++) CITY_COLORS.push(...[0.2, 0.6, 1.0]); // Blue cockpit
+  }
+
+  return {
+    vbo: createVBO(new Float32Array(verts)),
+    nbo: createVBO(new Float32Array(norms)),
+    ibo: createIBO(indices),
+    color: color
+  };
+}
+
+const plane = createPlane();
+
+// --- Sky / Clouds ---
+function createClouds() {
+  const verts = [];
+  const norms = [];
+  const indices = [];
+  const cloudCount = 20;
+  for (let i = 0; i < cloudCount; i++) {
+    const cx = (Math.random()-0.5)*200;
+    const cy = 30 + Math.random()*40;
+    const cz = (Math.random()-0.5)*200;
+    const r = 5 + Math.random()*10;
+    for (let j = 0; j <= 8; j++) {
+      const t = j/8;
+      const a = t*Math.PI;
+      const x = Math.cos(a)*r;
+      const z = Math.sin(a)*r;
+      verts.push(x, cy, z, 0, 1, 0);
+      norms.push(0, 1, 0);
+    }
+    for (let j = 0; j < 8; j++) {
+      indices.push(verts.length-9+j*2, verts.length-9+j*2+1, verts.length-9+(j+1)*2);
+      indices.push(verts.length-9+j*2, verts.length-9+(j+1)*2, verts.length-9+(j+1)*2+1);
+      for(let k=0;k<6;k++) CITY_COLORS.push(1, 1, 1);
+    }
+  }
+  return {
+    vbo: createVBO(new Float32Array(verts)),
+    nbo: createVBO(new Float32Array(norms)),
+    ibo: createIBO(indices),
+    color: [1,1,1]
+  };
+}
+const clouds = createClouds();
+
+// ============================================================
+// GAME LOGIC
+// ============================================================
+const keys = {};
+document.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+document.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+
+let planePos = [0, 10, 0];
+let planeRot = [0, 0, 0]; // Euler angles
+let speed = 0;
+let maxSpeed = 2.5;
+let minSpeed = 0.5;
+let throttle = 0;
+
+function update(dt) {
+  // Input
+  if (keys[' '] || keys['arrowup']) throttle = Math.min(throttle + 0.02, 1);
+  if (keys['shift'] || keys['arrowdown']) throttle = Math.max(throttle - 0.02, 0);
+  if (keys['w'] || keys['arrowup']) planeRot[0] -= 2.5 * dt;
+  if (keys['s'] || keys['arrowdown']) planeRot[0] += 2.5 * dt;
+  if (keys['a'] || keys['arrowleft']) planeRot[1] -= 2.5 * dt;
+  if (keys['d'] || keys['arrowright']) planeRot[1] += 2.5 * dt;
+  if (keys['q'] || keys['arrowleft']) planeRot[2] -= 2.5 * dt;
+  if (keys['e'] || keys['arrowright']) planeRot[2] += 2.5 * dt;
+
+  // Physics
+  const targetSpeed = minSpeed + throttle * (maxSpeed - minSpeed);
+  speed += (targetSpeed - speed) * 5 * dt;
+
+  // Convert Euler to direction
+  const rad = [planeRot[0], planeRot[1], planeRot[2]];
+  const c1 = Math.cos(rad[0]), s1 = Math.sin(rad[0]);
+  const c2 = Math.cos(rad[1]), s2 = Math.sin(rad[1]);
+  const c3 = Math.cos(rad[2]), s3 = Math.sin(rad[2]);
+
+  // Forward vector
+  let fx = c1*c2, fz = c1*s2, fy = -s1;
+  // Right vector
+  let rx = s3*fy + c3*fz, rz = c3*fy - s3*fz;
+  // Up vector
+  let ux = c2*s3 - c3*s1*c2, uz = s1*s3 + c1*c3*s2;
+
+  // Move
+  planePos[0] += fx * speed * dt;
+  planePos[1] += fy * speed * dt;
+  planePos[2] += fz * speed * dt;
+
+  // Clamp altitude
+  if (planePos[1] < 2) { planePos[1] = 2; planeRot[0] = -Math.PI/2; }
+  if (planePos[1] > 80) { planePos[1] = 80; planeRot[0] = Math.PI/2; }
+
+  // HUD
+  document.getElementById('spd').innerText = Math.round(speed * 100);
+  document.getElementById('alt').innerText = Math.round(planePos[1]);
+  const hdg = Math.round(Math.atan2(fz, fx) * (180/Math.PI) + 360) % 360;
+  document.getElementById('hdg').innerText = hdg.toString().padStart(3, '0') + '°';
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function render() {
+  gl.clearColor(0.5, 0.7, 1.0, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LESS);
+
+  const aspect = canvas.width / canvas.height;
+  const proj = M.perspective(Math.PI / 3, aspect, 0.1, 500);
+
+  // Camera
+  const camDist = 25;
+  const camH = 5;
+  const camX = planePos[0] - Math.sin(planeRot[1]) * camDist;
+  const camZ = planePos[2] - Math.cos(planeRot[1]) * camDist;
+  const camY = planePos[1] + camH;
+  const eye = [camX, camY, camZ];
+  const center = [planePos[0], planePos[1], planePos[2]];
+  const up = [0, 1, 0];
+  const view = M.lookAt(eye, center, up);
+
+  // --- Draw City ---
+  gl.uniformMatrix4fv(locs.uProj, false, proj);
+  gl.uniformMatrix4fv(locs.uView, false, view);
+  gl.uniform3f(locs.uLight, 0.5, 1.0, 0.5);
+
+  // Draw ground
+  {
+    const m = M.identity();
+    gl.uniformMatrix4fv(locs.uModel, false, m);
+    gl.uniform3f(locs.uColor, 0.2, 0.5, 0.1);
+    drawMesh({ vbo: cityVBO, nbo: cityNBO, ibo: cityIBO });
+  }
+
+  // Draw buildings
+  {
+    const m = M.identity();
+    gl.uniformMatrix4fv(locs.uModel, false, m);
+    gl.uniform3f(locs.uColor, 0.8, 0.8, 0.8);
+    drawMesh({ vbo: cityVBO, nbo: cityNBO, ibo: cityIBO });
+  }
+
+  // Draw Clouds
+  {
+    const m = M.identity();
+    gl.uniformMatrix4fv(locs.uModel, false, m);
+    gl.uniform3f(locs.uColor, 1, 1, 1);
+    drawMesh(clouds);
+  }
+
+  // --- Draw Plane ---
+  {
+    const m = M.identity();
+    m = M.translate(m, planePos);
+    m = M.rotateX(m, planeRot[0]);
+    m = M.rotateY(m, planeRot[1]);
+    m = M.rotateZ(m, planeRot[2]);
+    gl.uniformMatrix4fv(locs.uModel, false, m);
+    gl.uniform3f(locs.uColor, plane.color[0], plane.color[1], plane.color[2]);
+    drawMesh(plane);
+  }
+
+  requestAnimationFrame(render);
+}
+
+// ============================================================
+// START
+// ============================================================
+function loop() {
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+  update(dt);
+  render();
+}
+let lastTime = performance.now();
+loop();
+
+</script>
+</body>
+</html>

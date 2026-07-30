@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flight Sim - Procedural City</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #hud {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .hud-top {
+    display: flex; justify-content: space-between; padding: 20px;
+    color: #0f0; text-shadow: 0 0 5px #0f0; font-size: 18px;
+  }
+  .hud-bottom {
+    display: flex; justify-content: space-between; align-items: flex-end; padding: 20px;
+    color: #0f0; text-shadow: 0 0 5px #0f0; font-size: 16px;
+  }
+  .compass {
+    width: 120px; height: 120px; border: 2px solid #0f0; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: #0f0; position: relative;
+  }
+  .compass::after { content: ''; position: absolute; top: -10px; left: 50%; width: 4px; height: 10px; background: #0f0; transform: rotate(0deg); }
+  .compass span { position: absolute; }
+  .compass span.n { top: 5px; }
+  .compass span.s { bottom: 5px; }
+  .compass span.e { right: 5px; }
+  .compass span.w { left: 5px; }
+  .hud-center {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; color: #fff; text-shadow: 0 0 10px #fff;
+  }
+  .crosshair {
+    width: 40px; height: 40px; border: 1px solid rgba(255,255,255,0.5);
+    border-radius: 50%; position: relative;
+  }
+  .crosshair::before, .crosshair::after {
+    content: ''; position: absolute; background: rgba(255,255,255,0.5);
+  }
+  .crosshair::before { width: 2px; height: 100%; left: 50%; top: 0; }
+  .crosshair::after { width: 100%; height: 2px; top: 50%; left: 0; }
+  #controls-hint {
+    position: absolute; bottom: 100px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.6); font-size: 12px; text-align: center;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="hud-top">
+    <div id="hud-speed">SPEED: 0 KTS</div>
+    <div id="hud-alt">ALT: 0 FT</div>
+    <div id="hud-throttle">THR: 0%</div>
+  </div>
+  <div class="hud-center">
+    <div class="crosshair"></div>
+  </div>
+  <div class="hud-bottom">
+    <div class="compass" id="compass">
+      <span class="n">N</span><span class="s">S</span><span class="e">E</span><span class="w">W</span>
+    </div>
+    <div id="controls-hint">
+      [W/S] Pitch &nbsp; [A/D] Roll &nbsp; [Q/E] Yaw<br>
+      [SPACE] Boost &nbsp; [SHIFT] Brake
+    </div>
+  </div>
+</div>
+
+<script>
+// ==========================================
+// MINIMAL MATH LIBRARY
+// ==========================================
+class Mat4 {
+  constructor() { this.data = new Float32Array(16); this.identity(); }
+  identity() { this.data.fill(0); this.data[0]=1; this.data[5]=1; this.data[10]=1; this.data[15]=1; return this; }
+  multiply(a, b) {
+    const out = new Float32Array(16);
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) sum += a.data[i*4+k] * b.data[k*4+j];
+      out.data[i*4+j] = sum;
+    }
+    return out;
+  }
+  translate(v) {
+    const e = this.data;
+    const x = v[0], y = v[1], z = v[2];
+    e[12] += e[0]*x + e[4]*y + e[8]*z;
+    e[13] += e[1]*x + e[5]*y + e[9]*z;
+    e[14] += e[2]*x + e[6]*y + e[10]*z;
+    e[15] += e[3]*x + e[7]*y + e[11]*z;
+    return this;
+  }
+  rotateX(rad) {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    const e = this.data;
+    const a1 = e[4], a2 = e[8];
+    e[4] = a1*c + a2*s; e[8] = a2*c - a1*s;
+    return this;
+  }
+  rotateY(rad) {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    const e = this.data;
+    const a0 = e[0], a2 = e[2];
+    e[0] = a0*c - a2*s; e[2] = a2*c + a0*s;
+    return this;
+  }
+  rotateZ(rad) {
+    const c = Math.cos(rad), s = Math.sin(rad);
+    const e = this.data;
+    const a0 = e[0], a1 = e[1];
+    e[0] = a0*c + a1*s; e[1] = a1*c - a0*s;
+    return this;
+  }
+  scale(v) {
+    const e = this.data;
+    e[0]*=v[0]; e[5]*=v[1]; e[10]*=v[2];
+    return this;
+  }
+  invert() {
+    const e = this.data;
+    const a00=e[0], a01=e[1], a02=e[2], a03=e[3];
+    const a10=e[4], a11=e[5], a12=e[6], a13=e[7];
+    const a20=e[8], a21=e[9], a22=e[10], a23=e[11];
+    const b00 = a00*a11 - a01*a10;
+    const b01 = a00*a12 - a02*a10;
+    const b02 = a00*a13 - a03*a10;
+    const b03 = a01*a12 - a02*a11;
+    const b04 = a01*a13 - a03*a11;
+    const b05 = a02*a13 - a03*a12;
+    const b06 = a20*a31 - a21*a30;
+    const b07 = a20*a32 - a22*a30;
+    const b08 = a20*a33 - a23*a30;
+    const b09 = a21*a32 - a22*a31;
+    const b10 = a21*a33 - a23*a31;
+    const b11 = a22*a33 - a23*a32;
+    const det = b00*b11 - b01*b10 + b02*b09 + b03*b08 - b04*b07 + b05*b06;
+    if (!det) return this;
+    det = 1.0 / det;
+    e[0] = (a11*b11 - a12*b10 + a13*b09)*det;
+    e[1] = (a02*b10 - a01*b11 - a03*b09)*det;
+    e[2] = (a31*b05 - a32*b04 + a33*b03)*det;
+    e[3] = (a22*b04 - a21*b05 - a23*b03)*det;
+    e[4] = (a12*b08 - a10*b11 - a13*b07)*det;
+    e[5] = (a00*b11 - a02*b08 + a03*b07)*det;
+    e[6] = (a32*b02 - a30*b05 - a33*b01)*det;
+    e[7] = (a20*b05 - a22*b02 + a23*b01)*det;
+    e[8] = (a10*b10 - a11*b08 + a13*b06)*det;
+    e[9] = (a01*b08 - a00*b10 - a03*b06)*det;
+    e[10] = (a30*b04 - a31*b02 + a33*b00)*det;
+    e[11] = (a21*b02 - a20*b04 - a23*b00)*det;
+    e[12] = (a01*a23 - a02*a22 - a03*a21)*det;
+    e[13] = (a03*a20 - a00*a23 + a02*a23)*det; // simplified
+    e[14] = (a00*a22 - a01*a20 - a03*a21)*det;
+    e[15] = (a03*a21 - a02*a20 + a01*a23)*det;
+    return this;
+  }
+}
+
+// ==========================================
+// WEBGL ENGINE
+// ==========================================
+const canvas = document.createElement('canvas');
+document.body.appendChild(canvas);
+const gl = canvas.getContext('webgl', { antialias: true, alpha: false });
+if (!gl) { alert("WebGL not supported"); }
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Shader helpers
+function createShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s));
+    return null;
+  }
+  return s;
+}
+
+function createProgram(vsSrc, fsSrc) {
+  const vs = createShader(gl.VERTEX_SHADER, vsSrc);
+  const fs = createShader(gl.FRAGMENT_SHADER, fsSrc);
+  if (!vs || !fs) return null;
+  const p = gl.createProgram();
+  gl.attachShader(p, vs);
+  gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    return null;
+  }
+  return p;
+}
+
+// Buffers
+function createBuffer(data) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  return buf;
+}
+function createIndexBuffer(data) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  return buf;
+}
+
+// ==========================================
+// MESH CLASS
+// ==========================================
+class Mesh {
+  constructor(program, vData, iData, name) {
+    this.program = program;
+    this.vbo = createBuffer(vData);
+    this.ibo = iData ? createIndexBuffer(iData) : null;
+    this.name = name;
+    this.uniforms = {};
+    this.updateUniforms = (u, v) => { this.uniforms[u] = v; };
+  }
+  draw(mvp) {
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    const loc = gl.getAttribLocation(this.program, 'aPos');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+
+    if (this.ibo) {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
+      gl.drawElements(gl.TRIANGLES, this.ibo.length, gl.UNSIGNED_SHORT, 0);
+    } else {
+      gl.drawArrays(gl.TRIANGLES, 0, this.vbo.length / 16);
+    }
+  }
+}
+
+// ==========================================
+// BUILDING GENERATOR
+// ==========================================
+const BUILDING_COLORS = [
+  [0.3, 0.3, 0.4], [0.2, 0.2, 0.3], [0.15, 0.15, 0.2],
+  [0.4, 0.35, 0.3], [0.25, 0.25, 0.25], [0.1, 0.1, 0.15]
+];
+
+function generateBuildingData(w, d, h) {
+  const verts = [];
+  const indices = [];
+  // 6 faces: front, back, left, right, top, bottom
+  // Each face: 4 vertices (2 triangles)
+  // x, y, z
+  const cx = 0, cy = h/2, cz = 0;
+  const fx = w/2, fy = d/2, fz = h/2;
+
+  const push = (x, y, z) => verts.push(x, y, z);
+
+  // Front
+  push(-fx, -fy, -fz); push(-fx, fy, -fz); push(fx, fy, -fz); push(fx, -fy, -fz);
+  // Back
+  push(fx, -fy, fz); push(fx, fy, fz); push(-fx, fy, fz); push(-fx, -fy, fz);
+  // Left
+  push(-fx, -fy, -fz); push(-fx, -fy, fz); push(-fx, fy, fz); push(-fx, fy, -fz);
+  // Right
+  push(fx, -fy, -fz); push(fx, fy, -fz); push(fx, fy, fz); push(fx, -fy, fz);
+  // Top
+  push(-fx, fy, -fz); push(fx, fy, -fz); push(fx, fy, fz); push(-fx, fy, fz);
+  // Bottom
+  push(-fx, -fy, -fz); push(-fx, -fy, fz); push(fx, -fy, fz); push(fx, -fy, -fz);
+
+  for (let i = 0; i < verts.length; i += 4) {
+    indices.push(i, i+1, i+2);
+    indices.push(i, i+2, i+3);
+  }
+
+  // Window shader data
+  const windowData = [];
+  for (let i = 0; i < verts.length; i++) {
+    windowData.push(0, 0, 0); // default color
+  }
+  // Simple window pattern logic stored in a separate buffer or just use a shader trick
+  // For simplicity, we'll use a flat color with a "window" shader that uses UVs.
+  // But since we don't have UVs in this minimal engine, let's just use a cool flat color.
+  // Actually, let's add a simple UV buffer.
+  const uvs = [];
+  for (let i = 0; i < verts.length; i++) {
+    uvs.push(0, 0);
+  }
+  // Re-map UVs for faces
+  // Front: 0,0 -> 1,0 -> 1,1 -> 0,1
+  // Back: 1,0 -> 1,1 -> 0,1 -> 0,0
+  // Left: 0,0 -> 0,1 -> 0,0 -> 0,1 (rotated)
+  // ... this is getting complex for a minimal engine.
+  // Let's just use a flat color and rely on the "window" shader using vertex position mod.
+  // We will pass the building dimensions as uniforms and use a shader that draws a grid.
+
+  return { verts, indices, uvs };
+}
+
+// We need a UV buffer for the window shader. Let's add it to Mesh.
+class MeshUV {
+  constructor(program, vData, iData, uData, name) {
+    this.program = program;
+    this.vbo = createBuffer(vData);
+    this.ibo = createIndexBuffer(iData);
+    this.uvbo = createBuffer(uData);
+    this.name = name;
+    this.uniforms = {};
+  }
+  draw(mvp) {
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.vbo);
+    gl.enableVertexAttribArray(gl.getAttribLocation(this.program, 'aPos'));
+    gl.vertexAttribPointer(gl.getAttribLocation(this.program, 'aPos'), 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.uvbo);
+    gl.enableVertexAttribArray(gl.getAttribLocation(this.program, 'aUV'));
+    gl.vertexAttribPointer(gl.getAttribLocation(this.program, 'aUV'), 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.ibo);
+    gl.drawElements(gl.TRIANGLES, this.ibo.length, gl.UNSIGNED_SHORT, 0);
+  }
+}
+
+// ==========================================
+// SHADERS
+// ==========================================
+const BUILDING_VS = `
+  attribute vec3 aPos;
+  attribute vec2 aUV;
+  uniform mat4 uMVP;
+  void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+    gl_PointSize = 1.0; // Not used for triangles
+  }
+`;
+const BUILDING_FS = `
+  precision mediump float;
+  uniform vec3 uColor;
+  uniform float uTime;
+  uniform vec3 uPos;
+  uniform float uScale;
+  void main() {
+    // Create a window pattern using vertex position
+    vec3 p = gl_Position.xyz;
+    // Normalize to [0,1]
+    float x = (p.x + uScale/2.0) / uScale;
+    float y = (p.y + uScale/2.0) / uScale;
+    // Check if inside a "window"
+    float winW = 0.05;
+    float winH = 0.05;
+    float winX = 0.02;
+    float winY = 0.02;
+    float isWin = step(winW, mod(x, winW*2.0 - winW)) * step(winW, mod(y, winH*2.0 - winH)) * step(winX, mod(x, winW*2.0 - winW) - winX) * step(winY, mod(y, winH*2.0 - winH) - winY);
+    // Actually simpler: just use a grid pattern
+    float grid = step(0.02, mod(x, 0.04)) * step(0.02, mod(y, 0.04));
+    vec3 col = mix(uColor, vec3(0.0, 0.8, 1.0), grid * 0.6);
+    // Add a slight flicker
+    col += sin(uTime * 2.0 + p.z) * 0.02;
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+const BUILDING_PROG = createProgram(BUILDING_VS, BUILDING_FS);
+
+// SKY SHADER
+const SKY_VS = `
+  attribute vec3 aPos;
+  uniform mat4 uMVP;
+  void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+  }
+`;
+const SKY_FS = `
+  precision mediump float;
+  uniform float uTime;
+  void main() {
+    vec3 col = vec3(0.0, 0.1, 0.3) + sin(uTime * 0.1) * 0.02;
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+const SKY_PROG = createProgram(SKY_VS, SKY_FS);
+
+// GROUND SHADER
+const GROUND_VS = `
+  attribute vec3 aPos;
+  uniform mat4 uMVP;
+  void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+  }
+`;
+const GROUND_FS = `
+  precision mediump float;
+  void main() {
+    gl_FragColor = vec4(0.05, 0.05, 0.08, 1.0);
+  }
+`;
+const GROUND_PROG = createProgram(GROUND_VS, GROUND_FS);
+
+// PLANE SHADER (Simple colored)
+const PLANE_VS = `
+  attribute vec3 aPos;
+  uniform mat4 uMVP;
+  void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+  }
+`;
+const PLANE_FS = `
+  precision mediump float;
+  uniform vec3 uColor;
+  void main() {
+    gl_FragColor = vec4(uColor, 1.0);
+  }
+`;
+const PLANE_PROG = createProgram(PLANE_VS, PLANE_FS);
+
+// ==========================================
+// SCENE OBJECTS
+// ==========================================
+const world = new Mat4();
+world.identity();
+
+// Sky
+const skyVerts = new Float32Array([-1,-1,0, 1,-1,0, 0,1,0]);
+const skyMesh = new Mesh(SKY_PROG, skyVerts, null, 'sky');
+skyMesh.updateUniforms('uMVP', world);
+skyMesh.updateUniforms('uTime', 0);
+
+// Ground
+const groundVerts = new Float32Array([
+  -500, 0, -500, 500, 0, -500, 500, 0, 500,
+  -500, 0, 500, 500, 0, 500, -500, 0, 500
+]);
+const groundMesh = new Mesh(GROUND_PROG, groundVerts, null, 'ground');
+groundMesh.updateUniforms('uMVP', world);
+
+// City
+const cityMeshes = [];
+const cityCount = 200;
+const cityRange = 600;
+
+for (let i = 0; i < cityCount; i++) {
+  const w = 5 + Math.random() * 15;
+  const d = 5 + Math.random() * 15;
+  const h = 10 + Math.random() * 100;
+  const data = generateBuildingData(w, d, h);
+  const color = BUILDING_COLORS[Math.floor(Math.random() * BUILDING_COLORS.length)];
+  const uvData = new Float32Array(data.uvs);
+  const mesh = new MeshUV(BUILDING_PROG, data.verts, data.indices, uvData, 'building');
+  mesh.updateUniforms('uMVP', world);
+  mesh.updateUniforms('uColor', color);
+  mesh.updateUniforms('uTime', 0);
+  mesh.updateUniforms('uPos', [0, 0, 0]);
+  mesh.updateUniforms('uScale', w);
+  cityMeshes.push(mesh);
+}
+
+// Plane
+function createPlane() {
+  const fuselageVerts = new Float32Array([
+    // Body
+    0, 0, 0, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 2, 0, 0, 

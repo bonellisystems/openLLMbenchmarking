@@ -56,9 +56,15 @@ def sshx(host, port, cmd, timeout=600):
 
 
 def pull(host, port):
-    """Tar the whole output tree on the box and bring it back. scp needs -P."""
+    """Tar the whole output tree on the box and bring it back. scp needs -P.
+
+    `steps` MUST be in this list - it holds the real per-(model, battery) exit codes, and
+    the first run of this script omitted it, so the one artefact that says which
+    batteries actually succeeded was lost when the box was destroyed.
+    """
     DEST.mkdir(parents=True, exist_ok=True)
-    r = sshx(host, port, "cd /root && tar czf out.tgz out run.log models_done failures 2>/dev/null; echo ok")
+    r = sshx(host, port, "cd /root && tar czf out.tgz out run.log models_done failures "
+                         "steps step_failures.log caps dl_fail 2>/dev/null; echo ok")
     if "ok" not in r.stdout:
         return False
     got = subprocess.run(["scp", *SSH_COMMON, "-P", str(port), f"{host}:/root/out.tgz",
@@ -83,7 +89,11 @@ def rows_local():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--interval", type=int, default=300)
-    ap.add_argument("--stall-polls", type=int, default=8)
+    ap.add_argument("--stall-polls", type=int, default=12)
+    ap.add_argument("--idle-min", type=int, default=25,
+                    help="minutes the current step's log may be silent before flat row "
+                         "count counts as a stall. A 256k-context B4 row or an offloaded "
+                         "118B model can legitimately take this long per row.")
     ap.add_argument("--floor", type=float, default=1.50)
     ap.add_argument("--no-destroy", action="store_true")
     args = ap.parse_args()
@@ -136,7 +146,21 @@ def main():
                    "du -sb /root/models 2>/dev/null | cut -f1 || echo 0").stdout.strip()
         cur_gb = (int(cur) / 1e9) if cur.isdigit() else 0.0
         progress = rows * 1000 + files_done          # either advancing breaks a stall
-        pmsg = f"rows={rows} files_fetched={files_done} on_disk={cur_gb:.0f}GB"
+        # LIVENESS, NOT JUST ROW COUNT. The first run of this watcher declared a stall
+        # after 8 static polls (~42 min) and destroyed the box - but the box was fine:
+        # laguna-s-2.1 (118B, expert offload) was working through B4's 256k-context arms,
+        # where a single row legitimately takes many minutes. It had in fact completed
+        # B8/B9/B10/B11 during that window. A row counter alone cannot tell "slow" from
+        # "hung", so the current battery's own output log is checked too: if it is still
+        # being written to, the box is working and it is NOT a stall no matter how flat
+        # the row count is.
+        idle = sshx(host, port,
+                    "now=$(date +%s); f=/root/last_step.log; "
+                    "if [ -f $f ]; then echo $(( now - $(stat -c %Y $f) )); else echo 99999; fi"
+                    ).stdout.strip()
+        idle_s = int(idle) if idle.isdigit() else 99999
+        pmsg = (f"rows={rows} files_fetched={files_done} on_disk={cur_gb:.0f}GB "
+                f"idle={idle_s // 60}m")
 
         try:
             bal = round(v.show_user().get("credit", 0), 2)
@@ -152,7 +176,8 @@ def main():
         if stage == "done":
             reason = "DONE"
             break
-        if progress == last and stage == "running":
+        # A stall requires BOTH: no new rows/files AND the current step's log gone quiet.
+        if progress == last and stage == "running" and idle_s > args.idle_min * 60:
             stalls += 1
             if stalls >= args.stall_polls:
                 reason = f"STALLED in {stage} at {pmsg}"

@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+canvas { display: block; margin: 0 auto; background: #d0f0ff; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let W, H;
+function resize() {
+    W = Math.min(window.innerWidth, 480);
+    H = Math.min(window.innerHeight, 720);
+    canvas.width = W;
+    canvas.height = H;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const GRAVITY = 0.45;
+const JUMP_FORCE = -11;
+const SPRING_FORCE = -17;
+const MOVE_SPEED = 5.5;
+const PLATFORM_W = 60;
+const PLATFORM_H = 14;
+const PLAYER_W = 36;
+const PLAYER_H = 36;
+
+let player, platforms, springs, score, highScore, gameState, cameraY, keys;
+let particles = [];
+let lastTime = 0;
+
+highScore = parseInt(localStorage.getItem('doodleHigh') || '0');
+
+function init() {
+    player = {
+        x: W / 2 - PLAYER_W / 2,
+        y: H - 120,
+        vx: 0,
+        vy: 0,
+        dir: 1,
+        onSpring: false,
+        alive: true
+    };
+    platforms = [];
+    springs = [];
+    particles = [];
+    score = 0;
+    cameraY = 0;
+    gameState = 'playing';
+
+    let startY = H - 60;
+    for (let i = 0; i < 15; i++) {
+        let py = startY - i * 70;
+        let px = Math.random() * (W - PLATFORM_W);
+        platforms.push({ x: px, y: py, w: PLATFORM_W, h: PLATFORM_H, type: 'normal', broken: false });
+    }
+    platforms[0].x = W / 2 - PLATFORM_W / 2;
+    platforms[0].y = H - 40;
+}
+
+function generatePlatforms(fromY, toY) {
+    let lastPlat = platforms[platforms.length - 1];
+    let y = lastPlat.y;
+    while (y > toY) {
+        y -= 50 + Math.random() * 45;
+        let x = Math.random() * (W - PLATFORM_W);
+        let type = 'normal';
+        let r = Math.random();
+        if (score > 500 && r < 0.15) type = 'breakable';
+        else if (score > 200 && r < 0.3) type = 'moving';
+
+        platforms.push({ x, y, w: PLATFORM_W, h: PLATFORM_H, type, broken: false, moveDir: Math.random() < 0.5 ? 1 : -1, moveSpeed: 1 + Math.random() * 1.5 });
+
+        if (type === 'normal' && Math.random() < 0.12) {
+            springs.push({ x: x + PLATFORM_W / 2 - 8, y: y - 12, w: 16, h: 12, active: false, timer: 0 });
+        }
+    }
+}
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6 - 2,
+            life: 30 + Math.random() * 20,
+            maxLife: 50,
+            color,
+            size: 2 + Math.random() * 3
+        });
+    }
+}
+
+function update() {
+    if (gameState !== 'playing') return;
+
+    if (keys['ArrowLeft'] || keys['a']) {
+        player.vx = -MOVE_SPEED;
+        player.dir = -1;
+    } else if (keys['ArrowRight'] || keys['d']) {
+        player.vx = MOVE_SPEED;
+        player.dir = 1;
+    } else {
+        player.vx *= 0.8;
+    }
+
+    player.vy += GRAVITY;
+    player.x += player.vx;
+    player.y += player.vy;
+
+    if (player.x < -PLAYER_W) player.x = W;
+    if (player.x > W) player.x = -PLAYER_W;
+
+    let onPlatform = false;
+    if (player.vy >= 0) {
+        for (let p of platforms) {
+            if (p.broken) continue;
+            let px = player.x + PLAYER_W / 2;
+            let py = player.y + PLAYER_H;
+            if (px > p.x - 4 && px < p.x + p.w + 4 &&
+                player.y + PLAYER_H >= p.y && player.y + PLAYER_H <= p.y + p.h + player.vy + 2) {
+                player.y = p.y - PLAYER_H;
+                player.vy = JUMP_FORCE;
+                onPlatform = true;
+
+                if (p.type === 'breakable') {
+                    p.broken = true;
+                    spawnParticles(p.x + p.w / 2, p.y, '#8B4513', 8);
+                }
+
+                for (let s of springs) {
+                    if (s.active) continue;
+                    if (px > s.x && px < s.x + s.w &&
+                        Math.abs((player.y + PLAYER_H) - s.y) < 8) {
+                        player.vy = SPRING_FORCE;
+                        s.active = true;
+                        s.timer = 15;
+                        spawnParticles(s.x + s.w / 2, s.y, '#FFD700', 6);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    for (let p of platforms) {
+        if (p.type === 'moving' && !p.broken) {
+            p.x += p.moveDir * p.moveSpeed;
+            if (p.x <= 0 || p.x + p.w >= W) p.moveDir *= -1;
+        }
+    }
+
+    for (let s of springs) {
+        if (s.active) {
+            s.timer--;
+            if (s.timer <= 0) s.active = false;
+        }
+    }
+
+    let targetCam = player.y - H * 0.4;
+    if (targetCam < cameraY) {
+        cameraY += (targetCam - cameraY) * 0.1;
+    }
+
+    score = Math.max(score, Math.floor(-cameraY / 10));
+
+    generatePlatforms(cameraY - 200, cameraY + H + 200);
+
+    platforms = platforms.filter(p => p.y < cameraY + H + 100);
+    springs = springs.filter(s => s.y < cameraY + H + 100);
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.15;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    if (player.y > cameraY + H + 50) {
+        gameState = 'gameover';
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('doodleHigh', highScore.toString());
+        }
+    }
+}
+
+function drawDoodle(x, y, dir) {
+    ctx.save();
+    ctx.translate(x + PLAYER_W / 2, y + PLAYER_H / 2);
+    ctx.scale(dir, 1);
+
+    let legBend = Math.sin(Date.now() / 80) * 3;
+
+    ctx.fillStyle = '#7BC67E';
+    ctx.strokeStyle = '#4a8c4e';
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.ellipse(0, -2, 14, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#a8e6a0';
+    ctx.beginPath();
+    ctx.ellipse(2, -4, 8, 10, 0.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(5, -8, 6, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#222';
+    ctx.beginPath();
+    ctx.arc(6, -7, 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(7, -8, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#4a8c4e';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(4, -1, 4, 0.1, Math.PI - 0.1);
+    ctx.stroke();
+
+    ctx.fillStyle = '#7BC67E';
+    ctx.strokeStyle = '#4a8c4e';
+    ctx.lineWidth = 2;
+
+    ctx.beginPath();
+    ctx.ellipse(-8, 12 + legBend, 5, 8, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(8, 12 - legBend, 5, 8, 0.3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+function drawPlatform(p) {
+    if (p.broken) return;
+    ctx.save();
+
+    if (p.type === 'normal') {
+        ctx.fillStyle = '#5cb85c';
+        ctx.strokeStyle = '#3a8a3a';
+        ctx.lineWidth = 2;
+        roundRect(p.x, p.y, p.w, p.h, 5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#7dd87d';
+        ctx.fillRect(p.x + 4, p.y + 2, p.w - 8, 4);
+    } else if (p.type === 'moving') {
+        ctx.fillStyle = '#5bc0de';
+        ctx.strokeStyle = '#3194a8';
+        ctx.lineWidth = 2;
+        roundRect(p.x, p.y, p.w, p.h, 5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#8ed8ee';
+        ctx.fillRect(p.x + 4, p.y + 2, p.w - 8, 4);
+        ctx.fillStyle = '#3194a8';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('⇄', p.x + p.w / 2, p.y + 11);
+    } else if (p.type === 'breakable') {
+        ctx.fillStyle = '#c08050';
+        ctx.strokeStyle = '#8a5a30';
+        ctx.lineWidth = 2;
+        roundRect(p.x, p.y, p.w, p.h, 5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#8a5a30';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(p.x + 15, p.y);
+        ctx.lineTo(p.x + 20, p.y + p.h);
+        ctx.moveTo(p.x + 40, p.y);
+        ctx.lineTo(p.x + 35, p.y + p.h);
+        ctx.stroke();
+    }
+
+    ctx.restore();
+}
+
+function drawSpring(s) {
+    if (s.active) {
+        ctx.fillStyle = '#FFD700';
+        ctx.strokeStyle = '#cc9900';
+        ctx.lineWidth = 2;
+        ctx.fillRect(s.x, s.y - 8, s.w, 8);
+        ctx.strokeRect(s.x, s.y - 8, s.w, 8);
+        ctx.fillStyle = '#FFD700';
+        ctx.fillRect(s.x - 2, s.y - 12, s.w + 4, 6);
+        ctx.strokeRect(s.x - 2, s.y - 12, s.w + 4, 6);
+    } else {
+        ctx.fillStyle = '#FFD700';
+        ctx.strokeStyle = '#cc9900';
+        ctx.lineWidth = 2;
+        ctx.fillRect(s.x, s.y, s.w, s.h);
+        ctx.strokeRect(s.x, s.y, s.w, s.h);
+        ctx.strokeStyle = '#cc9900';
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            ctx.moveTo(s.x + 2, s.y + 2 + i * 3);
+            ctx.lineTo(s.x + s.w - 2, s.y + 3 + i * 3);
+            ctx.stroke();
+        }
+    }
+}
+
+function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+function drawBackground() {
+    ctx.fillStyle = '#d0f0ff';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.strokeStyle = 'rgba(180, 210, 230, 0.4)';
+    ctx.lineWidth = 1;
+    let spacing = 40;
+    let offsetY = cameraY % spacing;
+    for (let y = -spacing + offsetY; y < H + spacing; y += spacing) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+    }
+    for (let x = 0; x < W; x += spacing) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+    }
+}
+
+function drawHUD() {
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(0, 0, W, 36);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('Score: ' + score, 10, 24);
+    ctx.textAlign = 'right';
+    ctx.fillText('Best: ' + highScore, W - 10, 24);
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Game Over', W / 2, H / 2 - 60);
+
+    ctx.font = '24px Arial';
+    ctx.fillText('Score: ' + score, W / 2, H / 2 - 10);
+
+    if (score >= highScore && score > 0) {
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 20px Arial';
+        ctx.fillText('★ New High Score! ★', W / 2, H / 2 + 25);
+    }
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '18px Arial';
+    ctx.fillText('Press any arrow key to restart', W / 2, H / 2 + 70);
+}
+
+function draw() {
+    drawBackground();
+
+    ctx.save();
+    ctx.translate(0, -cameraY);
+
+    for (let p of platforms) drawPlatform(p);
+    for (let s of springs) drawSpring(s);
+
+    for (let p of particles) {
+        ctx.globalAlpha = p.life / p.maxLife;
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+    }
+    ctx.globalAlpha = 1;
+
+    if (player.alive) drawDoodle(player.x, player.y, player.dir);
+
+    ctx.restore();
+
+    drawHUD();
+
+    if (gameState === 'gameover') drawGameOver();
+}
+
+function gameLoop(time) {
+    let dt = time - lastTime;
+    lastTime = time;
+
+    if (dt > 100) dt = 16;
+
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+keys = {};
+window.addEventListener('keydown', function(e) {
+    keys[e.key] = true;
+
+    if (gameState === 'gameover') {
+        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'a', 'd', 'w', 's'].includes(e.key)) {
+            init();
+        }
+    }
+
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+        e.preventDefault();
+    }
+});
+
+window.addEventListener('keyup', function(e) {
+    keys[e.key] = false;
+});
+
+init();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

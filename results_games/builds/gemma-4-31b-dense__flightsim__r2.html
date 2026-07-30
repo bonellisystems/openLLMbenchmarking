@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>3D Flight Sim</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #hud {
+            position: absolute; top: 20px; left: 20px; color: #0f0; 
+            font-family: monospace; pointer-events: none; text-shadow: 1px 1px #000;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        SPEED: <span id="spd">0</span><br>
+        ALT: <span id="alt">0</span><br>
+        CONTROLS: W/S (Pitch), A/D (Roll)
+    </div>
+    <canvas id="c"></canvas>
+    <script>
+        const canvas = document.getElementById('c');
+        const ctx = canvas.getContext('2d');
+        const spdEl = document.getElementById('spd');
+        const altEl = document.getElementById('alt');
+
+        let w, h;
+        function resize() {
+            w = canvas.width = window.innerWidth;
+            h = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        const keys = {};
+        window.addEventListener('keydown', e => keys[e.code] = true);
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        const state = {
+            x: 0, y: 100, z: 0,
+            pitch: 0, yaw: 0, roll: 0,
+            speed: 2,
+            focalLength: 600
+        };
+
+        function rotate(p, pitch, yaw, roll) {
+            let {x, y, z} = p;
+            
+            // Yaw (Y axis)
+            let cosY = Math.cos(yaw), sinY = Math.sin(yaw);
+            let x1 = x * cosY - z * sinY;
+            let z1 = x * sinY + z * cosY;
+
+            // Pitch (X axis)
+            let cosP = Math.cos(pitch), sinP = Math.sin(pitch);
+            let y2 = y * cosP - z1 * sinP;
+            let z2 = y * sinP + z1 * cosP;
+
+            // Roll (Z axis)
+            let cosR = Math.cos(roll), sinR = Math.sin(roll);
+            let x3 = x1 * cosR - y2 * sinR;
+            let y3 = x1 * sinR + y2 * cosR;
+
+            return {x: x3, y: y3, z: z2};
+        }
+
+        function project(p) {
+            const rel = rotate({x: p.x - state.x, y: p.y - state.y, z: p.z - state.z}, -state.pitch, -state.yaw, -state.roll);
+            if (rel.z < 1) return null;
+            const scale = state.focalLength / rel.z;
+            return {
+                x: w / 2 + rel.x * scale,
+                y: h / 2 + rel.y * scale,
+                z: rel.z
+            };
+        }
+
+        function drawLine(p1, p2, color) {
+            const v1 = project(p1);
+            const v2 = project(p2);
+            if (!v1 || !v2) return;
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(v1.x, v1.y);
+            ctx.lineTo(v2.x, v2.y);
+            ctx.stroke();
+        }
+
+        function hash(x, z) {
+            const h = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453123;
+            return h - Math.floor(h);
+        }
+
+        function loop() {
+            // Physics
+            if (keys['KeyW'] || keys['ArrowUp']) state.pitch -= 0.02;
+            if (keys['KeyS'] || keys['ArrowDown']) state.pitch += 0.02;
+            if (keys['KeyA'] || keys['ArrowLeft']) state.roll -= 0.03;
+            if (keys['KeyD'] || keys['ArrowRight']) state.roll += 0.03;
+
+            // Yaw is derived from roll in a simple flight model
+            state.yaw += state.roll * 0.01;
+            state.roll *= 0.98;
+
+            const vx = Math.cos(state.yaw) * Math.cos(state.pitch);
+            const vy = -Math.sin(state.pitch);
+            const vz = Math.sin(state.yaw) * Math.cos(state.pitch);
+
+            state.x += vx * state.speed;
+            state.y += vy * state.speed;
+            state.z += vz * state.speed;
+
+            // Render
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, w, h);
+
+            // Horizon/Ground
+            ctx.strokeStyle = '#030';
+            for(let i = -10; i <= 10; i++) {
+                const zStart = Math.floor(state.z / 500) * 500;
+                drawLine({x: -5000, y: 0, z: zStart + i * 500}, {x: 5000, y: 0, z: zStart + i * 500}, '#030');
+                drawLine({x: -5000 + i * 500, y: 0, z: -5000}, {x: -5000 + i * 500, y: 0, z: 5000}, '#030');
+            }
+
+            // Procedural City
+            const grid = 200;
+            const range = 10;
+            const cx = Math.floor(state.x / grid);
+            const cz = Math.floor(state.z / grid);
+
+            for (let ix = cx - range; ix <= cx + range; ix++) {
+                for (let iz = cz - range; iz <= cz + range; iz++) {
+                    const h = hash(ix, iz) * 300;
+                    if (h < 20) continue;
+                    
+                    const x = ix * grid;
+                    const z = iz * grid;
+                    const w_b = 50;
+
+                    const p = [
+                        {x: x-w_b, y: 0, z: z-w_b}, {x: x+w_b, y: 0, z: z-w_b},
+                        {x: x+w_b, y: 0, z: z+w_b}, {x: x-w_b, y: 0, z: z+w_b},
+                        {x: x-w_b, y: -h, z: z-w_b}, {x: x+w_b, y: -h, z: z-w_b},
+                        {x: x+w_b, y: -h, z: z+w_b}, {x: x-w_b, y: -h, z: z+w_b}
+                    ];
+
+                    const color = `hsl(${ (ix+iz)*10 % 360 }, 50%, 50%)`;
+                    // Bottom
+                    drawLine(p[0], p[1], color); drawLine(p[1], p[2], color);
+                    drawLine(p[2], p[3], color); drawLine(p[3], p[0], color);
+                    // Top
+                    drawLine(p[4], p[5], color); drawLine(p[5], p[6], color);
+                    drawLine(p[6], p[7], color); drawLine(p[7], p[4], color);
+                    // Pillars
+                    drawLine(p[0], p[4], color); drawLine(p[1], p[5], color);
+                    drawLine(p[2], p[6], color); drawLine(p[3], p[7], color);
+                }
+            }
+
+            // HUD
+            spdEl.innerText = Math.round(state.speed * 100);
+            altEl.innerText = Math.round(state.y);
+
+            // Crosshair
+            ctx.strokeStyle = '#0f0';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(w/2 - 10, h/2); ctx.lineTo(w/2 + 10, h/2);
+            ctx.moveTo(w/2, h/2 - 10); ctx.lineTo(w/2, h/2 + 10);
+            ctx.stroke();
+
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>

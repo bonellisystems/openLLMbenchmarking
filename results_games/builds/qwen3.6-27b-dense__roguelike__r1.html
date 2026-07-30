@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#ccc;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{font-size:14px;line-height:14px;letter-spacing:2px;white-space:pre;background:#111;padding:8px;border:1px solid #333;border-radius:4px}
+#ui{width:800px;margin-top:8px;display:flex;justify-content:space-between;font-size:13px;color:#888}
+#log{width:800px;height:80px;overflow-y:auto;margin-top:4px;font-size:12px;color:#666;border-top:1px solid #222;padding:4px 8px}
+#log div{margin:1px 0}
+#log .dmg{color:#e44}
+#log .heal{color:#4e4}
+#log .info{color:#48f}
+#log .gold{color:#fd4}
+#log .lvl{color:#f4f}
+#help{font-size:11px;color:#444;margin-top:4px;text-align:center}
+</style>
+</head>
+<body>
+<div id="game">
+<div id="map"></div>
+<div id="ui"></div>
+<div id="log"></div>
+<div id="help">WASD/Arrows: Move &amp; Attack | .: Wait | &gt;: Descend stairs | G: Pick up | Q: Quit</div>
+</div>
+<script>
+const W=80,H=24,MAX_ROOMS=12,MIN_R=4,MAX_R=9;
+const T_WALL=0,T_FLOOR=1,T_DOOR=2,T_STAIRS=3;
+let map,rooms,player,enemies,items,particles,depth,logMsgs,gameOver,fov,explored;
+let keys={};
+
+const COLORS={
+  wall:'#555',floor:'#333',door:'#a84',stairs:'#fff',
+  player:'#0f0',hp:'#e44',gold:'#fd4',potion:'#f4a',
+  sword:'#aaf',shield:'#faa',ring:'#faf',
+  rat:'#c84',bat:'#a6a',goblin:'#4a4',orc:'#864',
+  skeleton:'#ccc',demon:'#f44',dragon:'#fa0'
+};
+
+const ENEMY_TYPES=[
+  {ch:'r',name:'Rat',hp:6,atk:2,def:0,xp:5,color:COLORS.rat,minD:1},
+  {ch:'b',name:'Bat',hp:5,atk:3,def:0,xp:7,color:COLORS.bat,minD:1},
+  {ch:'g',name:'Goblin',hp:12,atk:4,def:1,xp:15,color:COLORS.goblin,minD:2},
+  {ch:'o',name:'Orc',hp:20,atk:6,def:2,xp:25,color:COLORS.orc,minD:3},
+  {ch:'s',name:'Skeleton',hp:16,atk:7,def:3,xp:30,color:COLORS.skeleton,minD:4},
+  {ch:'d',name:'Demon',hp:30,atk:9,def:4,xp:50,color:COLORS.demon,minD:5},
+  {ch:'D',name:'Dragon',hp:50,atk:12,def:6,xp:100,color:COLORS.dragon,minD:7}
+];
+
+function init(){
+  depth=1;gameOver=false;logMsgs=[];
+  player={x:0,y:0,hp:30,maxHp:30,atk:5,def:1,xp:0,level:1,xpNext:20,gold:0,
+    weapon:'Fists',weaponAtk:0,armor:'None',armorDef:0};
+  generateDungeon();
+  addLog('Welcome to the dungeon!','info');
+  addLog('Find the stairs (>) to descend deeper.','info');
+  render();
+}
+
+function generateDungeon(){
+  map=[];rooms=[];enemies=[];items=[];particles=[];
+  for(let y=0;y<H;y++){map[y]=[];for(let x=0;x<W;x++)map[y][x]=T_WALL;}
+  
+  for(let i=0;i<30;i++){
+    let rw=randInt(MIN_R,MAX_R),rh=randInt(MIN_R,MAX_R);
+    let rx=randInt(1,W-rw-1),ry=randInt(1,H-rh-1);
+    let overlap=false;
+    for(let r of rooms){
+      if(rx-1<r.x+r.w&&rx+rw+1>r.x&&ry-1<r.y+r.h&&ry+rh+1>r.y){overlap=true;break;}
+    }
+    if(!overlap){
+      rooms.push({x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)});
+      for(let dy=0;dy<rh;dy++)for(let dx=0;dx<rw;dx++)map[ry+dy][rx+dx]=T_FLOOR;
+      if(rooms.length>=MAX_ROOMS)break;
+    }
+  }
+  
+  for(let i=1;i<rooms.length;i++){
+    let a=rooms[i-1],b=rooms[i];
+    carveCorridor(a.cx,a.cy,b.cx,b.cy);
+  }
+  
+  let startRoom=rooms[0],endRoom=rooms[rooms.length-1];
+  player.x=startRoom.cx;player.y=startRoom.cy;
+  map[player.y][player.x]=T_FLOOR;
+  
+  map[endRoom.cy][endRoom.cx]=T_STAIRS;
+  
+  for(let i=1;i<rooms.length-1;i++){
+    let r=rooms[i];
+    let numE=randInt(1,3+Math.floor(depth/2));
+    for(let j=0;j<numE;j++){
+      let ex=randInt(r.x+1,r.x+r.w-2),ey=randInt(r.y+1,r.y+r.h-2);
+      if(map[ey][ex]===T_FLOOR){
+        let types=ENEMY_TYPES.filter(t=>t.minD<=depth);
+        let type=types[randInt(0,types.length-1)];
+        let e={...type,x:ex,y:ey,maxHp:type.hp};
+        e.atk+=Math.floor(depth*0.5);
+        e.def+=Math.floor(depth*0.3);
+        e.hp=e.maxHp;
+        enemies.push(e);
+      }
+    }
+    if(Math.random()<0.5){
+      let ix=randInt(r.x+1,r.x+r.w-2),iy=randInt(r.y+1,r.y+r.h-2);
+      if(map[iy][ix]===T_FLOOR){
+        let roll=Math.random();
+        if(roll<0.4)items.push({x:ix,y:iy,ch:'!',name:'Health Potion',type:'potion',value:15+depth*3,color:COLORS.potion});
+        else if(roll<0.6)items.push({x:ix,y:iy,ch:'$',name:'Gold',type:'gold',value:randInt(5,20)*depth,color:COLORS.gold});
+        else if(roll<0.75)items.push({x:ix,y:iy,ch:'/',name:'Sword',type:'weapon',value:2+Math.floor(depth/2),color:COLORS.sword});
+        else if(roll<0.85)items.push({x:ix,y:iy,ch:'[',name:'Shield',type:'armor',value:1+Math.floor(depth/3),color:COLORS.shield});
+        else items.push({x:ix,y:iy,ch:'~',name:'Ring of Power',type:'ring',value:1+Math.floor(depth/2),color:COLORS.ring});
+      }
+    }
+  }
+  computeFOV();
+}
+
+function carveCorridor(x1,y1,x2,y2){
+  let x=x1,y=y1;
+  while(x!==x2||y!==y2){
+    if(map[y][x]===T_WALL)map[y][x]=T_FLOOR;
+    if(Math.random()<0.05&&x>1&&x<W-2&&y>1&&y<H-2)map[y][x]=T_DOOR;
+    if(x<x2)x++;else if(x>x2)x--;
+    if(y<y2)y++;else if(y>y2)y--;
+  }
+  if(map[y][x]===T_WALL)map[y][x]=T_FLOOR;
+}
+
+function computeFOV(){
+  fov=[];explored=[];
+  for(let y=0;y<H;y++){fov[y]=[];explored[y]=[];for(let x=0;x<W;x++){fov[y][x]=false;explored[y][x]=false;}}
+  let radius=8;
+  for(let dy=-radius;dy<=radius;dy++){
+    for(let dx=-radius;dx<=radius;dx++){
+      let tx=player.x+dx,ty=player.y+dy;
+      if(tx<0||tx>=W||ty<0||ty>=H)continue;
+      if(dx*dx+dy*dy>radius*radius)continue;
+      if(lineOfSight(player.x,player.y,tx,ty)){
+        fov[ty][tx]=true;explored[ty][tx]=true;
+      }
+    }
+  }
+}
+
+function lineOfSight(x0,y0,x1,y1){
+  let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0);
+  let sx=x0<x1?1:-1,sy=y0<y1?1:-1;
+  let d=dx-dy;
+  let cx=x0,cy=y0;
+  while(true){
+    if(cx===x1&&cy===y1)return true;
+    if(map[cy][cx]===T_WALL&&!(cx===x0&&cy===y0))return false;
+    if(d>0)d-=2*dy;else if(d<0)d-=2*dx;
+    if(d>0)cx+=sx;else if(d<0)cy+=sy;
+  }
+}
+
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  let nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=W||ny<0||ny>=H)return;
+  if(map[ny][nx]===T_WALL)return;
+  let enemy=enemies.find(e=>e.x===nx&&e.y===ny&&e.hp>0);
+  if(enemy){
+    attack(enemy);
+  }else{
+    player.x=nx;player.y=ny;
+    if(map[ny][nx]===T_STAIRS){
+      addLog('You see stairs leading down. Press > to descend.','info');
+    }
+  }
+  endTurn();
+}
+
+function attack(target){
+  let totalAtk=player.atk+player.weaponAtk;
+  let dmg=Math.max(1,totalAtk-target.def+randInt(-1,2));
+  target.hp-=dmg;
+  addLog(`You hit ${target.name} for ${dmg} damage!`,'dmg');
+  spawnParticle(target.x,target.y,'+'+dmg,'#ff0');
+  if(target.hp<=0){
+    addLog(`${target.name} is slain! (+${target.xp} XP)`,'info');
+    player.xp+=target.xp;
+    checkLevelUp();
+    spawnParticle(target.x,target.y,'☠','#f44');
+  }
+}
+
+function checkLevelUp(){
+  while(player.xp>=player.xpNext){
+    player.xp-=player.xpNext;
+    player.level++;
+    player.xpNext=Math.floor(player.xpNext*1.5);
+    player.maxHp+=5;player.hp=Math.min(player.hp+10,player.maxHp);
+    player.atk+=1;player.def+=1;
+    addLog(`Level up! You are now level ${player.level}!`,'lvl');
+    spawnParticle(player.x,player.y,'LEVEL UP!','#f4f');
+  }
+}
+
+function endTurn(){
+  computeFOV();
+  for(let e of enemies){
+    if(e.hp<=0)continue;
+    if(!fov[e.y][e.x]&&Math.random()>0.3)continue;
+    let dx=player.x-e.x,dy=player.y-e.y;
+    let dist=Math.abs(dx)+Math.abs(dy);
+    if(dist<=1){
+      let eAtk=e.atk;
+      let dmg=Math.max(1,eAtk-player.def-player.armorDef+randInt(-1,1));
+      player.hp-=dmg;
+      addLog(`${e.name} hits you for ${dmg} damage!`,'dmg');
+      spawnParticle(player.x,player.y,'-'+dmg,'#f44');
+      if(player.hp<=0){gameOver=true;addLog('You have died! Press Q to quit.','dmg');}
+    }else if(dist<8){
+      let mx=dx!==0?Math.sign(dx):0,my=dy!==0?Math.sign(dy):0;
+      let nx=e.x+mx,ny=e.y+my;
+      if(nx>=0&&nx<W&&ny>=0&&ny<H&&map[ny][nx]!==T_WALL){
+        let blocked=enemies.find(o=>o!==e&&o.hp>0&&o.x===nx&&o.y===ny);
+        if(!blocked&&!(nx===player.x&&ny===player.y)){
+          e.x=nx;e.y=ny;
+        }else if(mx!==0){
+          let altY=e.y+Math.sign(dy);
+          if(altY>=0&&altY<H&&map[altY][nx]!==T_WALL){e.x=nx;e.y=altY;}
+        }else if(my!==0){
+          let altX=e.x+Math.sign(dx);
+          if(altX>=0&&altX<W&&map[ny][altX]!==T_WALL){e.x=altX;e.y=ny;}
+        }
+      }
+    }
+  }
+  updateParticles();
+  render();
+}
+
+function descend(){
+  if(gameOver)return;
+  if(map[player.y][player.x]!==T_STAIRS){addLog('No stairs here.','info');return;}
+  depth++;
+  addLog(`You descend to depth ${depth}...`,'info');
+  generateDungeon();
+  render();
+}
+
+function pickup(){
+  if(gameOver)return;
+  let item=items.find(i=>i.x===player.x&&i.y===player.y);
+  if(!item){addLog('Nothing to pick up.','info');return;}
+  if(item.type==='potion'){
+    let heal=Math.min(item.value,player.maxHp-player.hp);
+    player.hp+=heal;
+    addLog(`You drink a ${item.name}. Healed ${heal} HP.`,'heal');
+  }else if(item.type==='gold'){
+    player.gold+=item.value;
+    addLog(`You pick up ${item.value} gold.`,'gold');
+  }else if(item.type==='weapon'){
+    if(item.value>player.weaponAtk){
+      addLog(`You equip ${item.name} (+${item.value} ATK).`,'info');
+      player.weaponAtk=item.value;player.weapon=item.name;
+    }else addLog('Your current weapon is better.','info');
+  }else if(item.type==='armor'){
+    if(item.value>player.armorDef){
+      addLog(`You equip ${item.name} (+${item.value} DEF).`,'info');
+      player.armorDef=item.value;player.armor=item.name;
+    }else addLog('Your current armor is better.','info');
+  }else if(item.type==='ring'){
+    player.atk+=item.value;
+    addLog(`You put on ${item.name}. ATK +${item.value}!`,'info');
+  }
+  items=items.filter(i=>i!==item);
+  render();
+}
+
+function wait(){
+  if(gameOver)return;
+  addLog('You wait...','info');
+  endTurn();
+}
+
+function spawnParticle(x,y,text,color){
+  particles.push({x,y,text,color,life:20});
+}
+
+function updateParticles(){
+  for(let p of particles)p.life--;
+  particles=particles.filter(p=>p.life>0);
+}
+
+function addLog(msg,type){
+  logMsgs.push({msg,type});
+  if(logMsgs.length>50)logMsgs.shift();
+}
+
+function render(){
+  let html='';
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      if(!explored[y][x]){html+='<span style="color:#111"> </span>';continue;}
+      if(!fov[y][x]){
+        html+=renderTile(x,y,true);continue;
+      }
+      if(x===player.x&&y===player.y){
+        html+=`<span style="color:${COLORS.player};font-weight:bold">@</span>`;continue;
+      }
+      let enemy=enemies.find(e=>e.x===x&&e.y===y&&e.hp>0);
+      if(enemy){
+        html+=`<span style="color:${enemy.color};font-weight:bold">${enemy.ch}</span>`;continue;
+      }
+      let item=items.find(i=>i.x===x&&i.y===y);
+      if(item){
+        html+=`<span style="color:${item.color}">${item.ch}</span>`;continue;
+      }
+      html+=renderTile(x,y,false);
+    }
+    html+='\n';
+  }
+  document.getElementById('map').innerHTML=html;
+  
+  let hpPct=Math.max(0,player.hp/player.maxHp*100);
+  let hpBar='█'.repeat(Math.floor(hpPct/5))+'░'.repeat(20-Math.floor(hpPct/5));
+  document.getElementById('ui').innerHTML=
+    `<span>HP: <span style="color:${hpPct>50?'#4e4':hpPct>25?'#ee4':'#e44'}">${hpBar}</span> ${player.hp}/${player.maxHp}</span>`+
+    `<span>Lv:${player.level} ATK:${player.atk+player.weaponAtk} DEF:${player.def+player.armorDef} XP:${player.xp}/${player.xpNext}</span>`+
+    `<span>Gold:${player.gold} Depth:${depth} Wpn:${player.weapon}(${player.weaponAtk}) Arm:${player.armor}(${player.armorDef})</span>`;
+  
+  let logHtml='';
+  for(let l of logMsgs.slice(-8))logHtml+=`<div class="${l.type}">${l.msg}</div>`;
+  document.getElementById('log').innerHTML=logHtml;
+  document.getElementById('log').scrollTop=document.getElementById('log').scrollHeight;
+}
+
+function renderTile(x,y,dark){
+  let t=map[y][x];
+  let c=dark?'#222':'#555';
+  let ch='█';
+  if(t===T_FLOOR){c=dark?'#1a1a1a':'#333';ch='·';}
+  else if(t===T_DOOR){c=dark?'#432':'#a84';ch='+';}
+  else if(t===T_STAIRS){c=dark?'#444':'#fff';ch='>';}
+  return `<span style="color:${c}">${ch}</span>`;
+}
+
+function randInt(a,b){return Math.floor(Math.random()*(b-a+1))+a;}
+
+document.addEventListener('keydown',e=>{
+  if(gameOver&&e.key.toLowerCase()==='q'){init();return;}
+  switch(e.key){
+    case'ArrowUp':case'w':case'W':movePlayer(0,-1);e.preventDefault();break;
+    case'ArrowDown':case's':case'S':movePlayer(0,1);e.preventDefault();break;
+    case'ArrowLeft':case'a':case'A':movePlayer(-1,0);e.preventDefault();break;
+    case'ArrowRight':case'd':case'D':movePlayer(1,0);e.preventDefault();break;
+    case'.':wait();e.preventDefault();break;
+    case'>':descend();e.preventDefault();break;
+    case'g':case'G':pickup();e.preventDefault();break;
+    case'q':case'Q':if(gameOver)init();break;
+  }
+});
+
+init();
+</script>
+</body>
+</html>

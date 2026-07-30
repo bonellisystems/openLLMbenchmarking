@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#aaa;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#game{display:flex;gap:12px}
+#map{background:#0a0a0a;padding:4px;border:2px solid #333}
+#map pre{margin:0}
+#info{width:220px;background:#0a0a0a;padding:8px;border:2px solid #333;font-size:13px}
+#info h2{color:#ff8844;margin:0 0 6px}
+#info p{margin:2px 0}
+#info .hp{color:#ff4444}
+#info .mp{color:#4488ff}
+#info .inv{color:#88ff88}
+#info .flr{color:#ffcc00}
+#info .dmg{color:#ff6666}
+#info .def{color:#66ff66}
+#info .atk{color:#ffaa00}
+#info .st{color:#ff88ff}
+#info .xp{color:#ffcc00}
+#info .lvl{color:#ff8844}
+#info .win{color:#44ff44;font-weight:bold}
+#info .lose{color:#ff4444;font-weight:bold}
+#msg{width:220px;background:#0a0a0a;padding:8px;border:2px solid #333;font-size:13px;min-height:80px}
+#msg p{margin:2px 0}
+#msg .info{color:#888}
+#msg .event{color:#ffcc00}
+#msg .combat{color:#ff6666}
+#msg .item{color:#88ff88}
+#msg .win{color:#44ff44}
+#msg .lose{color:#ff4444}
+#ctrl{color:#555;font-size:11px;margin-top:8px}
+</style>
+</head>
+<body>
+<div id="game">
+<div id="map"><pre id="mapPre"></pre></div>
+<div id="info"><h2>ROGUE</h2><p id="hp">HP: 20/20</p><p id="mp">MP: 10/10</p><p id="flr">Floor: 1/5</p><p id="inv">Inv: -</p><p id="dmg">Dmg: 5</p><p id="def">Def: 1</p><p id="atk">Atk: 5</p><p id="st">St: 1</p><p id="xp">XP: 0</p><p id="lvl">Lvl: 1</p><p id="win"></p><p id="lose"></p></div>
+<div id="msg"><p class="info">Welcome to the dungeon!</p><p class="info">Arrows/WASD to move</p><p class="info">F to attack adjacent enemy</p><p class="info">I to use potion</p><p class="info">P to pick up items</p></div>
+</div>
+<div id="ctrl">Arrows/WASD: Move | F: Attack | I: Potion | P: Pick up | Space: Wait</div>
+
+<script>
+const W=40,H=20,MAX_FLOORS=5;
+let map,player,entities,items,floor,gameOver,winGame,turn,playerTurn;
+let msgHistory=[];
+const MAX_MSG=15;
+
+function init() {
+  map=[];
+  for(let y=0;y<H;y++){map[y]=[];for(let x=0;x<W;x++)map[y][x]=1;}
+  player={x:1,y:1,hp:20,maxHp:20,mp:10,maxMp:10,atk:5,def:1,level:1,xp:0,inv:0};
+  entities=[];
+  items=[];
+  floor=1;
+  gameOver=false;
+  winGame=false;
+  turn=0;
+  playerTurn=true;
+  msgHistory=[];
+  generateFloor();
+  placePlayer();
+  placeEnemies();
+  placeItems();
+  render();
+  updateInfo();
+  addMsg("Floor 1/5 - Explore and survive!", "info");
+}
+
+function generateFloor() {
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)map[y][x]=1;
+  const rooms=[];
+  const numRooms=4+Math.floor(Math.random()*3);
+  for(let i=0;i<numRooms;i++){
+    let rx,ry,rw,rh;
+    do{
+      rw=3+Math.floor(Math.random()*5);
+      rh=2+Math.floor(Math.random()*4);
+      rx=1+Math.floor(Math.random()*(W-rw-2));
+      ry=1+Math.floor(Math.random()*(H-rh-2));
+    }while(rooms.some(r=>Math.abs(rx-r.x)<2&&Math.abs(ry-r.y)<2));
+    rooms.push({x:rx,y:ry,w:rw,h:rh});
+    for(let y=ry;y<ry+rh;y++)for(let x=rx;x<rx+rw;x++)map[y][x]=0;
+  }
+  for(let i=0;i<rooms.length-1;i++){
+    let a=rooms[i],b=rooms[i+1];
+    let cx1=a.x+a.w/2|0,cy1=a.y+a.h/2|0;
+    let cx2=b.x+b.w/2|0,cy2=b.y+b.h/2|0;
+    if(Math.random()<0.5){
+      for(let x=cx1;x<=cx2;x++)if(map[cy1][x]===1)map[cy1][x]=0;
+      for(let y=cy1;y<=cy2;y++)if(map[y][cx2]===1)map[y][cx2]=0;
+    }else{
+      for(let y=cy1;y<=cy2;y++)if(map[y][cx1]===1)map[y][cx1]=0;
+      for(let x=cx1;x<=cx2;x++)if(map[cy2][x]===1)map[cy2][x]=0;
+    }
+  }
+  if(floor===MAX_FLOORS){
+    for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(map[y][x]===0)map[y][x]=2;
+  }
+}
+
+function placePlayer() {
+  let attempts=0;
+  while(attempts<100){
+    let x=1+Math.floor(Math.random()*3),y=1+Math.floor(Math.random()*3);
+    if(map[y][x]===0){player.x=x;player.y=y;break;}
+    attempts++;
+  }
+}
+
+function placeEnemies() {
+  entities=[];
+  let count=1+Math.floor(Math.random()*3)+Math.floor(floor/2);
+  let types=[
+    {name:"goblin",hp:8+floor*2,atk:2+floor,def:0,xp:10,chr:"g"},
+    {name:"goblin warrior",hp:14+floor*3,atk:4+floor,def:1,xp:20,chr:"G"},
+    {name:"orc",hp:20+floor*4,atk:5+floor,def:2,xp:30,chr:"O"},
+    {name:"orc warrior",hp:30+floor*5,atk:7+floor,def:3,xp:50,chr:"O"},
+  ];
+  for(let i=0;i<count;i++){
+    let attempts=0;
+    while(attempts<50){
+      let x=1+Math.floor(Math.random()*(W-2)),y=1+Math.floor(Math.random()*(H-2));
+      if(map[y][x]===0&&Math.abs(x-player.x)+Math.abs(y-player.y)>3){
+        let t=types[Math.floor(Math.random()*types.length)];
+        entities.push({x,y,hp:t.hp,maxHp:t.hp,atk:t.atk,def:t.def,xp:t.xp,chr:t.chr,name:t.name});
+        break;
+      }
+      attempts++;
+    }
+  }
+}
+
+function placeItems() {
+  items=[];
+  let count=1+Math.floor(Math.random()*2);
+  for(let i=0;i<count;i++){
+    let attempts=0;
+    while(attempts<50){
+      let x=1+Math.floor(Math.random()*(W-2)),y=1+Math.random()*(H-2)|0;
+      if(map[y][x]===0){
+        let r=Math.random();
+        if(r<0.4)items.push({x,y,type:"potion",chr:"p"});
+        else if(r<0.6)items.push({x,y,type:"sword",chr:"s"});
+        else if(r<0.75)items.push({x,y,type:"helmet",chr:"h"});
+        else items.push({x,y,type:"shield",chr:"d"});
+        break;
+      }
+      attempts++;
+    }
+  }
+}
+
+function render() {
+  let s="";
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      if(map[y][x]===1)s+=" #";
+      else if(map[y][x]===2)s+=" >";
+      else{
+        let ch=".";
+        if(x===player.x&&y===player.y)ch="@";
+        else{
+          let e=entities.find(e=>e.x===x&&e.y===y);
+          if(e)ch=e.chr;
+          else{
+            let it=items.find(it=>it.x===x&&it.y===y);
+            if(it)ch=it.chr;
+          }
+        }
+        s+=ch+" ";
+      }
+    }
+    s+="\n";
+  }
+  document.getElementById("mapPre").textContent=s;
+}
+
+function updateInfo() {
+  document.getElementById("hp").textContent="HP: "+player.hp+"/"+player.maxHp;
+  document.getElementById("mp").textContent="MP: "+player.mp+"/"+player.maxMp;
+  document.getElementById("flr").textContent="Floor: "+floor+"/"+MAX_FLOORS;
+  document.getElementById("inv").textContent="Inv: "+player.inv;
+  document.getElementById("dmg").textContent="Dmg: "+player.atk;
+  document.getElementById("def").textContent="Def: "+player.def;
+  document.getElementById("atk").textContent="St: "+player.st;
+  document.getElementById("xp").textContent="XP: "+player.xp;
+  document.getElementById("lvl").textContent="Lvl: "+player.level;
+  document.getElementById("win").textContent=winGame?"YOU WIN!":"";
+  document.getElementById("lose").textContent=gameOver?"GAME OVER":"";
+}
+
+function addMsg(text,cls) {
+  msgHistory.push({text,cls});
+  if(msgHistory.length>MAX_MSG)msgHistory.shift();
+  let m=document.getElementById("msg");
+  m.innerHTML="";
+  for(let i=0;i<msgHistory.length;i++){
+    let p=document.createElement("p");
+    p.className=msgHistory[i].cls;
+    p.textContent=msgHistory[i].text;
+    m.appendChild(p);
+  }
+}
+
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y);}
+
+function movePlayer(dx,dy) {
+  if(gameOver||winGame)return;
+  let nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=W||ny<0||ny>=H||map[ny][nx]===1)return;
+  if(map[ny][nx]===2){
+    if(floor<MAX_FLOORS){floor++;generateFloor();placePlayer();placeEnemies();placeItems();addMsg("Descending to floor "+floor+"...", "info");}
+    else{winGame=true;addMsg("You escaped the dungeon! VICTORY!", "win");}
+    render();updateInfo();return;
+  }
+  let e=entities.find(e=>e.x===nx&&e.y===ny);
+  if(e){addMsg("Path blocked by "+e.name+"!", "combat");return;}
+  let it=items.find(it=>it.x===nx&&it.y===ny);
+  if(it){
+    if(it.type==="potion"){player.hp=Math.min(player.maxHp,player.hp+15);addMsg("Healed +15 HP!", "item");}
+    else if(it.type==="sword"){player.atk+=3;addMsg("Got a sword! +3 Attack!", "item");}
+    else if(it.type==="helmet"){player.def+=2;addMsg("Got a helmet! +2 Defense!", "item");}
+    else if(it.type==="shield"){player.st+=2;addMsg("Got a shield! +2 Stance!", "item");}
+    items=items.filter(i=>i!==it);
+    render();updateInfo();return;
+  }
+  player.x=nx;player.y=ny;
+  playerTurn=false;
+  render();updateInfo();
+}
+
+function attack() {
+  if(gameOver||winGame||playerTurn)return;
+  let adj=entities.filter(e=>dist(e,player)<=1);
+  if(adj.length===0){addMsg("No adjacent enemies!", "info");return;}
+  let target=adj[Math.floor(Math.random()*adj.length)];
+  let dmg=Math.max(1,player.atk+player.st-target.def);
+  target.hp-=dmg;
+  addMsg("You hit "+target.name+" for "+dmg+" damage!", "combat");
+  if(target.hp<=0){
+    player.xp+=target.xp;
+    if(player.xp>=player.level*20){player.level++;player.maxHp+=5;player.hp=player.maxHp;player.atk+=2;addMsg("Level up! Now level "+player.level+"!", "win");}
+    entities=entities.filter(e=>e!==target);
+    render();updateInfo();
+    if(entities.length===0){addMsg("All enemies defeated! Descend to next floor!", "info");}
+    playerTurn=true;
+  }
+}
+
+function usePotion() {
+  if(gameOver||winGame||playerTurn)return;
+  if(player.inv>0){player.inv--;addMsg("Used a stance buff!", "item");}
+  else{addMsg("No potions left!", "info");}
+  playerTurn=true;
+}
+
+function waitTurn() {
+  if(gameOver||winGame||playerTurn)return;
+  playerTurn=false;
+  for(let e of entities){
+    if(dist(e,player)<=1){
+      let dmg=Math.max(1,e.atk-player.def);
+      player.hp-=dmg;
+      addMsg(e.name+" hits you for "+dmg+" damage!", "combat");
+      if(player.hp<=0){gameOver=true;addMsg("You have been defeated...", "lose");}
+    }
+  }
+  if(!gameOver){
+    for(let e of entities){
+      let dx=Math.sign(player.x-e.x),dy=Math.sign(player.y-e.y);
+      let nx=e.x+dx,ny=e.y+dy;
+      if(map[ny][nx]===0&&dist(e,{x:nx,y:ny})===1){
+        e.x=nx;e.y=ny;
+      }
+    }
+  }
+  render();updateInfo();
+  if(gameOver||winGame)return;
+  playerTurn=true;
+}
+
+document.addEventListener("keydown",function(e){
+  if(gameOver||winGame){if(e.key==="Enter")init();return;}
+  switch(e.key){
+    case"ArrowUp":case"w":case"W":movePlayer(0,-1);break;
+    case"ArrowDown":case"s":case"S":movePlayer(0,1);break;
+    case"ArrowLeft":case"a":case"A":movePlayer(-1,0);break;
+    case"ArrowRight":case"d":case"D":movePlayer(1,0);break;
+    case"f":case"F":attack();break;
+    case"i":case"I":usePotion();break;
+    case" ":waitTurn();break;
+  }
+});
+
+init();
+</script>
+</body>
+</html>

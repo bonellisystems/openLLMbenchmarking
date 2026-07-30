@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tetris</title>
+<style>
+body {margin:0;display:flex;justify-content:center;align-items:center;height:100vh;background:#111;}
+canvas{background:#222;image-rendering:pixelated;}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+// Grid setup
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const COLS = 10;
+const ROWS = 20;
+const BLOCK_SIZE = 30;
+canvas.width = COLS * BLOCK_SIZE;
+canvas.height = ROWS * BLOCK_SIZE;
+
+// Tetromino definitions
+const PIECES = [
+  // I
+  [
+    [0,0,0,0],
+    [1,1,1,1],
+    [0,0,0,0],
+    [0,0,0,0]
+  ],
+  // J
+  [
+    [1,0,0],
+    [1,1,1],
+    [0,0,0]
+  ],
+  // L
+  [
+    [0,0,1],
+    [1,1,1],
+    [0,0,0]
+  ],
+  // O
+  [
+    [1,1],
+    [1,1]
+  ],
+  // S
+  [
+    [0,1,1],
+    [1,1,0],
+    [0,0,0]
+  ],
+  // T
+  [
+    [0,1,0],
+    [1,1,1],
+    [0,0,0]
+  ],
+  // Z
+  [
+    [1,1,0],
+    [0,1,1],
+    [0,0,0]
+  ]
+];
+
+const COLORS = [
+  null,
+  '#00f0f0',
+  '#00f000',
+  '#f0a000',
+  '#f0f000',
+  '#a000f0',
+  '#a000a0',
+  '#a000a0'
+];
+
+// Game state
+let arena = createMatrix(ROWS, COLS);
+let player = {
+  pos: {x:0, y:0},
+  matrix: null,
+  dropCounter: 0,
+  dropInterval: 1000,
+  lastTime: 0
+};
+
+// Create empty matrix
+function createMatrix(r, c, fill=0) {
+  return Array.from({length:r}, () => Array(c).fill(fill));
+}
+
+// Draw matrix at offset
+function drawMatrix(matrix, offset) {
+  matrix.forEach((row, y) => {
+    row.forEach((value, x) => {
+      if (value !== 0) {
+        ctx.fillStyle = COLORS[value];
+        ctx.fillRect((x+offset.x)*BLOCK_SIZE, (y+offset.y)*BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+      }
+    });
+  });
+}
+
+// Draw arena and player
+function drawArena() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  drawMatrix(arena, {x:0, y:0});
+}
+function drawPlayer() {
+  drawMatrix(player.matrix, player.pos);
+}
+
+// Collision detection
+function collide(arena, player) {
+  const m = player.matrix;
+  const o = player.pos;
+  for (let y=0; y<m.length; ++y) {
+    for (let x=0; x<m[y].length; ++x) {
+      if (m[y][x] !== 0) {
+        if (y+o.y >= ROWS || x+o.x < 0 || x+o.x >= COLS || arena[y+o.y][x+o.x] !== 0) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// Merge player into arena
+function merge(arena, player) {
+  const m = player.matrix;
+  const o = player.pos;
+  for (let y=0; y<m.length; ++y) {
+    for (let x=0; x<m[y].length; ++x) {
+      if (m[y][x] !== 0) {
+        arena[y+o.y][x+o.x] = m[y][x];
+      }
+    }
+  }
+}
+
+// Line clearing
+function arenaSweep() {
+  let rowsCleared = 0;
+  outer: for (let y=arena.length-1; y>=0; --y) {
+    for (let x=0; x<arena[y].length; ++x) {
+      if (arena[y][x] === 0) continue outer;
+    }
+    const row = arena.splice(y,1)[0].fill(0);
+    arena.unshift(row);
+    ++y;
+    rowsCleared++;
+  }
+  if (rowsCleared > 1) {
+    player.dropInterval = Math.max(100, player.dropInterval - 100);
+  }
+}
+
+// Rotate matrix
+function rotate(matrix) {
+  const N = matrix.length;
+  const result = createMatrix(N, N);
+  for (let y=0; y<N; ++y) {
+    for (let x=0; x<N; ++x) {
+      result[x][N-1-y] = matrix[y][x];
+    }
+  }
+  return result;
+}
+
+// Player rotation with shift handling
+function playerRotate() {
+  const original = player.matrix;
+  const rotated = rotate(original);
+  const o = player.pos.x;
+  // Try shifting left
+  let offset = 1;
+  while (collide(arena, {pos:{x:o-offset, y:player.pos.y}, matrix:rotated})) {
+    offset++;
+    if (offset > rotated[0].length) break;
+  }
+  if (offset <= rotated[0].length) {
+    player.matrix = rotated;
+    player.pos.x = o - offset;
+    return;
+  }
+  // Try shifting right
+  offset = 1;
+  while (collide(arena, {pos:{x:o+offset, y:player.pos.y}, matrix:rotated})) {
+    offset++;
+    if (offset > rotated[0].length) break;
+  }
+  if (offset <= rotated[0].length) {
+    player.matrix = rotated;
+    player.pos.x = o + offset;
+    return;
+  }
+  // Revert
+  player.matrix = original;
+}
+
+// Player drop (soft drop)
+function playerDrop() {
+  player.pos.y += 1;
+  player.dropCounter = 0;
+  if (collide(arena, player)) {
+    merge(arena, player);
+    arenaSweep();
+    player.pos.y = 0;
+    player.pos.x = COLS/2 - Math.floor(player.matrix[0].length/2);
+    player.matrix = randomPiece();
+    if (collide(arena, player)) {
+      // Game over
+      arena.forEach(row => row.fill(0));
+    }
+  }
+}
+
+// Player move left/right
+function playerMove(dir) {
+  player.pos.x += dir;
+  if (collide(arena, player)) {
+    player.pos.x -= dir;
+  }
+}
+
+// Drop to bottom (hard drop)
+function playerDropToBottom() {
+  while (!collide(arena, player)) {
+    player.pos.y++;
+  }
+  player.pos.y--;
+  merge(arena, player);
+  arenaSweep();
+  player.pos.y = 0;
+  player.pos.x = COLS/2 - Math.floor(player.matrix[0].length/2);
+  player.matrix = randomPiece();
+  if (collide(arena, player)) {
+    arena.forEach(row => row.fill(0));
+  }
+}
+
+// Spawn random piece
+function randomPiece() {
+  const type = Math.floor(Math.random()*PIECES.length);
+  const matrix = PIECES[type];
+  const pos = {
+    x: Math.floor(COLS/2) - Math.floor(matrix[0].length/2),
+    y: 0
+  };
+  return {matrix, pos};
+}
+
+// Game loop
+function update(time=0) {
+  const deltaTime = time - player.lastTime;
+  player.lastTime = time;
+  player.dropCounter += deltaTime;
+  if (player.dropCounter > player.dropInterval) {
+    playerDrop();
+  }
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  drawArena();
+  drawPlayer();
+  requestAnimationFrame(update);
+}
+
+// Init
+player.matrix = randomPiece();
+player.pos.y = 0;
+player.pos.x = COLS/2 - Math.floor(player.matrix[0].length/2);
+player.lastTime = 0;
+requestAnimationFrame(update);
+
+// Keyboard controls
+document.addEventListener('keydown', event => {
+  switch(event.key) {
+    case 'ArrowLeft':
+      playerMove(-1);
+      break;
+    case 'ArrowRight':
+      playerMove(1);
+      break;
+    case 'ArrowDown':
+      playerDrop();
+      break;
+    case 'ArrowUp':
+      playerRotate();
+      break;
+    case ' ':
+      playerDropToBottom();
+      break;
+  }
+});
+</script>
+</body>
+</html>

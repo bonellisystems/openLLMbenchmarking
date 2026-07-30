@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #000;
+display: flex;
+justify-content: center;
+align-items: center;
+height: 100vh;
+overflow: hidden;
+font-family: 'Arial', sans-serif;
+}
+canvas {
+display: block;
+image-rendering: pixelated;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const W = 400;
+const H = 600;
+canvas.width = W;
+canvas.height = H;
+
+// Scale canvas to fit window
+function resizeCanvas() {
+const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+canvas.style.width = (W * scale) + 'px';
+canvas.style.height = (H * scale) + 'px';
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// Game constants
+const GRAVITY = 0.4;
+const JUMP_FORCE = -12;
+const MOVE_SPEED = 5;
+const PLATFORM_WIDTH = 60;
+const PLATFORM_HEIGHT = 15;
+const DOODLER_WIDTH = 30;
+const DOODLER_HEIGHT = 30;
+const WORLD_WIDTH = W;
+
+// Game state
+let gameState = 'start'; // start, playing, gameover
+let score = 0;
+let highScore = parseInt(localStorage.getItem('doodleHighScore')) || 0;
+let cameraY = 0;
+let platforms = [];
+let springs = [];
+let particles = [];
+let doodler = null;
+let keys = {};
+let lastTime = 0;
+let difficulty = 1;
+
+// Doodler class
+function createDoodler() {
+return {
+x: W / 2 - DOODLER_WIDTH / 2,
+y: H - 100,
+vx: 0,
+vy: 0,
+width: DOODLER_WIDTH,
+height: DOODLER_HEIGHT,
+facing: 1, // 1 = right, -1 = left
+legPhase: 0,
+alive: true
+};
+}
+
+// Platform types
+const PLAT_NORMAL = 0;
+const PLAT_MOVING = 1;
+const PLAT_BREAKABLE = 2;
+const PLAT_SPRING = 3;
+const PLAT_VANISHING = 4;
+
+function createPlatform(x, y, type) {
+return {
+x: x,
+y: y,
+width: PLATFORM_WIDTH,
+height: PLATFORM_HEIGHT,
+type: type || PLAT_NORMAL,
+moving: type === PLAT_MOVING,
+moveDir: Math.random() > 0.5 ? 1 : -1,
+moveSpeed: 1 + Math.random() * 2,
+breakable: type === PLAT_BREAKABLE,
+broken: false,
+springUsed: false,
+vanishing: type === PLAT_VANISHING,
+vanishTimer: 0,
+vanishDelay: 30,
+hasSpring: type === PLAT_SPRING,
+color: null
+};
+}
+
+function generatePlatforms() {
+platforms = [];
+// Ground platform
+platforms.push(createPlatform(W / 2 - PLATFORM_WIDTH / 2, H - 50, PLAT_NORMAL));
+
+let y = H - 50;
+while (y > -2000) {
+y -= 50 + Math.random() * 40;
+const x = Math.random() * (W - PLATFORM_WIDTH);
+const type = pickPlatformType();
+platforms.push(createPlatform(x, y, type));
+}
+}
+
+function pickPlatformType() {
+const r = Math.random();
+const diff = Math.min(difficulty, 3);
+if (r < 0.5) return PLAT_NORMAL;
+else if (r < 0.7) return PLAT_MOVING;
+else if (r < 0.85) return PLAT_BREAKABLE;
+else if (r < 0.95) return PLAT_VANISHING;
+else return PLAT_SPRING;
+}
+
+function spawnParticles(x, y, color, count) {
+for (let i = 0; i < count; i++) {
+particles.push({
+x: x,
+y: y,
+vx: (Math.random() - 0.5) * 6,
+vy: (Math.random() - 1) * 4,
+life: 20 + Math.random() * 20,
+maxLife: 40,
+color: color,
+size: 2 + Math.random() * 4
+});
+}
+}
+
+function initGame() {
+doodler = createDoodler();
+cameraY = 0;
+score = 0;
+difficulty = 1;
+particles = [];
+generatePlatforms();
+}
+
+// Input handling
+document.addEventListener('keydown', (e) => {
+keys[e.key] = true;
+keys[e.code] = true;
+
+if (e.key === ' ' || e.key === 'Enter') {
+if (gameState === 'start') {
+gameState = 'playing';
+initGame();
+} else if (gameState === 'gameover') {
+gameState = 'playing';
+initGame();
+}
+}
+
+if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === ' ') {
+e.preventDefault();
+}
+});
+
+document.addEventListener('keyup', (e) => {
+keys[e.key] = false;
+keys[e.code] = false;
+});
+
+// Touch controls
+canvas.addEventListener('touchstart', (e) => {
+e.preventDefault();
+if (gameState === 'start' || gameState === 'gameover') {
+gameState = 'playing';
+initGame();
+return;
+}
+const touch = e.touches[0];
+const rect = canvas.getBoundingClientRect();
+const scaleX = W / rect.width;
+const touchX = (touch.clientX - rect.left) * scaleX;
+if (touchX < W / 2) {
+keys['ArrowLeft'] = true;
+keys['ArrowRight'] = false;
+} else {
+keys['ArrowRight'] = true;
+keys['ArrowLeft'] = false;
+}
+});
+
+canvas.addEventListener('touchend', (e) => {
+e.preventDefault();
+keys['ArrowLeft'] = false;
+keys['ArrowRight'] = false;
+});
+
+// Update
+function update() {
+if (gameState !== 'playing') return;
+
+const d = doodler;
+
+// Input
+if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+d.vx = -MOVE_SPEED;
+d.facing = -1;
+} else if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+d.vx = MOVE_SPEED;
+d.facing = 1;
+} else {
+d.vx *= 0.8;
+if (Math.abs(d.vx) < 0.1) d.vx = 0;
+}
+
+// Physics
+d.vy += GRAVITY;
+d.x += d.vx;
+d.y += d.vy;
+
+// Wrap around screen
+if (d.x + d.width < 0) d.x = W;
+if (d.x > W) d.x = -d.width;
+
+// Leg animation
+if (d.vy < 0) d.legPhase += 0.3;
+else d.legPhase += 0.1;
+
+// Camera follows player when going up
+const targetCameraY = d.y - H * 0.4;
+if (targetCameraY < cameraY) {
+cameraY += (targetCameraY - cameraY) * 0.1;
+}
+
+// Score
+const heightScore = Math.floor(-cameraY / 10);
+if (heightScore > score) score = heightScore;
+
+// Difficulty scaling
+difficulty = 1 + score / 500;
+
+// Platform collision (only when falling)
+if (d.vy >= 0) {
+for (let p of platforms) {
+if (p.broken) continue;
+if (p.vanishing && p.vanishTimer > 0) continue;
+
+const doodlerBottom = d.y + d.height;
+const doodlerPrevBottom = doodlerBottom - d.vy;
+
+if (doodlerBottom >= p.y && doodlerPrevBottom <= p.y + p.height + 5 &&
+d.x + d.width > p.x + 5 && d.x < p.x + p.width - 5) {
+
+if (p.hasSpring && !p.springUsed) {
+d.vy = JUMP_FORCE * 1.8;
+p.springUsed = true;
+spawnParticles(p.x + p.width / 2, p.y, '#FFD700', 8);
+} else {
+d.vy = JUMP_FORCE;
+spawnParticles(p.x + p.width / 2, p.y, '#8BC34A', 4);
+}
+
+if (p.breakable) {
+p.broken = true;
+spawnParticles(p.x + p.width / 2, p.y, '#8B4513', 10);
+}
+
+if (p.vanishing) {
+p.vanishTimer = p.vanishDelay;
+}
+}
+}
+}
+
+// Moving platforms
+for (let p of platforms) {
+if (p.moving && !p.broken) {
+p.x += p.moveDir * p.moveSpeed;
+if (p.x < 0 || p.x + p.width > W) {
+p.moveDir *= -1;
+}
+}
+if (p.vanishing && p.vanishTimer > 0) {
+p.vanishTimer--;
+if (p.vanishTimer <= 0) {
+p.broken = true;
+spawnParticles(p.x + p.width / 2, p.y, '#9C27B0', 8);
+}
+}
+if (p.springUsed && p.hasSpring) {
+p.springUsed = false;
+}
+}
+
+// Generate new platforms above
+const highestPlatform = Math.min(...platforms.map(p => p.y));
+if (highestPlatform > cameraY - 200) {
+for (let i = 0; i < 5; i++) {
+const y = highestPlatform - (50 + Math.random() * 40);
+const x = Math.random() * (W - PLATFORM_WIDTH);
+platforms.push(createPlatform(x, y, pickPlatformType()));
+}
+}
+
+// Remove platforms far below camera
+platforms = platforms.filter(p => p.y < cameraY + H + 100);
+
+// Particles
+for (let i = particles.length - 1; i >= 0; i--) {
+const p = particles[i];
+p.x += p.vx;
+p.y += p.vy;
+p.vy += 0.2;
+p.life--;
+if (p.life <= 0) particles.splice(i, 1);
+}
+
+// Game over - fell below screen
+if (d.y > cameraY + H + 50) {
+d.alive = false;
+gameState = 'gameover';
+if (score > highScore) {
+highScore = score;
+localStorage.setItem('doodleHighScore', highScore.toString());
+}
+}
+}
+
+// Drawing functions
+function drawBackground() {
+// Gradient background
+const grad = ctx.createLinearGradient(0, 0, 0, H);
+const brightness = Math.max(0, Math.min(255, 200 + Math.floor(cameraY / 50)));
+grad.addColorStop(0, `rgb(${brightness}, ${brightness + 50}, ${brightness + 100})`);
+grad.addColorStop(1, `rgb(${brightness - 30}, ${brightness + 20}, ${brightness + 70})`);
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, W, H);
+
+// Grid lines for depth perception
+ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+ctx.lineWidth = 1;
+const gridOffset = (-cameraY % 40);
+for (let y = gridOffset; y < H; y += 40) {
+ctx.beginPath();
+ctx.moveTo(0, y);
+ctx.lineTo(W, y);
+ctx.stroke();
+}
+for (let x = 0; x < W; x += 40) {
+ctx.beginPath();
+ctx.moveTo(x, 0);
+ctx.lineTo(x, H);
+ctx.stroke();
+}
+}
+
+function drawPlatform(p) {
+if (p.broken) return;
+
+const screenY = p.y - cameraY;
+if (screenY < -20 || screenY > H + 20) return;
+
+ctx.save();
+
+if (p.vanishing && p.vanishTimer > 0) {
+const alpha = p.vanishTimer / p.vanishDelay;
+ctx.globalAlpha = alpha;
+}
+
+if (p.type === PLAT_NORMAL) {
+// Green platform
+ctx.fillStyle = '#4CAF50';
+ctx.fillRect(p.x, screenY, p.width, p.height);
+ctx.fillStyle = '#66BB6A';
+ctx.fillRect(p.x, screenY, p.width, 4);
+// Edge shading
+ctx.fillStyle = '#388E3C';
+ctx.fillRect(p.x, screenY + p.height - 3, p.width, 3);
+} else if (p.type === PLAT_MOVING) {
+// Blue moving platform
+ctx.fillStyle = '#2196F3';
+ctx.fillRect(p.x, screenY, p.width, p.height);
+ctx.fillStyle = '#64B5F6';
+ctx.fillRect(p.x, screenY, p.width, 4);
+ctx.fillStyle = '#1565C0';
+ctx.fillRect(p.x, screenY + p.height - 3, p.width, 3);
+// Arrow indicators
+ctx.fillStyle = '#BBDEFB';
+ctx.fillRect(p.x + 5, screenY + 5, 8, 3);
+ctx.fillRect(p.x + p.width - 13, screenY + 5, 8, 3);
+} else if (p.type === PLAT_BREAKABLE) {
+// Brown breakable platform
+ctx.fillStyle = '#795548';
+ctx.fillRect(p.x, screenY, p.width, p.height);
+ctx.fillStyle = '#8D6E63';
+ctx.fillRect(p.x, screenY, p.width, 4);
+ctx.fillStyle = '#5D4037';
+ctx.fillRect(p.x, screenY + p.height - 3, p.width, 3);
+// Crack lines
+ctx.strokeStyle = '#4E342E';
+ctx.lineWidth = 1;
+ctx.beginPath();
+ctx.moveTo(p.x + p.width * 0.3, screenY);
+ctx.lineTo(p.x + p.width * 0.4, screenY + p.height);
+ctx.moveTo(p.x + p.width * 0.7, screenY);
+ctx.lineTo(p.x + p.width * 0.6, screenY + p.height);
+ctx.stroke();
+} else if (p.type === PLAT_VANISHING) {
+// Purple fading platform
+const flicker = Math.sin(Date.now() / 100) * 0.3 + 0.7;
+ctx.globalAlpha *= flicker;
+ctx.fillStyle = '#9C27B0';
+ctx.fillRect(p.x, screenY, p.width, p.height);
+ctx.fillStyle = '#BA68C8';
+ctx.fillRect(p.x, screenY, p.width, 4);
+ctx.fillStyle = '#7B1FA2';
+ctx.fillRect(p.x, screenY + p.height - 3, p.width, 3);
+} else if (p.type === PLAT_SPRING) {
+// Platform with spring
+ctx.fillStyle = '#4CAF50';
+ctx.fillRect(p.x, screenY, p.width, p.height);
+ctx.fillStyle = '#66BB6A';
+ctx.fillRect(p.x, screenY, p.width, 4);
+ctx.fillStyle = '#388E3C';
+ctx.fillRect(p.x, screenY + p.height - 3, p.width, 3);
+// Spring
+const springY = p.hasSpring && !p.springUsed ? screenY - 15 : screenY - 8;
+ctx.fillStyle = '#FFC107';
+ctx.fillRect(p.x + p.width / 2 - 6, springY, 12, 8);
+ctx.fillStyle = '#FF9800';
+ctx.fillRect(p.x + p.width / 2 - 4, springY - 4, 8, 4);
+// Spring coils
+ctx.strokeStyle = '#F57C00';
+ctx.lineWidth = 2;
+for (let i = 0; i < 3; i++) {
+ctx.beginPath();
+ctx.moveTo(p.x + p.width / 2 - 4, springY + 2 + i * 2);
+ctx.lineTo(p.x + p.width / 2 + 4, springY + 2 + i * 2);
+ctx.stroke();
+}
+}
+
+ctx.restore();
+}
+
+function drawDoodler(d) {
+const screenY = d.y - cameraY;
+
+ctx.save();
+ctx.translate(d.x + d.width / 2, screenY + d.height / 2);
+ctx.scale(d.facing, 1);
+
+// Body
+ctx.fillStyle = '#8BC34A';
+ctx.beginPath();
+ctx.ellipse(0, 2, 12, 14, 0, 0, Math.PI * 2);
+ctx.fill();
+
+// Head
+ctx.fillStyle = '#AED581';
+ctx.beginPath();
+ctx.ellipse(2, -8, 9, 9, 0, 0, Math.PI * 2);
+ctx.fill();
+
+// Eyes
+ctx.fillStyle = 'white';
+ctx.beginPath();
+ctx.ellipse(5, -10, 4, 5, 0, 0, Math.PI * 2);
+ctx.fill();
+ctx.fillStyle = '#333';
+ctx.beginPath();
+ctx.ellipse(6, -9, 2, 3, 0, 0, Math.PI * 2);
+ctx.fill();
+ctx.fillStyle = 'white';
+ctx.beginPath();
+ctx.ellipse(7, -10, 1, 1, 0, 0, Math.PI * 2);
+ctx.fill();
+
+// Mouth
+ctx.strokeStyle = '#558B2F';
+ctx.lineWidth = 1.5;
+ctx.beginPath();
+ctx.arc(6, -5, 3, 0, Math.PI);
+ctx.stroke();
+
+// Legs
+const legAnim = Math.sin(d.legPhase * 3);
+ctx.fillStyle = '#689F38';
+// Left leg
+ctx.fillRect(-8, 10, 5, 6 + legAnim * 2);
+// Right leg
+ctx.fillRect(3, 10, 5, 6 - legAnim * 2);
+
+// Antenna
+ctx.strokeStyle = '#689F38';
+ctx.lineWidth = 2;
+ctx.beginPath();
+ctx.moveTo(0, -16);
+ctx.lineTo(-2, -22);
+ctx.stroke();
+ctx.fillStyle = '#FF5722';
+ctx.beginPath();
+ctx.arc(-2, -23, 3, 0, Math.PI * 2);
+ctx.fill();
+
+ctx.restore();
+}
+
+function drawParticles() {
+for (let p of particles) {
+const screenY = p.y - cameraY;
+ctx.globalAlpha = p.life / p.maxLife;
+ctx.fillStyle = p.color;
+ctx.fillRect(p.x - p.size / 2, screenY - p.size / 2, p.size, p.size);
+}
+ctx.globalAlpha = 1;
+}
+
+function drawScore() {
+ctx.fillStyle = 'rgba(0,0,0,0.3)';
+ctx.fillRect(10, 10, 150, 30);
+ctx.fillStyle = '#FFF';
+ctx.font = 'bold 18px Arial';
+ctx.textAlign = 'left';
+ctx.fillText('Score: ' + score, 18, 31);
+}
+
+function drawStartScreen() {
+drawBackground();
+
+ctx.fillStyle = 'rgba(0,0,0,0.5)';
+ctx.fillRect(0, 0, W, H);
+
+// Title
+ctx.fillStyle = '#8BC34A';
+ctx.font = 'bold 48px Arial';
+ctx.textAlign = 'center';
+ctx.fillText('DOODLE', W / 2, H / 2 - 80);
+ctx.fillStyle = '#FF9800';
+ctx.fillText('JUMP', W / 2, H / 2 - 30);
+
+// Instructions
+ctx.fillStyle = '#FFF';
+ctx.font = '16px Arial';
+ctx.fillText('Arrow Keys / A,D to move', W / 2, H / 2 + 30);
+ctx.fillText('Auto-jump on platforms', W / 2, H / 2 + 55);
+
+// Start prompt
+const pulse = Math.sin(Date.now() / 300) * 0.3 + 0.7;
+ctx.globalAlpha = pulse;
+ctx.fillStyle = '#FFD700';
+ctx.font = 'bold 20px Arial';
+ctx.fillText('Press SPACE or ENTER to Start', W / 2, H / 2 + 110);
+ctx.globalAlpha = 1;
+
+// High score
+if (highScore > 0) {
+ctx.fillStyle = '#FFD700';
+ctx.font = '14px Arial';
+ctx.fillText('High Score: ' + highScore, W / 2, H / 2 + 150);
+}
+
+// Draw a sample doodler
+ctx.save();
+ctx.translate(W / 2, H / 2 - 140);
+ctx.fillStyle = '#8BC34A';
+ctx.beginPath();
+ctx.ellipse(0, 2, 12, 14, 0, 0, Math.PI * 2);
+ctx.fill();
+ctx.fillStyle = '#AED581';
+ctx.beginPath();
+ctx.ellipse(2, -8, 9, 9, 0, 0, Math.PI * 2);
+ctx.fill();
+ctx.fillStyle = 'white';
+ctx.beginPath();
+ctx.ellipse(5, -10, 4, 5, 0, 0, Math.PI * 2);
+ctx.fill();
+ctx.fillStyle = '#333';
+ctx.beginPath();
+ctx.ellipse(6, -9, 2, 3, 0, 0, Math.PI * 2);
+ctx.fill();
+ctx.restore();
+}
+
+function drawGameOver() {
+drawBackground();
+
+ctx.fillStyle = 'rgba(0,0,0,0.6)';
+ctx.fillRect(0, 0, W, H);
+
+ctx.fillStyle = '#F44336';
+ctx.font = 'bold 42px Arial';
+ctx.textAlign = 'center';
+ctx.fillText('GAME OVER', W / 2, H / 2 - 60);
+
+ctx.fillStyle = '#FFF';
+ctx.font = '24px Arial';
+ctx.fillText('Score: ' + score, W / 2, H / 2);
+
+if (score >= highScore && score > 0) {
+ctx.fillStyle = '#FFD700';
+ctx.font = '18px Arial';
+ctx.fillText('NEW HIGH SCORE!', W / 2, H / 2 + 35);
+} else {
+ctx.fillStyle = '#FFD700';
+ctx.font = '16px Arial';
+ctx.fillText('High Score: ' + highScore, W / 2, H / 2 + 35);
+}
+
+const pulse = Math.sin(Date.now() / 300) * 0.3 + 0.7;
+ctx.globalAlpha = pulse;
+ctx.fillStyle = '#FFD700';
+ctx.font = 'bold 18px Arial';
+ctx.fillText('Press SPACE or ENTER to Retry', W / 2, H / 2 + 90);
+ctx.globalAlpha = 1;
+}
+
+// Main game loop
+function gameLoop(timestamp) {
+if (!lastTime) lastTime = timestamp;
+const dt = timestamp - lastTime;
+lastTime = timestamp;
+
+update();
+
+ctx.clearRect(0, 0, W, H);
+
+if (gameState === 'start') {
+drawStartScreen();
+} else if (gameState === 'playing') {
+drawBackground();
+for (let p of platforms) drawPlatform(p);
+drawParticles();
+drawDoodler(doodler);
+drawScore();
+} else if (gameState === 'gameover') {
+drawGameOver();
+}
+
+requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

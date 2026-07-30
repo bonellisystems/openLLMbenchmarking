@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Flight Sim</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #87CEEB; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #hud {
+            position: absolute; top: 20px; left: 20px;
+            color: #00ff00; font-family: 'Courier New', Courier, monospace;
+            font-size: 18px; pointer-events: none; text-shadow: 1px 1px 2px black;
+        }
+        #controls {
+            position: absolute; bottom: 20px; left: 20px;
+            color: #fff; font-family: sans-serif; font-size: 12px;
+            pointer-events: none; opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div id="hud">
+        SPD: <span id="spd">0</span><br>
+        ALT: <span id="alt">0</span><br>
+        HDG: <span id="hdg">0</span>
+    </div>
+    <div id="controls">
+        W/S: Pitch | A/D: Roll | Q/E: Yaw | SHIFT/CTRL: Throttle
+    </div>
+    <canvas id="glCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) { alert('WebGL not supported'); }
+
+        // --- Matrix Math ---
+        const Mat4 = {
+            identity: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+            multiply: (a, b) => {
+                const out = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        out[i * 4 + j] = a[i * 4 + 0] * b[0 * 4 + j] +
+                                         a[i * 4 + 1] * b[1 * 4 + j] +
+                                         a[i * 4 + 2] * b[2 * 4 + j] +
+                                         a[i * 4 + 3] * b[3 * 4 + j];
+                    }
+                }
+                return out;
+            },
+            perspective: (fov, aspect, near, far) => {
+                const f = 1.0 / Math.tan(fov / 2);
+                const nf = 1 / (near - far);
+                return new Float32Array([
+                    f / aspect, 0, 0, 0,
+                    0, f, 0, 0,
+                    0, 0, (far + near) * nf, -1,
+                    0, 0, (2 * far * near) * nf, 0
+                ]);
+            },
+            translate: (m, x, y, z) => {
+                const t = Mat4.identity();
+                t[12] = x; t[13] = y; t[14] = z;
+                return Mat4.multiply(m, t);
+            },
+            rotateX: (m, angle) => {
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const r = Mat4.identity();
+                r[5] = c; r[6] = s; r[9] = -s; r[10] = c;
+                return Mat4.multiply(m, r);
+            },
+            rotateY: (m, angle) => {
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const r = Mat4.identity();
+                r[0] = c; r[2] = -s; r[8] = s; r[10] = c;
+                return Mat4.multiply(m, r);
+            },
+            rotateZ: (m, angle) => {
+                const c = Math.cos(angle), s = Math.sin(angle);
+                const r = Mat4.identity();
+                r[0] = c; r[1] = s; r[4] = -s; r[5] = c;
+                return Mat4.multiply(m, r);
+            }
+        };
+
+        // --- Shaders ---
+        const vsSource = `
+            attribute vec3 aPos;
+            attribute vec3 aCol;
+            uniform mat4 uProj;
+            uniform mat4 uView;
+            varying vec3 vCol;
+            void main() {
+                vCol = aCol;
+                gl_Position = uProj * uView * vec4(aPos, 1.0);
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            varying vec3 vCol;
+            void main() {
+                gl_FragColor = vec4(vCol, 1.0);
+            }
+        `;
+
+        function createShader(gl, type, source) {
+            const s = gl.createShader(type);
+            gl.shaderSource(s, source);
+            gl.compileShader(s);
+            return s;
+        }
+
+        const program = gl.createProgram();
+        gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vsSource));
+        gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fsSource));
+        gl.linkProgram(program);
+        gl.useProgram(program);
+
+        const uProjLoc = gl.getUniformLocation(program, 'uProj');
+        const uViewLoc = gl.getUniformLocation(program, 'uView');
+        const aPosLoc = gl.getAttribLocation(program, 'aPos');
+        const aColLoc = gl.getAttribLocation(program, 'aCol');
+
+        // --- Geometry ---
+        function createCube(x, y, z, w, h, d, color) {
+            const verts = [];
+            const cols = [];
+            const faces = [
+                {n: [0,0,1], v: [[-w,0,d], [w,0,d], [w,h,d], [-w,h,d]]}, // front
+                {n: [0,0,-1], v: [[-w,0,0], [-w,h,0], [w,h,0], [w,0,0]]}, // back
+                {n: [0,1,0], v: [[-w,h,0], [-w,h,d], [w,h,d], [w,h,0]]}, // top
+                {n: [0,-1,0], v: [[-w,0,0], [w,0,0], [w,0,d], [-w,0,d]]}, // bottom
+                {n: [1,0,0], v: [[w,0,0], [w,h,0], [w,h,d], [w,0,d]]}, // right
+                {n: [-1,0,0], v: [[-w,0,0], [-w,0,d], [-w,h,d], [-w,h,0]]}, // left
+            ];
+            faces.forEach(f => {
+                const v = f.v;
+                const c = [...color];
+                // Simple shading based on normal
+                c[0] += f.n[0] * 0.1; c[1] += f.n[1] * 0.1; c[2] += f.n[2] * 0.1;
+                
+                const indices = [0,1,2, 0,2,3];
+                indices.forEach(i => {
+                    verts.push(v[i][0]+x, v[i][1]+y, v[i][2]+z);
+                    cols.push(...c);
+                });
+            });
+            return { verts, cols };
+        }
+
+        const allVerts = [], allCols = [];
+        // Ground
+        const ground = createCube(0, -1, 0, 5000, 1, 5000, [0.2, 0.2, 0.2]);
+        allVerts.push(...ground.verts); allCols.push(...ground.cols);
+
+        // City
+        for(let i=0; i<1000; i++) {
+            const x = (Math.random() - 0.5) * 4000;
+            const z = (Math.random() - 0.5) * 4000;
+            const h = Math.random() * 100 + 20;
+            const w = Math.random() * 10 + 5;
+            const col = [0.4 + Math.random()*0.2, 0.4 + Math.random()*0.2, 0.4 + Math.random()*0.2];
+            const b = createCube(x, 0, z, w, h, w, col);
+            allVerts.push(...b.verts); allCols.push(...b.cols);
+        }
+
+        const vBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(allVerts), gl.STATIC_DRAW);
+        
+        const cBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(allCols), gl.STATIC_DRAW);
+
+        // --- State ---
+        const state = {
+            pos: { x: 0, y: 100, z: 500 },
+            rot: { pitch: 0, yaw: 0, roll: 0 },
+            speed: 0.5,
+            keys: {}
+        };
+
+        window.addEventListener('keydown', e => state.keys[e.code] = true);
+        window.addEventListener('keyup', e => state.keys[e.code] = false);
+
+        function update() {
+            if (state.keys['KeyW']) state.rot.pitch -= 0.02;
+            if (state.keys['KeyS']) state.rot.pitch += 0.02;
+            if (state.keys['KeyA']) state.rot.roll -= 0.03;
+            if (state.keys['KeyD']) state.rot.roll += 0.03;
+            if (state.keys['KeyQ']) state.rot.yaw += 0.02;
+            if (state.keys['KeyE']) state.rot.yaw -= 0.02;
+            if (state.keys['ShiftLeft']) state.speed = Math.min(state.speed + 0.01, 2.0);
+            if (state.keys['ControlLeft']) state.speed = Math.max(state.speed - 0.01, 0.1);
+
+            const pitch = state.rot.pitch;
+            const yaw = state.rot.yaw;
+            
+            state.pos.x += Math.cos(pitch) * Math.sin(yaw) * state.speed * 10;
+            state.pos.y -= Math.sin(pitch) * state.speed * 10;
+            state.pos.z -= Math.cos(pitch) * Math.cos(yaw) * state.speed * 10;
+
+            document.getElementById('spd').innerText = (state.speed * 100).toFixed(0);
+            document.getElementById('alt').innerText = state.pos.y.toFixed(0);
+            document.getElementById('hdg').innerText = (yaw * 180 / Math.PI).toFixed(0);
+        }
+
+        function render() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.5, 0.8, 1.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            gl.enable(gl.DEPTH_TEST);
+
+            const proj = Mat4.perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 10000);
+            
+            let view = Mat4.identity();
+            view = Mat4.rotateX(view, -state.rot.pitch);
+            view = Mat4.rotateY(view, -state.rot.yaw);
+            view = Mat4.rotateZ(view, -state.rot.roll);
+            view = Mat4.translate(view, -state.pos.x, -state.pos.y, -state.pos.z);
+
+            gl.uniformMatrix4fv(uProjLoc, false, proj);
+            gl.uniformMatrix4fv(uViewLoc, false, view);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, vBuffer);
+            gl.vertexAttribPointer(aPosLoc, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(aPosLoc);
+
+            gl.bindBuffer(gl.ARRAY_BUFFER, cBuffer);
+            gl.vertexAttribPointer(aColLoc, 3, gl.FLOAT, false, 0, 0);
+            gl.enableVertexAttribArray(aColLoc);
+
+            gl.drawArrays(gl.TRIANGLES, 0, allVerts.length / 3);
+        }
+
+        function loop() {
+            update();
+            render();
+            requestAnimationFrame(loop);
+        }
+        loop();
+    </script>
+</body>
+</html>

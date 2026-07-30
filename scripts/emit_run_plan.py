@@ -25,6 +25,8 @@ import argparse
 import json
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -308,6 +310,36 @@ def phase_a_block(mid: str, flags: str, steps: str) -> str:
 
 ENDPOINT = "--endpoint-url http://127.0.0.1:8080"
 
+# Rows per battery, and measured seconds per row (B9/B10/B11 from n=264/396/144 real runs).
+ROWS = {"B1": 360, "B2": 30, "B3": 39, "B4": 21, "B5": 8, "B6": 30,
+        "B7": 80, "B8": 69, "B9": 24, "B10": 66, "B11": 12}
+SECS = {"B1": 12.0, "B2": 8.0, "B3": 6.0, "B4": 25.0, "B5": 30.0, "B6": 15.0,
+        "B7": 8.0, "B8": 35.0, "B9": 40.8, "B10": 20.8, "B11": 10.9}
+LOAD_S = 210
+FETCH_MBPS = 110          # measured 119 MB/s on the Spain box; keep a margin
+
+
+def est_seconds(m: dict, reg: dict) -> float:
+    """Rough wall-clock for one model's remaining cells, used only for ORDERING.
+
+    The per-row constants above were calibrated on MoE models. The first run showed a
+    dense 31B taking 8.8h where they predicted 2.8h, so architecture matters more than
+    the row count does: decode is memory-bandwidth-bound and a dense model pushes its
+    whole weight set per token, while an A3B MoE touches ~3B. A model that does not fit
+    the card at all pays far worse again, because its experts stream from system RAM.
+    """
+    e = reg.get(m["id"], {}) or {}
+    arch = e.get("arch", {}) or {}
+    if m.get("fits_card") is False:
+        factor = 8.0                      # --cpu-moe: experts stream over PCIe
+    elif not arch.get("moe"):
+        factor = 3.0                      # dense: measured on abl-gemma-4-31b
+    else:
+        factor = 1.0
+    compute = sum(ROWS[b] * SECS[b] for b in m["batteries"] if b in ROWS) * factor
+    fetch = m["gb"] * 1000 / FETCH_MBPS
+    return LOAD_S + fetch + compute
+
 
 def steps_for(mid: str, bats: list[str]) -> tuple[str, str]:
     """(phase_a, phase_b) shell lines for one model.
@@ -375,16 +407,42 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="plan/manifest.json")
     ap.add_argument("--out", default="plan")
+    ap.add_argument("--skip", default="",
+                    help="comma-separated batteries to leave out of this run, e.g. B1. "
+                         "B1 is 360 rows per model and its score does not exist until a "
+                         "separate judging pass runs, so on a tight budget those hours "
+                         "buy nothing usable while cheap B10/B11 cells go unclosed.")
     args = ap.parse_args()
 
     man = json.loads((ROOT / args.manifest).read_text(encoding="utf-8"))
+    skip = {s.strip().upper() for s in args.skip.split(",") if s.strip()}
+    if skip:
+        dropped = 0
+        keep = []
+        for m in man["models"]:
+            n0 = len(m["batteries"])
+            m["batteries"] = [b for b in m["batteries"] if b not in skip]
+            dropped += n0 - len(m["batteries"])
+            if m["batteries"]:
+                keep.append(m)
+        man["models"] = keep
+        man["totals"]["missing_cells"] -= dropped
+        print(f"skipping {','.join(sorted(skip))}: {dropped} cells deferred\n")
     outdir = ROOT / args.out
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # --- runner: heaviest-gap models first so partial funding still buys the most ---
+    # --- runner: CHEAPEST MODELS FIRST -------------------------------------------------
+    # Previously ordered heaviest-gap-first, on the theory that partial funding should buy
+    # the most cells. It does the opposite: the first run spent 15 hours and ~$20 on three
+    # of the four most expensive models and closed 16 cells, while 14 small models needing
+    # only B10/B11 - about 30 minutes each - never started. Ordering by estimated cost
+    # ascending maximises CELLS CLOSED PER DOLLAR, which is what matters when the budget
+    # may run out mid-run. B1 sinks to the back on its own: 360 rows, and its score needs a
+    # separate judging pass regardless.
+    reg = yaml.safe_load((ROOT / "config" / "registry.yaml").read_text(encoding="utf-8"))["models"]
     blocks = []
     nfiles = 0
-    for m in sorted(man["models"], key=lambda x: (-len(x["batteries"]), x["gb"])):
+    for m in sorted(man["models"], key=lambda x: est_seconds(x, reg)):
         first = m["files"][0]["path"] if m["files"] else ""
         gguf = f'/root/models/{m["id"]}/{Path(first).name}'
         flags = "--cpu-moe" if m.get("fits_card") is False else ""
@@ -502,9 +560,12 @@ echo SETUP_DONE > /root/setup_done
     print(f"  total fetched      : {man['totals']['download_gb']} GB")
     print(f"  PEAK DISK          : ~{biggest:.0f} GB (largest single model, not the corpus)")
     print(f"wrote {outdir/'setup.sh'}")
-    print("\nmodel order (heaviest gaps first):")
-    for m in sorted(man["models"], key=lambda x: (-len(x["batteries"]), x["gb"]))[:8]:
-        print(f"   {m['id']:24s} {len(m['batteries']):2d} cells  {m['gb']:6.1f} GB  {','.join(m['batteries'])}")
+    print("\nmodel order (cheapest first = most cells per dollar), cumulative hours:")
+    cum = 0.0
+    for m in sorted(man["models"], key=lambda x: est_seconds(x, reg)):
+        cum += est_seconds(m, reg) / 3600
+        print(f"   {cum:6.1f}h  {m['id']:22s} {len(m['batteries']):2d} cells "
+              f"{m['gb']:6.1f} GB  {','.join(m['batteries'])}")
     return 0
 
 

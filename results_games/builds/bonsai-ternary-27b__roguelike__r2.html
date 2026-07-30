@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#aaa;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#game{display:flex;gap:12px}
+#map{background:#0a0a0a;padding:4px;border:2px solid #333}
+#info{width:200px;background:#0a0a0a;padding:8px;border:2px solid #333;font-size:13px}
+#info h1{color:#ffcc00;margin-bottom:6px;font-size:16px}
+#info .row{margin:2px 0}
+#info .hp{color:#ff4444}
+#info .atk{color:#44ff44}
+#info .inv{color:#ffaa00}
+#info .flr{color:#8888ff}
+#info .msg{color:#666666;font-size:11px;margin-top:6px}
+#win{display:none;background:#0a0a0a;padding:20px;border:2px solid #ffcc00;text-align:center}
+#win h1{color:#ffcc00}
+#win p{color:#aaa}
+</style>
+</head>
+<body>
+<div id="game">
+  <pre id="map"></pre>
+  <div id="info">
+    <h1>⚔️ Tiny Roguelike</h1>
+    <div class="row"><span class="hp">HP:</span> <span id="hp">100</span></div>
+    <div class="row"><span class="atk">ATK:</span> <span id="atk">5</span></div>
+    <div class="row"><span class="inv">INV:</span> <span id="inv">0</span></div>
+    <div class="row"><span class="flr">FLOOR:</span> <span id="flr">1</span></div>
+    <div class="row">WASD/Arrows to move</div>
+    <div class="row">X to attack adjacent enemy</div>
+    <div class="row">E to use potion</div>
+    <div class="row" id="msg">Press any key to start</div>
+  </div>
+</div>
+<div id="win">
+  <h1>🎉 You Won!</h1>
+  <p id="winmsg"></p>
+</div>
+<script>
+const COLS=40,ROWS=22;
+const map=[];
+let player={x:0,y:0,hp:100,maxHp:100,atk:5,inv:0,floor:1};
+let enemies=[],items=[],floor=1,maxFloor=5;
+let msg="";
+let started=false;
+
+function initMap(){
+  map.length=0;
+  for(let y=0;y<ROWS;y++){
+    map[y]=[];
+    for(let x=0;x<COLS;x++){
+      map[y][x]='#';
+    }
+  }
+}
+
+function genRooms(){
+  const rooms=[];
+  const count=5+Math.floor(Math.random()*3);
+  for(let i=0;i<count;i++){
+    let rx,ry,rw,rh;
+    do{
+      rw=3+Math.floor(Math.random()*5);
+      rh=2+Math.floor(Math.random()*4);
+      rx=1+Math.floor(Math.random()*(COLS-rw-2));
+      ry=1+Math.floor(Math.random()*(ROWS-rh-2));
+    }while(rooms.some(r=>Math.abs(r.x-rx)<2&&Math.abs(r.y-ry)<2));
+    rooms.push({x:rx,y:ry,w:rw,h:rh});
+  }
+  // carve rooms
+  for(let r of rooms){
+    for(let y=r.y;y<r.y+r.h;y++){
+      for(let x=r.x;x<r.x+r.w;x++){
+        map[y][x]='.';
+      }
+    }
+  }
+  // corridors
+  for(let i=0;i<rooms.length-1;i++){
+    let a=rooms[i],b=rooms[i+1];
+    let cx=a.x+Math.floor(a.w/2),cy=a.y+Math.floor(a.h/2);
+    let dx=b.x+Math.floor(b.w/2),dy=b.y+Math.floor(b.h/2);
+    if(Math.random()<0.5){
+      for(let x=cx;x<=dx;x++)if(map[cy][x]==='#')map[cy][x]='.';
+      for(let y=cy;y<=dy;y++)if(map[y][dx]==='#')map[y][dx]='.';
+    }else{
+      for(let y=cy;y<=dy;y++)if(map[y][cx]==='#')map[y][cx]='.';
+      for(let x=cx;x<=dx;x++)if(map[dy][x]==='#')map[dy][x]='.';
+    }
+  }
+  // place player in first room
+  player.x=rooms[0].x+Math.floor(rooms[0].w/2);
+  player.y=rooms[0].y+Math.floor(rooms[0].h/2);
+  // place items
+  items=[];
+  for(let i=0;i<3;i++){
+    let rx=1+Math.floor(Math.random()*(COLS-2));
+    let ry=1+Math.floor(Math.random()*(ROWS-2));
+    if(map[ry][rx]=='.'){
+      items.push({x:rx,y:ry,type:Math.random()<0.5?'p':'s'});
+    }
+  }
+  // place enemies
+  enemies=[];
+  let count=2+Math.floor(Math.random()*3)+floor;
+  for(let i=0;i<count;i++){
+    let rx=1+Math.floor(Math.random()*(COLS-2));
+    let ry=1+Math.floor(Math.random()*(ROWS-2));
+    if(map[ry][rx]=='.'){
+      let hp=15+floor*5+Math.floor(Math.random()*10);
+      let atk=2+floor+Math.floor(Math.random()*3);
+      let ch='g';
+      if(hp>30)ch='G';
+      if(hp>50)ch='G';
+      enemies.push({x:rx,y:ry,hp,maxHp:hp,atk,chr:ch});
+    }
+  }
+  // stairs
+  if(floor<maxFloor){
+    let sx=COLS-2,sy=ROWS-2;
+    if(map[sy][sx]=='.'){
+      map[sy][sx]='>';
+    }
+  }
+}
+
+function render(){
+  let html='';
+  for(let y=0;y<ROWS;y++){
+    for(let x=0;x<COLS;x++){
+      let c=map[y][x];
+      if(c=='.'){
+        // check items
+        let it=items.find(i=>i.x===x&&i.y===y);
+        if(it)c=it.type==='p'?'p':'s';
+        // check enemies
+        let en=enemies.find(e=>e.x===x&&e.y===y);
+        if(en)c=en.chr;
+        // check player
+        if(x===player.x&&y===player.y)c='@';
+        // check stairs
+        if(c=='>')c='>';
+      }
+      html+=c;
+    }
+    html+='<br>';
+  }
+  document.getElementById('map').innerHTML=html;
+  document.getElementById('hp').textContent=player.hp;
+  document.getElementById('atk').textContent=player.atk;
+  document.getElementById('inv').textContent=player.inv;
+  document.getElementById('flr').textContent=floor;
+  document.getElementById('msg').textContent=msg;
+}
+
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)}
+
+function movePlayer(dx,dy){
+  if(!started)return;
+  let nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=COLS||ny<0||ny>=ROWS)return;
+  if(map[ny][nx]==='#')return;
+  if(map[ny][nx]=='>'){
+    floor++;
+    player.x=nx;player.y=ny;
+    genRooms();
+    player.hp=Math.min(player.hp+30,player.maxHp);
+    msg='Floor '+floor+'!';
+    render();
+    return;
+  }
+  // check enemy
+  let en=enemies.find(e=>e.x===nx&&e.y===ny);
+  if(en){
+    // attack
+    en.hp-=player.atk;
+    msg='Hit '+en.chr+' for '+player.atk+' dmg!';
+    if(en.hp<=0){
+      msg='Killed '+en.chr+'!';
+      enemies=enemies.filter(e=>e.hp>0);
+      player.inv++;
+    }
+    player.x=nx;player.y=ny;
+    render();
+    return;
+  }
+  // check item
+  let it=items.find(i=>i.x===nx&&i.y===ny);
+  if(it){
+    if(it.type==='p'){
+      player.hp=Math.min(player.hp+25,player.maxHp);
+      msg='Potion! +25 HP';
+    }else{
+      player.atk+=2;
+      msg='Sword! +2 ATK';
+    }
+    items=items.filter(i=>i!==it);
+    player.x=nx;player.y=ny;
+    render();
+    return;
+  }
+  player.x=nx;player.y=ny;
+  render();
+}
+
+function attackAdjacent(){
+  if(!started)return;
+  let adj=[{x:0,y:-1},{x:0,y:1},{x:-1,y:0},{x:1,y:0}];
+  for(let d of adj){
+    let ex=player.x+d.x,ey=player.y+d.y;
+    let en=enemies.find(e=>e.x===ex&&e.y===ey);
+    if(en){
+      en.hp-=player.atk;
+      msg='Hit '+en.chr+' for '+player.atk+' dmg!';
+      if(en.hp<=0){
+        msg='Killed '+en.chr+'!';
+        enemies=enemies.filter(e=>e.hp>0);
+        player.inv++;
+      }
+      render();
+      return;
+    }
+  }
+  msg='No enemy nearby!';
+  render();
+}
+
+function usePotion(){
+  if(!started)return;
+  if(player.inv>0){
+    player.hp=Math.min(player.hp+25,player.maxHp);
+    player.inv--;
+    msg='Used potion! +25 HP';
+    render();
+  }else{
+    msg='No potions!';
+    render();
+  }
+}
+
+function enemyTurn(){
+  for(let en of enemies){
+    let d=dist(en,player);
+    if(d<=3){
+      let dx=Math.sign(player.x-en.x);
+      let dy=Math.sign(player.y-en.y);
+      let nx=en.x+dx,ny=en.y+dy;
+      if(map[ny][nx]!='#'){
+        en.x=nx;en.y=ny;
+      }
+    }
+  }
+  // damage player if adjacent
+  for(let en of enemies){
+    if(Math.abs(en.x-player.x)+Math.abs(en.y-player.y)<=1){
+      player.hp-=en.atk;
+      msg=''+en.chr+' hits you for '+en.atk+' dmg!';
+      if(player.hp<=0){
+        player.hp=0;
+        msg='You died!';
+        render();
+        setTimeout(()=>{
+          player.hp=100;player.atk=5;player.inv=0;floor=1;
+          genRooms();
+          msg='Press any key to restart';
+          render();
+        },1500);
+      }
+    }
+  }
+  // check win
+  if(floor>=maxFloor){
+    msg='You escaped!';
+    document.getElementById('win').style.display='block';
+    document.getElementById('winmsg').textContent='You reached floor '+maxFloor+' with '+player.hp+' HP!';
+  }
+}
+
+function gameLoop(){
+  if(!started)return;
+  enemyTurn();
+  render();
+  setTimeout(gameLoop,800);
+}
+
+document.addEventListener('keydown',function(e){
+  if(!started){
+    started=true;
+    genRooms();
+    render();
+    gameLoop();
+    return;
+  }
+  let key=e.key.toLowerCase();
+  if(key==='w'||key==='arrowup')movePlayer(0,-1);
+  else if(key==='s'||key==='arrowdown')movePlayer(0,1);
+  else if(key==='a'||key==='arrowleft')movePlayer(-1,0);
+  else if(key==='d'||key==='arrowright')movePlayer(1,0);
+  else if(key==='x')attackAdjacent();
+  else if(key==='e')usePotion();
+});
+</script>
+</body>
+</html>

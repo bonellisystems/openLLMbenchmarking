@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Asteroids</title>
+<style>
+    body { margin: 0; overflow: hidden; background: #000; }
+    canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+(function() {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    let width, height;
+    
+    const ship = { x: 0, y: 0, angle: 0, vx: 0, vy: 0, radius: 15, alive: true };
+    let rocks = [];
+    let bullets = [];
+    let keys = {};
+    let score = 0;
+    let lives = 3;
+    let frameCount = 0;
+
+    const FRICTION = 0.99;
+    const SHIP_THRUST = 0.15;
+    const SHIP_ROT = 0.08;
+    const BULLET_SPEED = 8;
+    const ROCK_SPEED = 2;
+    const MAX_ROCKS = 10;
+    const SPAWN_INTERVAL = 60;
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+    window.addEventListener('keydown', e => {
+        if (e.code === 'Space') shoot();
+    });
+
+    function updateShip() {
+        if (!ship.alive) return;
+        if (keys['ArrowLeft']) ship.angle -= SHIP_ROT;
+        if (keys['ArrowRight']) ship.angle += SHIP_ROT;
+        if (keys['ArrowUp']) {
+            ship.vx += Math.cos(ship.angle) * SHIP_THRUST;
+            ship.vy += Math.sin(ship.angle) * SHIP_THRUST;
+        }
+        ship.vx *= FRICTION;
+        ship.vy *= FRICTION;
+        ship.x += ship.vx;
+        ship.y += ship.vy;
+
+        if (ship.x < 0) ship.x = width;
+        if (ship.x > width) ship.x = 0;
+        if (ship.y < 0) ship.y = height;
+        if (ship.y > height) ship.y = 0;
+    }
+
+    function spawnRock() {
+        if (rocks.length >= MAX_ROCKS) return;
+        let r = {
+            x: Math.random() * width,
+            y: Math.random() * height,
+            radius: 30 + Math.random() * 20,
+            vx: (Math.random() - 0.5) * ROCK_SPEED,
+            vy: (Math.random() - 0.5) * ROCK_SPEED,
+            vertices: [],
+            sides: 7 + Math.floor(Math.random() * 4),
+            size: 1
+        };
+        for (let i = 0; i < r.sides; i++) {
+            let angle = (i / r.sides) * Math.PI * 2;
+            let rad = r.radius * (0.8 + Math.random() * 0.4);
+            r.vertices.push({ x: Math.cos(angle) * rad, y: Math.sin(angle) * rad });
+        }
+        let dist = Math.hypot(r.x - ship.x, r.y - ship.y);
+        if (dist < 150) return spawnRock();
+        rocks.push(r);
+    }
+
+    function updateRocks() {
+        for (let i = rocks.length - 1; i >= 0; i--) {
+            let r = rocks[i];
+            r.x += r.vx;
+            r.y += r.vy;
+
+            if (r.x < 0) r.x = width;
+            if (r.x > width) r.x = 0;
+            if (r.y < 0) r.y = height;
+            if (r.y > height) r.y = 0;
+
+            if (ship.alive) {
+                let dist = Math.hypot(r.x - ship.x, r.y - ship.y);
+                if (dist < r.radius + ship.radius) {
+                    handleShipHit();
+                }
+            }
+        }
+    }
+
+    function handleShipHit() {
+        lives--;
+        if (lives <= 0) {
+            ship.alive = false;
+            setTimeout(() => {
+                alert("Game Over! Score: " + score);
+                location.reload();
+            }, 100);
+        } else {
+            ship.x = width / 2;
+            ship.y = height / 2;
+            ship.vx = 0;
+            ship.vy = 0;
+            ship.angle = 0;
+        }
+    }
+
+    function shoot() {
+        if (!ship.alive) return;
+        bullets.push({
+            x: ship.x + Math.cos(ship.angle) * 20,
+            y: ship.y + Math.sin(ship.angle) * 20,
+            vx: Math.cos(ship.angle) * BULLET_SPEED,
+            vy: Math.sin(ship.angle) * BULLET_SPEED,
+            life: 60
+        });
+    }
+
+    function updateBullets() {
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            b.x += b.vx;
+            b.y += b.vy;
+            b.life--;
+            if (b.life <= 0) {
+                bullets.splice(i, 1);
+                continue;
+            }
+            if (b.x < 0 || b.x > width || b.y < 0 || b.y > height) {
+                bullets.splice(i, 1);
+                continue;
+            }
+
+            for (let j = rocks.length - 1; j >= 0; j--) {
+                let r = rocks[j];
+                let dist = Math.hypot(b.x - r.x, b.y - r.y);
+                if (dist < r.radius) {
+                    bullets.splice(i, 1);
+                    rocks.splice(j, 1);
+                    score += 10 * r.size;
+                    if (r.size < 3) {
+                        let newSize = r.size + 1;
+                        let newR = {
+                            x: r.x, y: r.y,
+                            radius: r.radius / 2,
+                            vx: r.vx + (Math.random() - 0.5),
+                            vy: r.vy + (Math.random() - 0.5),
+                            sides: r.sides,
+                            size: newSize
+                        };
+                        for (let k = 0; k < newR.sides; k++) {
+                            let angle = (k / newR.sides) * Math.PI * 2;
+                            let rad = newR.radius * (0.8 + Math.random() * 0.4);
+                            newR.vertices.push({ x: Math.cos(angle) * rad, y: Math.sin(angle) * rad });
+                        }
+                        rocks.push(newR);
+                        rocks.push(newR);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    function drawShip() {
+        if (!ship.alive) return;
+        ctx.save();
+        ctx.translate(ship.x, ship.y);
+        ctx.rotate(ship.angle);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(15, 0);
+        ctx.lineTo(-10, -10);
+        ctx.lineTo(-5, 0);
+        ctx.lineTo(-10, 10);
+        ctx.closePath();
+        ctx.stroke();
+        if (keys['ArrowUp']) {
+            ctx.fillStyle = 'orange';
+            ctx.beginPath();
+            ctx.moveTo(-10, 0);
+            ctx.lineTo(-20, -5);
+            ctx.lineTo(-20, 5);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    function drawRocks() {
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        for (let r of rocks) {
+            ctx.beginPath();
+            ctx.moveTo(r.vertices[0].x, r.vertices[0].y);
+            for (let i = 1; i < r.vertices.length; i++) {
+                ctx.lineTo(r.vertices[i].x, r.vertices[i].y);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
+
+    function drawBullets() {
+        ctx.fillStyle = 'white';
+        for (let b of bullets) {
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    function drawScore() {
+        ctx.fillStyle = 'white';
+        ctx.font = '20px Arial';
+        ctx.fillText('Score: ' + score, 10, 30);
+        ctx.fillText('Lives: ' + lives, 10, 50);
+    }
+
+    function loop() {
+        ctx.fillStyle = 'black';
+        ctx.fillRect(0, 0, width, height);
+
+        updateShip();
+        updateRocks();
+        updateBullets();
+
+        drawShip();
+        drawRocks();
+        drawBullets();
+        drawScore();
+
+        frameCount++;
+        if (frameCount % SPAWN_INTERVAL === 0) spawnRock();
+
+        requestAnimationFrame(loop);
+    }
+
+    ship.x = width / 2;
+    ship.y = height / 2;
+    for(let i=0; i<5; i++) spawnRock();
+    loop();
+})();
+</script>
+</body>
+</html>

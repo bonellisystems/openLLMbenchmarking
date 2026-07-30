@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Doodle Jump</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #f0f0f0; }
+canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+var canvas = document.getElementById('c');
+var ctx = canvas.getContext('2d');
+var W, H;
+
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+var keys = {};
+window.addEventListener('keydown', function(e) {
+    keys[e.key] = true;
+    if (e.key === ' ' || e.key === 'ArrowUp' || e.key === 'ArrowDown') e.preventDefault();
+});
+window.addEventListener('keyup', function(e) { keys[e.key] = false; });
+
+var GRAVITY = 0.45;
+var JUMP_FORCE = -12;
+var MOVE_SPEED = 5;
+var FRICTION = 0.85;
+var MAX_SPEED = 8;
+var PLAYER_W = 40;
+var PLAYER_H = 40;
+var PLATFORM_H = 16;
+var GAP = 100;
+var MAX_GAP = 140;
+var MIN_GAP = 60;
+var VIEW_TOP = -200;
+var VIEW_BOTTOM = H + 100;
+var CAMERA_SPEED = 3;
+
+var player, platforms, score, bestScore, gameOver, started;
+var particles = [];
+var clouds = [];
+
+function init() {
+    player = { x: W / 2 - PLAYER_W / 2, y: H - 100, vx: 0, vy: 0, facing: 1, alive: true };
+    platforms = [];
+    score = 0;
+    bestScore = bestScore || 0;
+    gameOver = false;
+    started = true;
+    particles = [];
+    clouds = [];
+    for (var i = 0; i < 8; i++) {
+        clouds.push({ x: Math.random() * W, y: Math.random() * H * 3, r: 30 + Math.random() * 40, a: 0.05 + Math.random() * 0.05 });
+    }
+    platforms.push({ x: W / 2 - 60, y: H - 50, w: 120, h: PLATFORM_H, type: 'normal', color: '#7ec850' });
+    for (var i = 1; i < 30; i++) {
+        addPlatform(H - 50 - i * GAP);
+    }
+}
+
+function addPlatform(y) {
+    var gap = GAP + Math.random() * (MAX_GAP - MIN_GAP);
+    y -= gap;
+    var type = Math.random();
+    var w, color;
+    if (type < 0.6) {
+        w = 80 + Math.random() * 60;
+        color = '#7ec850';
+    } else if (type < 0.8) {
+        w = 120 + Math.random() * 60;
+        color = '#5cb85c';
+    } else if (type < 0.9) {
+        w = 50 + Math.random() * 30;
+        color = '#e8c840';
+    } else {
+        w = 70 + Math.random() * 50;
+        color = '#d4a0e0';
+    }
+    var x = Math.random() * (W - w);
+    platforms.push({ x: x, y: y, w: w, h: PLATFORM_H, type: type < 0.9 ? 'normal' : 'moving', color: color, speed: (Math.random() - 0.5) * 2 });
+}
+
+function update() {
+    if (gameOver) return;
+
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+        player.vx -= MOVE_SPEED * 0.3;
+        player.facing = -1;
+    }
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+        player.vx += MOVE_SPEED * 0.3;
+        player.facing = 1;
+    }
+    if (keys['ArrowUp'] || keys['w'] || keys['W']) {
+        player.vy = JUMP_FORCE;
+    }
+    if (keys['ArrowDown'] || keys['s'] || keys['S']) {
+        player.vy += 0.5;
+    }
+    if (keys[' ']) {
+        player.vy = JUMP_FORCE;
+    }
+
+    player.vx *= FRICTION;
+    if (player.vx > MAX_SPEED) player.vx = MAX_SPEED;
+    if (player.vx < -MAX_SPEED) player.vx = -MAX_SPEED;
+    player.vy += GRAVITY;
+    player.x += player.vx;
+    player.y += player.vy;
+
+    if (player.x < 0) { player.x = 0; player.vx = 0; }
+    if (player.x + PLAYER_W > W) { player.x = W - PLAYER_W; player.vx = 0; }
+
+    var camY = player.y - H * 0.4;
+    if (camY < VIEW_TOP) camY = VIEW_TOP;
+    if (camY > player.y - H * 0.6) camY = player.y - H * 0.6;
+    player.camY = camY;
+
+    for (var i = platforms.length - 1; i >= 0; i--) {
+        var p = platforms[i];
+        p.y += (player.y - player.camY) * 0.02;
+        if (p.type === 'moving') {
+            p.x += p.speed;
+            if (p.x < 0 || p.x + p.w > W) p.speed *= -1;
+        }
+        if (p.y > H + 200) {
+            platforms.splice(i, 1);
+        }
+    }
+
+    if (player.vy > 0) {
+        for (var i = 0; i < platforms.length; i++) {
+            var p = platforms[i];
+            if (player.x + PLAYER_W - 5 > p.x && player.x + 5 < p.x + p.w &&
+                player.y + PLAYER_H > p.y && player.y + PLAYER_H < p.y + p.h + player.vy + 2) {
+                player.y = p.y - PLAYER_H;
+                player.vy = JUMP_FORCE * (p.type === 'moving' ? 0.9 : 1);
+                spawnParticles(player.x + PLAYER_W / 2, player.y + PLAYER_H, p.color);
+                break;
+            }
+        }
+    }
+
+    score = Math.max(score, Math.floor(-player.y / 10));
+    if (player.y > H + 100) {
+        gameOver = true;
+        if (score > bestScore) bestScore = score;
+    }
+
+    for (var i = particles.length - 1; i >= 0; i--) {
+        var pt = particles[i];
+        pt.x += pt.vx;
+        pt.y += pt.vy;
+        pt.life -= 0.02;
+        if (pt.life <= 0) particles.splice(i, 1);
+    }
+}
+
+function spawnParticles(x, y, color) {
+    for (var i = 0; i < 6; i++) {
+        particles.push({ x: x, y: y, vx: (Math.random() - 0.5) * 4, vy: -Math.random() * 3, life: 1, color: color });
+    }
+}
+
+function draw() {
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.save();
+    var camY = player.camY;
+    ctx.translate(0, -camY);
+
+    for (var i = 0; i < clouds.length; i++) {
+        var c = clouds[i];
+        ctx.fillStyle = 'rgba(200,200,200,' + c.a + ')';
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    for (var i = 0; i < platforms.length; i++) {
+        var p = platforms[i];
+        ctx.fillStyle = p.color;
+        roundRect(p.x, p.y, p.w, p.h, 4);
+        ctx.fillStyle = 'rgba(0,0,0,0.1)';
+        roundRect(p.x, p.y + p.h - 3, p.w, 3, 1);
+    }
+
+    for (var i = 0; i < particles.length; i++) {
+        var pt = particles[i];
+        ctx.globalAlpha = pt.life;
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    var px = player.x;
+    var py = player.y;
+    ctx.fillStyle = '#5cb85c';
+    ctx.beginPath();
+    ctx.ellipse(px + PLAYER_W / 2, py + PLAYER_H / 2, PLAYER_W / 2, PLAYER_H / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#4a9e4a';
+    ctx.beginPath();
+    ctx.ellipse(px + PLAYER_W / 2, py + PLAYER_H / 2 + 2, PLAYER_W / 2 - 2, PLAYER_H / 2 - 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(px + PLAYER_W / 2 + player.facing * 6, py + PLAYER_H / 2 - 4, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#333';
+    ctx.beginPath();
+    ctx.arc(px + PLAYER_W / 2 + player.facing * 7, py + PLAYER_H / 2 - 4, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#4a9e4a';
+    ctx.beginPath();
+    ctx.ellipse(px + PLAYER_W / 2 + player.facing * 10, py + PLAYER_H / 2 + 6, 6, 4, player.facing * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+
+    ctx.fillStyle = '#333';
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('Score: ' + score, 15, 35);
+    ctx.font = '16px Arial';
+    ctx.fillStyle = '#888';
+    ctx.fillText('Best: ' + bestScore, 15, 58);
+
+    if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 48px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Game Over', W / 2, H / 2 - 40);
+        ctx.font = '24px Arial';
+        ctx.fillText('Score: ' + score, W / 2, H / 2 + 10);
+        ctx.font = '18px Arial';
+        ctx.fillStyle = '#ccc';
+        ctx.fillText('Press any key to restart', W / 2, H / 2 + 50);
+    }
+
+    if (!started) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 42px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Doodle Jump', W / 2, H / 2 - 30);
+        ctx.font = '20px Arial';
+        ctx.fillText('Arrow keys / WASD to move', W / 2, H / 2 + 20);
+        ctx.fillText('Press any key to start', W / 2, H / 2 + 60);
+    }
+}
+
+function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    ctx.fill();
+}
+
+function loop() {
+    if (!started) {
+        if (Object.keys(keys).some(function(k) { return keys[k]; })) {
+            init();
+        }
+    } else {
+        update();
+    }
+    draw();
+    requestAnimationFrame(loop);
+}
+
+init();
+loop();
+</script>
+</body>
+</html>

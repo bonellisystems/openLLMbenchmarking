@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+*{margin:0;padding:0}
+body{overflow:hidden;background:#000}
+canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+var canvas=document.getElementById('c');
+var gl=canvas.getContext('webgl',{antialias:true,alpha:false});
+if(!gl){document.body.innerHTML='<h1 style="color:#fff;text-align:center;margin-top:40vh">WebGL required</h1>';throw 0;}
+
+function resize(){canvas.width=window.innerWidth*devicePixelRatio;canvas.height=window.innerHeight*devicePixelRatio;gl.viewport(0,0,canvas.width,canvas.height);}
+window.addEventListener('resize',resize);resize();
+
+var VS=`
+attribute vec3 p;
+attribute vec3 n;
+attribute vec3 c;
+uniform mat4 m;
+uniform mat4 v;
+uniform mat4 vp;
+varying vec3 N;
+varying vec3 C;
+varying vec3 V;
+varying float D;
+void main(){
+  vec4 vp2=vp*vec4(p,1.0);
+  gl_Position=vp2;
+  N=mat3(v)*n;
+  C=c;
+  V=vec3(v*vec4(p,1.0));
+  D=vp2.w;
+}`;
+
+var FS=`
+precision mediump float;
+varying vec3 N;
+varying vec3 C;
+varying vec3 V;
+varying float D;
+uniform vec3 sun;
+uniform float fog;
+uniform vec3 fogC;
+void main(){
+  vec3 n=normalize(N);
+  vec3 v=normalize(V);
+  vec3 l=normalize(sun);
+  float diff=max(dot(n,l),0.0)*0.6+0.4;
+  float fresnel=pow(1.0-max(dot(n,-v),0.0),3.0)*0.3;
+  vec3 col=C*diff+fresnel*vec3(0.7,0.8,1.0);
+  float fogF=exp(-fog*D*D);
+  col=mix(fogC,col,fogF);
+  gl_FragColor=vec4(col,1.0);
+}`;
+
+function mkShader(s,t){var h=gl.createShader(t);gl.shaderSource(h,s);gl.compileShader(h);if(!gl.getShaderParameter(h,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(h));}return h;}
+var vs=mkShader(VS,gl.VERTEX_SHADER);
+var fs=mkShader(FS,gl.FRAGMENT_SHADER);
+var prog=gl.createProgram();gl.attachShader(prog,vs);gl.attachShader(prog,fs);gl.linkProgram(prog);gl.useProgram(prog);
+
+var uM=gl.getUniformLocation(prog,'m');
+var uV=gl.getUniformLocation(prog,'v');
+var uVP=gl.getUniformLocation(prog,'vp');
+var uSun=gl.getUniformLocation(prog,'sun');
+var uFog=gl.getUniformLocation(prog,'fog');
+var uFogC=gl.getUniformLocation(prog,'fogC');
+var aP=gl.getAttribLocation(prog,'p');
+var aN=gl.getAttribLocation(prog,'n');
+var aC=gl.getAttribLocation(prog,'c');
+
+var mat4=function(){var m=new Float32Array(16);m[0]=m[5]=m[10]=m[15]=1;return m;};
+var mulM=function(a,b){var r=new Float32Array(16);for(var i=0;i<4;i++)for(var j=0;j<4;j++){var s=0;for(var k=0;k<4;k++)s+=a[i+k*4]*b[j+k*4*4];r[i+j*4]=s;}return r;};
+var rotY=function(a){var m=mat4(),c=Math.cos(a),s=Math.sin(a);m[0]=c;m[2]=s;m[8]=-s;m[10]=c;return m;};
+var rotX=function(a){var m=mat4(),c=Math.cos(a),s=Math.sin(a);m[5]=c;m[9]=s;m[6]=-s;m[10]=c;return m;};
+var rotZ=function(a){var m=mat4(),c=Math.cos(a),s=Math.sin(a);m[0]=c;m[1]=s;m[4]=-s;m[5]=c;return m;};
+var trn=function(x,y,z){var m=mat4();m[12]=x;m[13]=y;m[14]=z;return m;};
+var scl=function(x,y,z){var m=mat4();m[0]=x;m[5]=y;m[10]=z;return m;};
+var persp=function(f,a,n,r){var m=new Float32Array(16);m[0]=1/(Math.tan(f/2)*a);m[5]=1/Math.tan(f/2);m[10]=(n+r)/(n-r);m[11]=-1;m[14]=2*n*r/(n-r);return m;};
+var lookAt=function(e,c,u){var f=[c[0]-e[0],c[1]-e[1],c[2]-e[2]],s=Math.sqrt(f[0]*f[0]+f[1]*f[1]+f[2]*f[2]);f[0]/=s;f[1]/=s;f[2]/=s;var b=[u[0],u[1],u[2]],l=Math.sqrt(b[0]*b[0]+b[1]*b[1]+b[2]*b[2]);b[0]/=l;b[1]/=l;b[2]/=l;var x=[f[1]*b[2]-f[2]*b[1],f[2]*b[0]-f[0]*b[2],f[0]*b[1]-f[1]*b[0]],y=[f[1]*b[2]-f[2]*b[1],f[2]*b[0]-f[0]*b[2],f[0]*b[1]-f[1]*b[0]];l=Math.sqrt(x[0]*x[0]+x[1]*x[1]+x[2]*x[2]);x[0]/=l;x[1]/=l;x[2]/=l;y=[f[1]*x[2]-f[2]*x[1],f[2]*x[0]-f[0]*x[2],f[0]*x[1]-f[1]*x[0]];l=Math.sqrt(y[0]*y[0]+y[1]*y[1]+y[2]*y[2]);y[0]/=l;y[1]/=l;y[2]/=l;var m=mat4();m[0]=x[0];m[1]=y[0];m[2]=f[0];m[4]=x[1];m[5]=y[1];m[6]=f[1];m[8]=x[2];m[9]=y[2];m[10]=f[2];m[12]=-(x[0]*e[0]+x[1]*e[1]+x[2]*e[2]);m[13]=-(y[0]*e[0]+y[1]*e[1]+y[2]*e[2]);m[14]=-(f[0]*e[0]+f[1]*e[1]+f[2]*e[2]);return m;};
+
+var box=function(w,h,d){
+  var hw=w/2,hh=h/2,hd=d/2;
+  var v=[
+    -hw,-hh,hd, hw,-hh,hd, hw,hh,hd, -hw,hh,hd,
+    -hw,-hh,-hd, -hw,hh,-hd, hw,hh,-hd, hw,-hh,-hd,
+    -hw,hh,-hd, -hw,hh,hd, hw,hh,hd, hw,hh,-hd,
+    -hw,-hh,-hd, hw,-hh,-hd, hw,-hh,hd, -hw,-hh,hd,
+    hw,-hh,-hd, hw,hh,-hd, hw,hh,hd, hw,-hh,hd,
+    -hw,-hh,-hd, -hw,-hh,hd, -hw,hh,hd, -hw,hh,-hd
+  ];
+  var n=[
+    0,0,1, 0,0,1, 0,0,1, 0,0,1,
+    0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1,
+    0,1,0, 0,1,0, 0,1,0, 0,1,0,
+    0,-1,0, 0,-1,0, 0,-1,0, 0,-1,0,
+    1,0,0, 1,0,0, 1,0,0, 1,0,0,
+    -1,0,0, -1,0,0, -1,0,0, -1,0,0
+  ];
+  var c=[
+    0.85,0.88,0.92, 0.85,0.88,0.92, 0.85,0.88,0.92, 0.85,0.88,0.92,
+    0.78,0.82,0.88, 0.78,0.82,0.88, 0.78,0.82,0.88, 0.78,0.82,0.88,
+    0.92,0.95,0.98, 0.92,0.95,0.98, 0.92,0.95,0.98, 0.92,0.95,0.98,
+    0.72,0.76,0.82, 0.72,0.76,0.82, 0.72,0.76,0.82, 0.72,0.76,0.82,
+    0.88,0.91,0.95, 0.88,0.91,0.95, 0.88,0.91,0.95, 0.88,0.91,0.95,
+    0.75,0.79,0.85, 0.75,0.79,0.85, 0.75,0.79,0.85, 0.75,0.79,0.85
+  ];
+  var idx=[];
+  for(var i=0;i<6;i++){var o=i*4;idx.push(o,o+1,o+2,o,o+2,o+3);}
+  return {v:v,n:n,c:c,idx:idx};
+};
+
+var planeGeo=function(){
+  var v=[],n=[],c=[],idx=[];
+  function addBox(x,y,z,w,h,d){
+    var hw=w/2,hh=h/2,hd=d/2;
+    var faces=[
+      [x-hw,y-hh,z+hd,x+hw,y-hh,z+hd,x+hw,y+hh,z+hd,x-hw,y+hh,z+hd,0,0,1],
+      [x-hw,y-hh,z-hd,x-hw,y+hh,z-hd,x+hw,y+hh,z-hd,x+hw,y-hh,z-hd,0,0,-1],
+      [x-hw,y+hh,z-hd,x-hw,y+hh,z+hd,x+hw,y+hh,z+hd,x+hw,y+hh,z-hd,0,1,0],
+      [x-hw,y-hh,z-hd,x+hw,y-hh,z-hd,x+hw,y-hh,z+hd,x-hw,y-hh,z+hd,0,-1,0],
+      [x+hw,y-hh,z-hd,x+hw,y+hh,z-hd,x+hw,y+hh,z+hd,x+hw,y-hh,z+hd,1,0,0],
+      [x-hw,y-hh,z-hd,x-hw,y-hh,z+hd,x-hw,y+hh,z+hd,x-hw,y+hh,z-hd,-1,0,0]
+    ];
+    var base=v.length/3;
+    for(var i=0;i<6;i++){
+      var f=faces[i];
+      for(var j=0;j<4;j++){
+        v.push(f[j*3],f[j*3+1],f[j*3+2]);
+        n.push(f[9+j*3],f[10+j*3],f[11+j*3]);
+        c.push(0.92,0.95,0.98);
+      }
+      idx.push(base+i*4,base+i*4+1,base+i*4+2,base+i*4,base+i*4+2,base+i*4+3);
+    }
+  }
+  // fuselage
+  addBox(0,0,0,1.2,1.2,8);
+  // wings
+  addBox(0,0.1,0.5,12,0.15,2);
+  // tail horizontal
+  addBox(0,0.1,-3.5,4,0.12,1.2);
+  // tail vertical
+  addBox(0,0.8,-3.5,0.15,1.6,1.2);
+  // nose cone
+  addBox(0,0,4.2,1.2,1.2,1.5);
+  return {v:v,n:n,c:c,idx:idx};
+};
+
+var plane=planeGeo();
+var planeV=new Float32Array(plane.v);
+var planeN=new Float32Array(plane.n);
+var planeC=new Float32Array(plane.c);
+var planeI=new Uint16Array(plane.idx);
+var planeVB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,planeVB);gl.bufferData(gl.ARRAY_BUFFER,planeV,gl.STATIC_DRAW);
+var planeNB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,planeNB);gl.bufferData(gl.ARRAY_BUFFER,planeN,gl.STATIC_DRAW);
+var planeCB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,planeCB);gl.bufferData(gl.ARRAY_BUFFER,planeC,gl.STATIC_DRAW);
+var planeIB=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,planeIB);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,planeI,gl.STATIC_DRAW);
+var planeVC=plane.v.length/3;
+
+var ground=box(2000,0.01,2000);
+var groundV=new Float32Array(ground.v);
+var groundN=new Float32Array(ground.n);
+var groundC=new Float32Array(ground.c);
+var groundI=new Uint16Array(ground.idx);
+var groundVB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,groundVB);gl.bufferData(gl.ARRAY_BUFFER,groundV,gl.STATIC_DRAW);
+var groundNB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,groundNB);gl.bufferData(gl.ARRAY_BUFFER,groundN,gl.STATIC_DRAW);
+var groundCB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,groundCB);gl.bufferData(gl.ARRAY_BUFFER,groundC,gl.STATIC_DRAW);
+var groundIB=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,groundIB);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,groundI,gl.STATIC_DRAW);
+var groundVC=ground.v.length/3;
+
+var buildings=[];
+var rng=42;
+function rand(){rng=(rng*16807)%2147483647;return rng/2147483647;}
+for(var i=0;i<600;i++){
+  var x=(rand()-0.5)*800;
+  var z=(rand()-0.5)*800;
+  var h=5+rand()*45;
+  var w=2+rand()*6;
+  var d=2+rand()*6;
+  var col=[0.7+rand()*0.2,0.75+rand()*0.2,0.8+rand()*0.2];
+  buildings.push({x:x,z:z,w:w,h:h,d:d,col:col});
+}
+
+var bGeo=box(1,1,1);
+var bV=new Float32Array(bGeo.v);
+var bN=new Float32Array(bGeo.n);
+var bI=new Uint16Array(bGeo.idx);
+var bVB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,bVB);gl.bufferData(gl.ARRAY_BUFFER,bV,gl.STATIC_DRAW);
+var bNB=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,bNB);gl.bufferData(gl.ARRAY_BUFFER,bN,gl.STATIC_DRAW);
+var bIB=gl.createBuffer();gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,bIB);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,bI,gl.STATIC_DRAW);
+var bVC=bGeo.v.length/3;
+
+var skyVS=`
+attribute vec3 p;
+uniform mat4 vp;
+varying vec3 V;
+void main(){
+  gl_Position=vp*vec4(p,1.0);
+  V=p;
+}`;
+var skyFS=`
+precision mediump float;
+varying vec3 V;
+uniform vec3 sun;
+void main(){
+  vec3 v=normalize(V);
+  float y=v.y*0.5+0.5;
+  vec3 top=vec3(0.35,0.55,0.85);
+  vec3 bot=vec3(0.75,0.82,0.92);
+  vec3 col=mix(bot,top,pow(y,0.7));
+  float sunDot=max(dot(v,normalize(sun)),0.0);
+  col+=vec3(1.0,0.95,0.8)*pow(sunDot,8.0)*0.4;
+  col+=vec3(0.9,0.85,0.7)*pow(sunDot,32.0)*0.3;
+  gl_FragColor=vec4(col,1.0);
+}`;
+var skyVS2=mkShader(skyVS,gl.VERTEX_SHADER);
+var skyFS2=mkShader(skyFS,gl.FRAGMENT_SHADER);
+var skyProg=gl.createProgram();gl.attachShader(skyProg,skyVS2);gl.attachShader(skyProg,skyFS2);gl.linkProgram(skyProg);gl.useProgram(skyProg);
+var skyVP=gl.getUniformLocation(skyProg,'vp');
+var skySun=gl.getUniformLocation(skyProg,'sun');
+var skyP=gl.getAttribLocation(skyProg,'p');
+var skyVerts=new Float32Array([
+  -1,-1,-1, 1,-1,-1, 1,1,-1, -1,1,-1,
+  -1,-1,1, 1,-1,1, 1,1,1, -1,1,1
+]);
+var skyVB2=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,skyVB2);gl.bufferData(gl.ARRAY_BUFFER,skyVerts,gl.STATIC_DRAW);
+var skyVC=8;
+
+var keys={};
+window.addEventListener('keydown',function(e){keys[e.key.toLowerCase()]=true;});
+window.addEventListener('keyup',function(e){keys[e.key.toLowerCase()]=false;});
+var mx=0,my=0,mv=false;
+canvas.addEventListener('mousedown',function(){mv=true;});
+canvas.addEventListener('mouseup',function(){mv=false;});
+canvas.addEventListener('mousemove',function(e){mx=e.clientX;my=e.clientY;});
+canvas.addEventListener('wheel',function(e){e.preventDefault();},false);
+
+var cam={x:0,y:100,z:0,yaw:0,pitch:0,roll:0,speed:0,throttle:0};
+var time=0;
+var sunDir=[0.3,0.8,0.5];
+
+function drawMesh(geo,vb,nb,cb,ib,vc,mat,trans,sc){
+  gl.bindBuffer(gl.ARRAY_BUFFER,vb);gl.vertexAttribPointer(aP,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,nb);gl.vertexAttribPointer(aN,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,cb);gl.vertexAttribPointer(aC,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,ib);
+  gl.uniformMatrix4fv(uM,false,mat);
+  gl.uniformMatrix4fv(uV,false,trans);
+  gl.drawElements(gl.TRIANGLES,vc*2,gl.UNSIGNED_SHORT,0);
+}
+
+function render(){
+  gl.clearColor(0.75,0.82,0.92,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  var aspect=canvas.width/canvas.height;
+  var proj=persp(Math.PI/4,aspect,1,2000);
+  var eye=[cam.x, cam.y, cam.z];
+  var fwd=[Math.sin(cam.yaw)*Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+  var target=[eye[0]+fwd[0],eye[1]+fwd[1],eye[2]+fwd[2]];
+  var view=lookAt(eye,target,[0,1,0]);
+  var vp=mulM(proj,view);
+
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(uVP,false,vp);
+  gl.uniform3fv(uSun,sunDir);
+  gl.uniform1f(uFog,0.00008);
+  gl.uniform3f(uFogC,0.75,0.82,0.92);
+
+  var m=mat4();
+  drawMesh(bVB,bNB,bIB,bVC,m,[cam.x,cam.y,cam.z],null);
+
+  for(var i=0;i<buildings.length;i++){
+    var b=buildings[i];
+    var m2=mulM(trn(b.x,b.h/2,b.z),mulM(scl(b.w,b.h,b.d),mat4()));
+    drawMesh(bVB,bNB,bIB,bVC,m2,[cam.x,cam.y,cam.z],null);
+  }
+
+  gl.useProgram(skyProg);
+  gl.uniformMatrix4fv(skyVP,false,vp);
+  gl.uniform3fv(skySun,sunDir);
+  gl.bindBuffer(gl.ARRAY_BUFFER,skyVB2);
+  gl.vertexAttribPointer(skyP,3,gl.FLOAT,false,0,0);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.FRONT);
+  gl.drawArrays(gl.TRIANGLES,0,skyVC);
+  gl.cullFace(gl.BACK);
+}
+
+function update(){
+  var dt=0.016;
+  var turnSpeed=0.003;
+  var pitchSpeed=0.002;
+  var rollSpeed=0.004;
+  var accel=0.05;
+  var maxSpeed=2.5;
+  var drag=0.995;
+
+  if(keys['w'])cam.pitch-=pitchSpeed;
+  if(keys['s'])cam.pitch+=pitchSpeed;
+  if(keys['a'])cam.yaw-=turnSpeed;
+  if(keys['d'])cam.yaw+=turnSpeed;
+  if(keys['q'])cam.roll-=rollSpeed;
+  if(keys['e'])cam.roll+=rollSpeed;
+  if(keys[' '])cam.throttle=Math.min(cam.throttle+accel,maxSpeed);
+  if(keys['shift'])cam.throttle=Math.max(cam.throttle-0.02,0);
+  if(keys['arrowup'])cam.pitch-=pitchSpeed;
+  if(keys['arrowdown'])cam.pitch+=pitchSpeed;
+  if(keys['arrowleft'])cam.yaw-=turnSpeed;
+  if(keys['arrowright'])cam.yaw+=turnSpeed;
+
+  cam.speed*=drag;
+  cam.speed+=cam.throttle*0.01;
+  cam.speed=Math.max(0,Math.min(cam.speed,maxSpeed));
+
+  var fwd=[Math.sin(cam.yaw)*Math.cos(cam.pitch), Math.sin(cam.pitch), Math.cos(cam.yaw)*Math.cos(cam.pitch)];
+  cam.x+=fwd[0]*cam.speed;
+  cam.y+=fwd[1]*cam.speed;
+  cam.z+=fwd[2]*cam.speed;
+  cam.y=Math.max(5,Math.min(cam.y,500));
+
+  time+=dt;
+}
+
+function loop(){
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>

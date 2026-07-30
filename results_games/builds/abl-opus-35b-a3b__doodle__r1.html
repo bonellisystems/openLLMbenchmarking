@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Doodle Jump</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+canvas { border-radius: 8px; box-shadow: 0 0 40px rgba(0,255,100,0.15); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+canvas.width = 400;
+canvas.height = 600;
+
+const GRAVITY = 0.4;
+const JUMP_FORCE = -12;
+const MOVE_SPEED = 5;
+const PLATFORM_GAP = 80;
+const MAX_PLATFORMS = 60;
+
+let doodler, platforms, camera, score, bestScore = 0, gameOver, keys, particles, stars;
+
+function init() {
+  doodler = { x: 200, y: 400, w: 40, h: 40, vx: 0, vy: 0, dir: 1, alive: true };
+  camera = { y: 0 };
+  score = 0;
+  gameOver = false;
+  particles = [];
+  stars = [];
+  for (let i = 0; i < 80; i++) stars.push({ x: Math.random() * canvas.width, y: Math.random() * 2000, s: Math.random() * 2 + 0.5, b: Math.random() * 0.5 + 0.5 });
+  platforms = [];
+  for (let i = 0; i < 15; i++) {
+    platforms.push({ x: Math.random() * (canvas.width - 60), y: 500 + i * 60, w: 50 + Math.random() * 40, h: 14, type: 'normal' });
+  }
+  platforms[0].x = 170;
+  platforms[0].w = 60;
+}
+
+function spawnPlatform(y) {
+  const gap = PLATFORM_GAP + Math.random() * 30;
+  const w = 40 + Math.random() * 50;
+  const x = Math.random() * (canvas.width - w);
+  const type = Math.random() < 0.1 ? 'moving' : (Math.random() < 0.05 ? 'crumble' : 'normal');
+  const p = { x, y: y - gap, w, h: 14, type, dir: Math.random() < 0.5 ? 1 : -1, speed: 1 + Math.random() * 2, crumbleTimer: 0, alive: true };
+  if (type === 'moving') p.origX = x;
+  platforms.push(p);
+}
+
+function update() {
+  if (gameOver) return;
+  doodler.vy += GRAVITY;
+  if (keys['ArrowLeft'] || keys['a']) { doodler.vx = -MOVE_SPEED; doodler.dir = -1; }
+  else if (keys['ArrowRight'] || keys['d']) { doodler.vx = MOVE_SPEED; doodler.dir = 1; }
+  else { doodler.vx *= 0.85; }
+  doodler.x += doodler.vx;
+  if (doodler.x < 0) { doodler.x = 0; doodler.vx = 2; }
+  if (doodler.x + doodler.w > canvas.width) { doodler.x = canvas.width - doodler.w; doodler.vx = -2; }
+  if (doodler.vy > 0 && doodler.y + doodler.h > camera.y + canvas.height - 10) {
+    for (let p of platforms) {
+      if (p.alive && p.x < doodler.x + doodler.w && p.x + p.w > doodler.x && p.y < doodler.y + doodler.h && p.y + p.h > doodler.y) {
+        doodler.vy = JUMP_FORCE;
+        doodler.y = p.y - doodler.h;
+        if (p.type === 'crumble') { p.crumbleTimer++; if (p.crumbleTimer > 15) p.alive = false; }
+        if (p.type === 'moving') { p.x += p.dir * p.speed; if (p.x <= 0 || p.x + p.w >= canvas.width) p.dir *= -1; }
+        for (let i = 0; i < 3; i++) particles.push({ x: doodler.x + doodler.w / 2, y: doodler.y + doodler.h, vx: (Math.random() - 0.5) * 4, vy: -Math.random() * 3, life: 20, color: '#7fff7f' });
+        break;
+      }
+    }
+  }
+  if (doodler.vy > 0) {
+    for (let p of platforms) {
+      if (p.alive && p.x < doodler.x + doodler.w - 4 && p.x + p.w > doodler.x + 4 && p.y < doodler.y + doodler.h && p.y + p.h > doodler.y + 4) {
+        if (doodler.y + doodler.h - p.y < 12) {
+          doodler.vy = JUMP_FORCE;
+          doodler.y = p.y - doodler.h;
+          if (p.type === 'crumble') { p.crumbleTimer++; if (p.crumbleTimer > 15) p.alive = false; }
+          if (p.type === 'moving') { p.x += p.dir * p.speed; if (p.x <= 0 || p.x + p.w >= canvas.width) p.dir *= -1; }
+          for (let i = 0; i < 3; i++) particles.push({ x: doodler.x + doodler.w / 2, y: doodler.y + doodler.h, vx: (Math.random() - 0.5) * 4, vy: -Math.random() * 3, life: 20, color: '#7fff7f' });
+          break;
+        }
+      }
+    }
+  }
+  camera.y = doodler.y - canvas.height * 0.4;
+  if (camera.y < 0) camera.y = 0;
+  score = Math.max(score, Math.floor(-camera.y / 10));
+  if (platforms.length < MAX_PLATFORMS) {
+    const top = Math.min(...platforms.map(p => p.y));
+    if (top > camera.y - 100) spawnPlatform(top);
+  }
+  for (let p of platforms) {
+    if (p.type === 'moving') { p.x += p.dir * p.speed; if (p.x <= 0 || p.x + p.w >= canvas.width) p.dir *= -1; }
+  }
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+  if (doodler.y > camera.y + canvas.height + 100) {
+    gameOver = true;
+    if (score > bestScore) bestScore = score;
+  }
+}
+
+function draw() {
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#0f0f23');
+  grad.addColorStop(1, '#1a1a3e');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let s of stars) {
+    const sy = ((s.y - camera.y * 0.3) % canvas.height + canvas.height) % canvas.height;
+    ctx.fillStyle = `rgba(255,255,255,${s.b})`;
+    ctx.fillRect(s.x, sy, s.s, s.s);
+  }
+  ctx.save();
+  ctx.translate(0, -camera.y);
+  for (let p of platforms) {
+    if (!p.alive) continue;
+    const px = p.x, py = p.y;
+    if (p.type === 'normal') {
+      ctx.fillStyle = '#4a4';
+      ctx.beginPath();
+      ctx.roundRect(px, py, p.w, p.h, 4);
+      ctx.fill();
+      ctx.fillStyle = '#6c6';
+      ctx.beginPath();
+      ctx.roundRect(px + 2, py + 2, p.w - 4, p.h / 2, 3);
+      ctx.fill();
+    } else if (p.type === 'moving') {
+      ctx.fillStyle = '#48c';
+      ctx.beginPath();
+      ctx.roundRect(px, py, p.w, p.h, 4);
+      ctx.fill();
+      ctx.fillStyle = '#6ae';
+      ctx.beginPath();
+      ctx.roundRect(px + 2, py + 2, p.w - 4, p.h / 2, 3);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '8px monospace';
+      ctx.fillText('⇄', px + p.w / 2 - 4, py + 10);
+    } else if (p.type === 'crumble') {
+      const shake = p.crumbleTimer > 0 ? (Math.random() - 0.5) * 4 : 0;
+      ctx.fillStyle = `rgb(${180 + p.crumbleTimer * 5},${100 - p.crumbleTimer * 3},${50})`;
+      ctx.beginPath();
+      ctx.roundRect(px + shake, py, p.w, p.h, 4);
+      ctx.fill();
+    }
+  }
+  drawDoodler();
+  for (let p of particles) {
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = p.life / 20;
+    ctx.fillRect(p.x, p.y, 3, 3);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(score, 10, 25);
+  ctx.font = '12px monospace';
+  ctx.fillStyle = '#888';
+  ctx.fillText('BEST: ' + bestScore, 10, 42);
+  if (gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 36px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 30);
+    ctx.font = '18px monospace';
+    ctx.fillText('Score: ' + score, canvas.width / 2, canvas.height / 2 + 10);
+    ctx.font = '14px monospace';
+    ctx.fillStyle = '#aaa';
+    ctx.fillText('Press SPACE or ENTER to restart', canvas.width / 2, canvas.height / 2 + 40);
+  }
+}
+
+function drawDoodler() {
+  const d = doodler;
+  const cx = d.x + d.w / 2;
+  const cy = d.y + d.h / 2;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.fillStyle = '#7f7';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, d.w / 2, d.h / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#5c5';
+  ctx.beginPath();
+  ctx.ellipse(0, 2, d.w / 2 - 2, d.h / 2 - 2, 0, 0, Math.PI);
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.ellipse(-6, -4, 5, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(6, -4, 5, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.arc(-5 + d.dir * 1, -4, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(7 + d.dir * 1, -4, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#3a3';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-10, 6);
+  ctx.lineTo(-14, 14);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(10, 6);
+  ctx.lineTo(14, 14);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 8, 4, 0, Math.PI);
+  ctx.stroke();
+  ctx.restore();
+}
+
+keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if ((e.key === ' ' || e.key === 'Enter') && gameOver) { init(); e.preventDefault(); }
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+init();
+(function loop() { update(); draw(); requestAnimationFrame(loop); })();
+</script>
+</body>
+</html>

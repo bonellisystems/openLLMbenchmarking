@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump Clone</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background-color: #1a1a2e;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        font-family: 'Courier New', Courier, monospace;
+        color: #333;
+    }
+    canvas {
+        background: linear-gradient(180deg, #87CEEB 0%, #E0F7FA 100%);
+        border: 4px solid #444;
+        box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        display: block;
+    }
+    #ui-overlay {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        text-align: center;
+        pointer-events: none;
+    }
+    #ui-overlay h1 {
+        font-size: 48px;
+        margin: 0 0 10px 0;
+        text-shadow: 2px 2px 0px #fff;
+    }
+    #ui-overlay p {
+        font-size: 18px;
+        background: rgba(255,255,255,0.8);
+        padding: 10px 20px;
+        border-radius: 8px;
+    }
+</style>
+</head>
+<body>
+
+<canvas id="game" width="400" height="600"></canvas>
+
+<div id="ui-overlay">
+    <h1 id="title">Doodle Jump</h1>
+    <p id="subtitle">Press SPACE or ARROW KEYS to start</p>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // --- Configuration ---
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // --- Game State ---
+    let gameState = 'start'; // start, playing, dead
+    let score = 0;
+    let highScore = parseInt(localStorage.getItem('doodleHighScore')) || 0;
+
+    // --- Player ---
+    const player = {
+        x: W / 2 - 15,
+        y: H - 100,
+        w: 30,
+        h: 30,
+        vx: 0,
+        vy: 0,
+        jumpForce: -11,
+        gravity: 0.4,
+        friction: 0.85,
+        maxSpeed: 6,
+        color: '#FFD700',
+        faceAngle: 0
+    };
+
+    // --- Platforms ---
+    let platforms = [];
+    const PLATFORM_MIN_GAP = 80;
+    const PLATFORM_MAX_GAP = 160;
+    const PLATFORM_MIN_W = 50;
+    const PLATFORM_MAX_W = 110;
+    const PLATFORM_H = 15;
+
+    // --- Input ---
+    const keys = {};
+
+    document.addEventListener('keydown', function(e) {
+        keys[e.code] = true;
+        if (gameState === 'start' || gameState === 'dead') {
+            if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'ArrowRight') {
+                startGame();
+            }
+        }
+    });
+
+    document.addEventListener('keyup', function(e) {
+        keys[e.code] = false;
+    });
+
+    // --- Logic ---
+
+    function startGame() {
+        gameState = 'playing';
+        score = 0;
+        player.x = W / 2 - 15;
+        player.y = H - 100;
+        player.vx = 0;
+        player.vy = 0;
+        platforms = [];
+        document.getElementById('ui-overlay').style.display = 'none';
+        generateInitialPlatforms();
+    }
+
+    function generateInitialPlatforms() {
+        // Place a platform directly under the player
+        platforms.push({
+            x: player.x - 20,
+            y: player.y + player.h,
+            w: 40,
+            h: PLATFORM_H
+        });
+        // Place a second one slightly above
+        platforms.push({
+            x: player.x + 10,
+            y: player.y - 100,
+            w: 60,
+            h: PLATFORM_H
+        });
+    }
+
+    function generatePlatform() {
+        const gap = PLATFORM_MIN_GAP + Math.random() * (PLATFORM_MAX_GAP - PLATFORM_MIN_GAP);
+        const x = Math.random() * (W - PLATFORM_MIN_W);
+        const w = PLATFORM_MIN_W + Math.random() * (PLATFORM_MAX_W - PLATFORM_MIN_W);
+        
+        platforms.push({
+            x: Math.floor(x),
+            y: -gap,
+            w: Math.floor(w),
+            h: PLATFORM_H
+        });
+    }
+
+    function update() {
+        if (gameState !== 'playing') return;
+
+        // Horizontal Movement
+        if (keys['ArrowLeft'] || keys['KeyA']) {
+            player.vx -= 1.2;
+        }
+        if (keys['ArrowRight'] || keys['KeyD']) {
+            player.vx += 1.2;
+        }
+
+        player.vx *= player.friction;
+        player.x += player.vx;
+
+        // Screen Wrapping
+        if (player.x + player.w < 0) {
+            player.x = W;
+        } else if (player.x > W) {
+            player.x = -player.w;
+        }
+
+        // Vertical Movement
+        player.vy += player.gravity;
+        player.y += player.vy;
+
+        // Jumping
+        if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && player.vy >= 0) {
+            player.vy = player.jumpForce;
+        }
+
+        // Platform Generation
+        if (platforms.length === 0 || platforms[platforms.length - 1].y > 100) {
+            generatePlatform();
+        }
+
+        // Platform Cleanup
+        platforms = platforms.filter(p => p.y < H + 50);
+
+        // Collision Detection
+        let onGround = false;
+        for (let i = 0; i < platforms.length; i++) {
+            let p = platforms[i];
+            // AABB Collision
+            if (player.x < p.x + p.w &&
+                player.x + player.w > p.x &&
+                player.y < p.y + p.h &&
+                player.y + player.h > p.y) {
+                
+                // Only collide if falling downwards
+                if (player.vy >= 0) {
+                    player.vy = player.jumpForce;
+                    onGround = true;
+                }
+            }
+        }
+
+        // Game Over
+        if (player.y > H) {
+            gameState = 'dead';
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('doodleHighScore', highScore);
+            }
+            document.getElementById('title').textContent = 'Game Over';
+            document.getElementById('subtitle').textContent = 'Score: ' + score + ' | High: ' + highScore + '\nPress SPACE to restart';
+            document.getElementById('ui-overlay').style.display = 'block';
+        }
+
+        score = Math.max(score, Math.floor(player.y));
+    }
+
+    // --- Rendering ---
+
+    function draw() {
+        // Clear
+        ctx.clearRect(0, 0, W, H);
+
+        // Draw Platforms
+        platforms.forEach(p => {
+            // Main body
+            ctx.fillStyle = '#6d4c41';
+            ctx.fillRect(p.x, p.y, p.w, p.h);
+            // Top highlight
+            ctx.fillStyle = '#8d6e63';
+            ctx.fillRect(p.x, p.y, p.w, 3);
+            // Grass top
+            ctx.fillStyle = '#4caf50';
+            ctx.fillRect(p.x, p.y, p.w, 4);
+        });
+
+        // Draw Player (Doodle style)
+        ctx.save();
+        ctx.translate(player.x + player.w / 2, player.y + player.h / 2);
+        
+        // Bobbing animation
+        let bob = Math.sin(Date.now() / 100) * 2;
+        ctx.translate(0, bob);
+
+        // Body
+        ctx.fillStyle = player.color;
+        ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
+        
+        // Eyes
+        ctx.fillStyle = '#000';
+        let eyeOffset = player.vx > 0 ? 4 : (player.vx < 0 ? -4 : 0);
+        ctx.fillRect(2 + eyeOffset, -6, 4, 4);
+        ctx.fillRect(10 + eyeOffset, -6, 4, 4);
+
+        // Mouth
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(2 + eyeOffset, 2);
+        ctx.lineTo(8 + eyeOffset, 6);
+        ctx.stroke();
+
+        ctx.restore();
+
+        // Draw Score
+        ctx.fillStyle = '#333';
+        ctx.font = 'bold 20px Courier New';
+        ctx.textAlign = 'left';
+        ctx.fillText('Score: ' + score, 10, 25);
+
+        // Draw High Score
+        ctx.textAlign = 'right';
+        ctx.fillText('Best: ' + highScore, W - 10, 25);
+
+        // Draw Floor line
+        ctx.strokeStyle = '#333';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, H);
+        ctx.lineTo(W, H);
+        ctx.stroke();
+    }
+
+    // --- Loop ---
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    loop();
+
+})();
+</script>
+</body>
+</html>

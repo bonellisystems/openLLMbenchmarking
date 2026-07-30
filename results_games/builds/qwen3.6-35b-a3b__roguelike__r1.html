@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Roguelike</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; color: #ccc; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+#game { text-align: center; }
+#display { background: #111; padding: 10px; display: inline-block; border: 1px solid #333; line-height: 1.2; white-space: pre; font-size: 16px; }
+#info { color: #888; margin-top: 8px; font-size: 14px; }
+#msg { color: #ff0; margin-top: 4px; font-size: 14px; height: 20px; }
+</style>
+</head>
+<body>
+<div id="game">
+<div id="display"></div>
+<div id="info"></div>
+<div id="msg"></div>
+</div>
+<script>
+const W = 60, H = 25, MAX_LEVEL = 10;
+const T_WALL = '#', T_FLOOR = '.', T_DOOR = '+', T_STAIRS = '>';
+const COLORS = { '#': '#555', '.': '#444', '+': '#aa8', '>': '#ff0', '@': '#0f0', '!': '#f0f', ':': '#ff0', '~': '#0ff', '/': '#f80', 'g': '#0a0', 'o': '#a50', 'O': '#f00', 'S': '#0ff' };
+const ENEMY_STATS = { g: { name: 'Goblin', ch: 'g', hp: 10, atk: 3, def: 1, xp: 5 }, o: { name: 'Orc', ch: 'o', hp: 20, atk: 5, def: 2, xp: 10 }, O: { name: 'Ogre', ch: 'O', hp: 40, atk: 8, def: 4, xp: 25 }, S: { name: 'Dragon', ch: 'S', hp: 80, atk: 12, def: 6, xp: 50 } };
+
+let grid, revealed, visible, player, enemies, items, messages, level, turnCount, gameOver, msgTimer;
+let displayEl, infoEl, msgEl;
+
+function init() {
+    displayEl = document.getElementById('display');
+    infoEl = document.getElementById('info');
+    msgEl = document.getElementById('msg');
+    level = 1;
+    gameOver = false;
+    messages = [];
+    player = { x: 0, y: 0, hp: 30, maxHp: 30, atk: 5, def: 2, xp: 0, level: 1, xpNext: 15, potions: 0 };
+    generateLevel();
+    document.addEventListener('keydown', handleKey);
+    render();
+}
+
+function generateLevel() {
+    grid = Array.from({ length: H }, () => Array(W).fill(T_WALL));
+    revealed = Array.from({ length: H }, () => Array(W).fill(false));
+    visible = Array.from({ length: H }, () => Array(W).fill(false));
+    enemies = [];
+    items = [];
+    let rooms = [];
+    let attempts = 0;
+    let numRooms = 5 + Math.floor(Math.random() * 4) + Math.floor(level / 3);
+    numRooms = Math.min(numRooms, 15);
+
+    while (rooms.length < numRooms && attempts < 200) {
+        attempts++;
+        let rw = 4 + Math.floor(Math.random() * 7);
+        let rh = 3 + Math.floor(Math.random() * 5);
+        let rx = 1 + Math.floor(Math.random() * (W - rw - 2));
+        let ry = 1 + Math.floor(Math.random() * (H - rh - 2));
+        let overlap = false;
+        for (let r of rooms) {
+            if (rx - 1 < r.x + r.w && rx + rw + 1 > r.x && ry - 1 < r.y + r.h && ry + rh + 1 > r.y) {
+                overlap = true; break;
+            }
+        }
+        if (!overlap) {
+            rooms.push({ x: rx, y: ry, w: rw, h: rh });
+            for (let dy = 0; dy < rh; dy++)
+                for (let dx = 0; dx < rw; dx++)
+                    grid[ry + dy][rx + dx] = T_FLOOR;
+        }
+    }
+
+    for (let i = 1; i < rooms.length; i++) {
+        let a = rooms[i - 1], b = rooms[i];
+        let ax = Math.floor(a.x + a.w / 2), ay = Math.floor(a.y + a.h / 2);
+        let bx = Math.floor(b.x + b.w / 2), by = Math.floor(b.y + b.h / 2);
+        carveCorridor(ax, ay, bx, by);
+    }
+
+    if (rooms.length > 0) {
+        player.x = Math.floor(rooms[0].x + rooms[0].w / 2);
+        player.y = Math.floor(rooms[0].y + rooms[0].h / 2);
+    }
+
+    let lastRoom = rooms[rooms.length - 1];
+    let sx = Math.floor(lastRoom.x + lastRoom.w / 2);
+    let sy = Math.floor(lastRoom.y + lastRoom.h / 2);
+    grid[sy][sx] = T_STAIRS;
+
+    let numEnemies = 3 + level + Math.floor(Math.random() * 3);
+    let availableRooms = rooms.slice(1);
+    for (let i = 0; i < numEnemies && availableRooms.length > 0; i++) {
+        let ri = Math.floor(Math.random() * availableRooms.length);
+        let room = availableRooms.splice(ri, 1)[0];
+        let ex = room.x + Math.floor(Math.random() * room.w);
+        let ey = room.y + Math.floor(Math.random() * room.h);
+        if (grid[ey][ex] === T_FLOOR) {
+            let roll = Math.random();
+            let type;
+            if (level < 3) type = 'g';
+            else if (level < 6) type = roll < 0.6 ? 'g' : 'o';
+            else if (level < 9) type = roll < 0.3 ? 'g' : roll < 0.7 ? 'o' : 'O';
+            else type = roll < 0.2 ? 'g' : roll < 0.5 ? 'o' : roll < 0.85 ? 'O' : 'S';
+            let stats = ENEMY_STATS[type];
+            enemies.push({ x: ex, y: ey, ch: type, hp: stats.hp, maxHp: stats.hp, atk: stats.atk, def: stats.def, name: stats.name, xp: stats.xp });
+        }
+    }
+
+    let numItems = 2 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < numItems; i++) {
+        let room = rooms[Math.floor(Math.random() * rooms.length)];
+        let ix = room.x + Math.floor(Math.random() * room.w);
+        let iy = room.y + Math.floor(Math.random() * room.h);
+        if (grid[iy][ix] === T_FLOOR && !(ix === player.x && iy === player.y)) {
+            let roll = Math.random();
+            if (roll < 0.5) {
+                items.push({ x: ix, y: iy, ch: '!', name: 'Potion', color: '#f0f' });
+            } else if (roll < 0.75) {
+                items.push({ x: ix, y: iy, ch: ':', name: 'Scroll', color: '#ff0' });
+            } else {
+                let bonus = Math.floor(Math.random() * 2) + 1;
+                items.push({ x: ix, y: iy, ch: '~', name: 'Weapon +' + bonus, color: '#0ff', atkBonus: bonus });
+            }
+        }
+    }
+
+    computeFOV();
+}
+
+function carveCorridor(x1, y1, x2, y2) {
+    let x = x1, y = y1;
+    while (x !== x2) {
+        if (grid[y][x] === T_WALL) grid[y][x] = T_FLOOR;
+        x += x < x2 ? 1 : -1;
+    }
+    while (y !== y2) {
+        if (grid[y][x] === T_WALL) grid[y][x] = T_FLOOR;
+        y += y < y2 ? 1 : -1;
+    }
+    if (grid[y][x] === T_WALL) grid[y][x] = T_FLOOR;
+}
+
+function computeFOV() {
+    visible = Array.from({ length: H }, () => Array(W).fill(false));
+    let radius = 8;
+    for (let a = 0; a < 360; a += 0.5) {
+        let rad = a * Math.PI / 180;
+        let dx = Math.cos(rad), dy = Math.sin(rad);
+        let cx = player.x + 0.5, cy = player.y + 0.5;
+        for (let i = 0; i < radius; i++) {
+            let tx = Math.floor(cx), ty = Math.floor(cy);
+            if (tx < 0 || tx >= W || ty < 0 || ty >= H) break;
+            visible[ty][tx] = true;
+            revealed[ty][tx] = true;
+            if (grid[ty][tx] === T_WALL) break;
+            cx += dx * 0.5;
+            cy += dy * 0.5;
+        }
+    }
+}
+
+function handleKey(e) {
+    if (gameOver) {
+        if (e.key === 'r' || e.key === 'R') {
+            document.removeEventListener('keydown', handleKey);
+            init();
+        }
+        return;
+    }
+    let dx = 0, dy = 0;
+    switch (e.key) {
+        case 'ArrowUp': case 'w': case 'W': dy = -1; break;
+        case 'ArrowDown': case 's': case 'S': dy = 1; break;
+        case 'ArrowLeft': case 'a': case 'A': dx = -1; break;
+        case 'ArrowRight': case 'd': case 'D': dx = 1; break;
+        case '.': case ',': return;
+        default: return;
+    }
+    e.preventDefault();
+    let nx = player.x + dx, ny = player.y + dy;
+    if (nx < 0 || nx >= W || ny < 0 || ny >= H) return;
+    if (grid[ny][nx] === T_WALL) return;
+
+    let enemy = enemies.find(e => e.x === nx && e.y === ny);
+    if (enemy) {
+        let dmg = Math.max(1, player.atk - enemy.def + Math.floor(Math.random() * 3));
+        enemy.hp -= dmg;
+        addMsg(`You hit ${enemy.name} for ${dmg} damage.`);
+        if (enemy.hp <= 0) {
+            addMsg(`${enemy.name} dies! (+${enemy.xp} XP)`);
+            player.xp += enemy.xp;
+            enemies = enemies.filter(e => e !== enemy);
+            checkLevelUp();
+        }
+    } else {
+        player.x = nx;
+        player.y = ny;
+        let itemIdx = items.findIndex(i => i.x === nx && i.y === ny);
+        if (itemIdx >= 0) {
+            let item = items[itemIdx];
+            if (item.ch === '!') {
+                player.potions++;
+                addMsg('You pick up a potion.');
+            } else if (item.ch === ':') {
+                addMsg('You pick up a scroll.');
+            } else if (item.ch === '~') {
+                player.atk += item.atkBonus;
+                addMsg(`You pick up ${item.name}! (+${item.atkBonus} ATK)`);
+            }
+            items.splice(itemIdx, 1);
+        }
+        if (grid[ny][nx] === T_STAIRS) {
+            addMsg('You descend the stairs...');
+            level++;
+            if (level > MAX_LEVEL) {
+                addMsg('You have conquered the dungeon! You win!');
+                gameOver = true;
+                render();
+                return;
+            }
+            generateLevel();
+            render();
+            return;
+        }
+    }
+
+    enemyTurn();
+    computeFOV();
+    render();
+}
+
+function enemyTurn() {
+    for (let e of enemies) {
+        let dist = Math.abs(e.x - player.x) + Math.abs(e.y - player.y);
+        if (dist > 10) continue;
+        if (dist <= 1) {
+            let dmg = Math.max(1, e.atk - player.def + Math.floor(Math.random() * 2));
+            player.hp -= dmg;
+            addMsg(`${e.name} hits you for ${dmg} damage!`);
+            if (player.hp <= 0) {
+                addMsg('You have died! Press R to restart.');
+                gameOver = true;
+                return;
+            }
+        } else {
+            let dx = Math.sign(player.x - e.x);
+            let dy = Math.sign(player.y - e.y);
+            let moved = false;
+            let dirs = [];
+            if (Math.abs(player.x - e.x) >= Math.abs(player.y - e.y)) {
+                dirs.push([dx, 0], [0, dy], [dx, dy]);
+            } else {
+                dirs.push([0, dy], [dx, 0], [dx, dy]);
+            }
+            for (let [ddx, ddy] of dirs) {
+                if (ddx === 0 && ddy === 0) continue;
+                let nx = e.x + ddx, ny = e.y + ddy;
+                if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+                if (grid[ny][nx] === T_WALL) continue;
+                if (enemies.some(en => en.x === nx && en.y === ny)) continue;
+                if (nx === player.x && ny === player.y) continue;
+                e.x = nx; e.y = ny;
+                moved = true;
+                break;
+            }
+        }
+    }
+}
+
+function checkLevelUp() {
+    while (player.xp >= player.xpNext) {
+        player.xp -= player.xpNext;
+        player.level++;
+        player.xpNext = Math.floor(player.xpNext * 1.5);
+        player.maxHp += 5;
+        player.hp = Math.min(player.hp + 10, player.maxHp);
+        player.atk += 1;
+        player.def += 1;
+        addMsg(`Level up! You are now level ${player.level}!`);
+    }
+}
+
+function addMsg(text) {
+    messages.push(text);
+    if (messages.length > 1) messages.shift();
+    clearTimeout(msgTimer);
+    msgTimer = setTimeout(() => { msgEl.textContent = ''; }, 4000);
+}
+
+function render() {
+    let lines = [];
+    for (let y = 0; y < H; y++) {
+        let line = '';
+        for (let x = 0; x < W; x++) {
+            if (!revealed[y][x]) {
+                line += ' ';
+            } else if (visible[y][x]) {
+                if (x === player.x && y === player.y) {
+                    line += '@';
+                } else {
+                    let ch = grid[y][x];
+                    let enemy = enemies.find(e => e.x === x && e.y === y);
+                    if (enemy) {
+                        line += enemy.ch;
+                    } else {
+                        let item = items.find(i => i.x === x && i.y === y);
+                        if (item) {
+                            line += item.ch;
+                        } else {
+                            line += ch;
+                        }
+                    }
+                }
+            } else {
+                let ch = grid[y][x];
+                if (ch === T_WALL) line += '#';
+                else if (ch === T_FLOOR) line += '.';
+                else if (ch === T_STAIRS) line += '>';
+                else if (ch === T_DOOR) line += '+';
+                else line += ' ';
+            }
+        }
+        lines.push(line);
+    }
+    displayEl.textContent = lines.join('\n');
+
+    let hpColor = player.hp > player.maxHp * 0.5 ? '#0f0' : player.hp > player.maxHp * 0.25 ? '#ff0' : '#f00';
+    infoEl.innerHTML = `Lvl ${player.level} HP:${player.hp}/${player.maxHp} ATK:${player.atk} DEF:${player.def} XP:${player.xp}/${player.xpNext} Potions:${player.potions} Level:${level}/${MAX_LEVEL}`;
+
+    if (messages.length > 0) {
+        msgEl.textContent = messages[messages.length - 1];
+    }
+
+    if (gameOver) {
+        displayEl.style.color = '#f00';
+    } else {
+        displayEl.style.color = '';
+    }
+}
+
+init();
+</script>
+</body>
+</html>

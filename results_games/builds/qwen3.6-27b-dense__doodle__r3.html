@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; font-family: 'Comic Sans MS', cursive, sans-serif; }
+canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const W = 400;
+const H = 600;
+canvas.width = W;
+canvas.height = H;
+
+// Audio context for sound effects
+let audioCtx = null;
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function playSound(freq, duration, type = 'square', vol = 0.1) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+function jumpSound() { playSound(400, 0.1, 'square', 0.08); setTimeout(() => playSound(600, 0.1, 'square', 0.06), 50); }
+function springSound() { playSound(500, 0.15, 'sine', 0.1); setTimeout(() => playSound(800, 0.15, 'sine', 0.08), 80); }
+function breakSound() { playSound(150, 0.2, 'sawtooth', 0.06); }
+function dieSound() { playSound(300, 0.1, 'square', 0.1); setTimeout(() => playSound(200, 0.15, 'square', 0.1), 100); setTimeout(() => playSound(100, 0.3, 'square', 0.1), 200); }
+function hitSound() { playSound(200, 0.15, 'sawtooth', 0.08); }
+
+// Game state
+let gameState = 'menu'; // menu, playing, gameover
+let score = 0;
+let highScore = parseInt(localStorage.getItem('doodleHighScore')) || 0;
+let cameraY = 0;
+let maxHeight = 0;
+let shakeTimer = 0;
+let shakeIntensity = 0;
+
+// Player
+const player = {
+    x: W / 2,
+    y: H - 100,
+    w: 30,
+    h: 35,
+    vx: 0,
+    vy: 0,
+    dir: 1,
+    onGround: false,
+    alive: true,
+    frame: 0,
+    frameTimer: 0,
+    jetpack: false,
+    jetpackFuel: 0
+};
+
+// Platforms
+let platforms = [];
+const PLATFORM_W = 60;
+const PLATFORM_H = 14;
+const GRAVITY = 0.45;
+const JUMP_FORCE = -11;
+const SPRING_FORCE = -18;
+const MOVE_SPEED = 5;
+const MAX_FALL = 12;
+
+// Platform types
+const PLAT_NORMAL = 0;
+const PLAT_MOVING = 1;
+const PLAT_BREAK = 2;
+const PLAT_SPRING = 3;
+const PLAT_VANISH = 4;
+
+// Enemies
+let enemies = [];
+let particles = [];
+let clouds = [];
+let stars = [];
+
+// Input
+const keys = {};
+window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    initAudio();
+    if (gameState === 'menu' && (e.code === 'Space' || e.code === 'Enter' || e.code === 'ArrowUp')) {
+        startGame();
+    } else if (gameState === 'gameover' && (e.code === 'Space' || e.code === 'Enter')) {
+        startGame();
+    }
+    e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; e.preventDefault(); });
+
+// Touch controls
+let touchLeft = false, touchRight = false;
+canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    initAudio();
+    if (gameState === 'menu' || gameState === 'gameover') { startGame(); return; }
+    for (let t of e.changedTouches) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (t.clientX - rect.left) / rect.width * W;
+        if (x < W / 2) touchLeft = true;
+        else touchRight = true;
+    }
+});
+canvas.addEventListener('touchend', e => {
+    e.preventDefault();
+    touchLeft = false;
+    touchRight = false;
+});
+canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    touchLeft = false;
+    touchRight = false;
+    for (let t of e.changedTouches) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (t.clientX - rect.left) / rect.width * W;
+        if (x < W / 2) touchLeft = true;
+        else touchRight = true;
+    }
+});
+
+function generateClouds() {
+    clouds = [];
+    for (let i = 0; i < 20; i++) {
+        clouds.push({
+            x: Math.random() * W,
+            y: Math.random() * H * 5 - H * 2,
+            w: 40 + Math.random() * 60,
+            h: 20 + Math.random() * 20,
+            speed: 0.2 + Math.random() * 0.3,
+            opacity: 0.3 + Math.random() * 0.4
+        });
+    }
+}
+
+function generateStars() {
+    stars = [];
+    for (let i = 0; i < 30; i++) {
+        stars.push({
+            x: Math.random() * W,
+            y: Math.random() * H * 5 - H * 2,
+            size: 1 + Math.random() * 2,
+            twinkle: Math.random() * Math.PI * 2
+        });
+    }
+}
+
+function generatePlatforms(fromY, toY) {
+    let y = fromY;
+    while (y > toY) {
+        const gap = 40 + Math.random() * 40 + Math.min(score / 500, 25);
+        y -= gap;
+        const x = 20 + Math.random() * (W - PLATFORM_W - 40);
+        let type = PLAT_NORMAL;
+        const r = Math.random();
+        const difficulty = Math.min(score / 3000, 1);
+
+        if (score > 500 && r < 0.1 + difficulty * 0.15) type = PLAT_MOVING;
+        else if (score > 800 && r < 0.15 + difficulty * 0.15) type = PLAT_BREAK;
+        else if (score > 300 && r < 0.08 + difficulty * 0.05) type = PLAT_SPRING;
+        else if (score > 1500 && r < 0.05 + difficulty * 0.05) type = PLAT_VANISH;
+
+        platforms.push({
+            x, y, w: PLATFORM_W, h: PLATFORM_H,
+            type,
+            moveDir: Math.random() < 0.5 ? 1 : -1,
+            moveSpeed: 1 + Math.random() * 1.5,
+            broken: false,
+            breakTimer: 0,
+            vanishTimer: 0,
+            hasSpring: type === PLAT_SPRING,
+            springBounce: 0
+        });
+    }
+}
+
+function spawnEnemy(y) {
+    enemies.push({
+        x: 30 + Math.random() * (W - 60),
+        y: y,
+        w: 35,
+        h: 30,
+        vx: (0.5 + Math.random()) * (Math.random() < 0.5 ? 1 : -1),
+        type: Math.random() < 0.5 ? 0 : 1,
+        frame: 0,
+        alive: true
+    });
+}
+
+function startGame() {
+    gameState = 'playing';
+    score = 0;
+    cameraY = 0;
+    maxHeight = 0;
+    player.x = W / 2 - player.w / 2;
+    player.y = H - 100;
+    player.vx = 0;
+    player.vy = 0;
+    player.alive = true;
+    player.dir = 1;
+    player.jetpack = false;
+    player.jetpackFuel = 0;
+    platforms = [];
+    enemies = [];
+    particles = [];
+
+    // Initial platforms
+    platforms.push({ x: W / 2 - PLATFORM_W / 2, y: H - 50, w: PLATFORM_W, h: PLATFORM_H, type: PLAT_NORMAL, moveDir: 1, moveSpeed: 1, broken: false, breakTimer: 0, vanishTimer: 0, hasSpring: false, springBounce: 0 });
+    generatePlatforms(H - 80, -200);
+    generateClouds();
+    generateStars();
+}
+
+function addParticles(x, y, color, count, speed) {
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const spd = Math.random() * speed;
+        particles.push({
+            x, y,
+            vx: Math.cos(angle) * spd,
+            vy: Math.sin(angle) * spd - 1,
+            life: 1,
+            decay: 0.02 + Math.random() * 0.03,
+            color,
+            size: 2 + Math.random() * 3
+        });
+    }
+}
+
+function update() {
+    if (gameState !== 'playing') return;
+
+    // Input
+    let moveLeft = keys['ArrowLeft'] || keys['KeyA'] || touchLeft;
+    let moveRight = keys['ArrowRight'] || keys['KeyD'] || touchRight;
+
+    if (moveLeft) {
+        player.vx = -MOVE_SPEED;
+        player.dir = -1;
+    } else if (moveRight) {
+        player.vx = MOVE_SPEED;
+        player.dir = 1;
+    } else {
+        player.vx *= 0.85;
+    }
+
+    // Physics
+    player.vy += GRAVITY;
+    if (player.vy > MAX_FALL) player.vy = MAX_FALL;
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // Wrap around
+    if (player.x + player.w < 0) player.x = W;
+    if (player.x > W) player.x = -player.w;
+
+    // Animation
+    player.frameTimer++;
+    if (player.frameTimer > 8) {
+        player.frame = (player.frame + 1) % 4;
+        player.frameTimer = 0;
+    }
+
+    // Platform collision (only when falling)
+    if (player.vy >= 0) {
+        for (let p of platforms) {
+            if (p.broken) continue;
+            const px = player.x + 4;
+            const pw = player.w - 8;
+            const py = player.y + player.h;
+            const prevPy = py - player.vy;
+
+            if (px + pw > p.x && px < p.x + p.w &&
+                py >= p.y && prevPy <= p.y + 4) {
+
+                if (p.type === PLAT_BREAK) {
+                    p.broken = true;
+                    p.breakTimer = 15;
+                    breakSound();
+                    addParticles(p.x + p.w / 2, p.y, '#8B4513', 8, 3);
+                    continue;
+                }
+
+                if (p.type === PLAT_VANISH) {
+                    p.vanishTimer = 10;
+                }
+
+                player.y = p.y - player.h;
+                player.vy = JUMP_FORCE;
+                player.onGround = true;
+                jumpSound();
+                addParticles(player.x + player.w / 2, player.y + player.h, '#90EE90', 4, 2);
+
+                if (p.hasSpring) {
+                    player.vy = SPRING_FORCE;
+                    p.springBounce = 10;
+                    springSound();
+                    addParticles(player.x + player.w / 2, player.y + player.h, '#FFD700', 8, 4);
+                }
+
+                break;
+            }
+        }
+    }
+
+    // Update platforms
+    for (let p of platforms) {
+        if (p.type === PLAT_MOVING && !p.broken) {
+            p.x += p.moveDir * p.moveSpeed;
+            if (p.x <= 0 || p.x + p.w >= W) p.moveDir *= -1;
+        }
+        if (p.broken) {
+            p.breakTimer--;
+        }
+        if (p.type === PLAT_VANISH) {
+            if (p.vanishTimer > 0) p.vanishTimer--;
+        }
+        if (p.springBounce > 0) p.springBounce--;
+    }
+
+    // Remove broken/vanished platforms
+    platforms = platforms.filter(p => {
+        if (p.broken && p.breakTimer <= 0) return false;
+        if (p.type === PLAT_VANISH && p.vanishTimer <= 0) return false;
+        return true;
+    });
+
+    // Camera
+    const targetCamY = player.y - H * 0.4;
+    if (targetCamY < cameraY) {
+        cameraY += (targetCamY - cameraY) * 0.15;
+    }
+
+    // Score
+    const currentHeight = Math.floor(-player.y / 10);
+    if (currentHeight > maxHeight) {
+        score = currentHeight;
+        maxHeight = currentHeight;
+    }
+
+    // Generate new platforms
+    const highestPlat = Math.min(...platforms.map(p => p.y));
+    if (highestPlat > cameraY - H) {
+        generatePlatforms(highestPlat, cameraY - H * 2);
+
+        // Spawn enemies at higher scores
+        if (score > 1000 && Math.random() < 0.03 + Math.min(score / 10000, 0.1)) {
+            spawnEnemy(cameraY - H * 1.5 - Math.random() * 200);
+        }
+    }
+
+    // Remove off-screen platforms
+    platforms = platforms.filter(p => p.y < cameraY + H + 100);
+
+    // Update enemies
+    for (let e of enemies) {
+        if (!e.alive) continue;
+        e.x += e.vx;
+        if (e.x <= 0 || e.x + e.w >= W) e.vx *= -1;
+        e.frame += 0.1;
+
+        // Collision with player
+        if (player.x + player.w - 4 > e.x && player.x + 4 < e.x + e.w &&
+            player.y + player.h > e.y + 5 && player.y < e.y + e.h) {
+            // Check if landing on top
+            if (player.vy > 0 && player.y + player.h < e.y + e.h / 2 + 10) {
+                e.alive = false;
+                player.vy = JUMP_FORCE * 0.8;
+                hitSound();
+                addParticles(e.x + e.w / 2, e.y + e.h / 2, '#FF4444', 10, 4);
+                score += 50;
+            } else {
+                // Player dies
+                player.alive = false;
+                dieSound();
+                addParticles(player.x + player.w / 2, player.y + player.h / 2, '#00FF00', 15, 5);
+                shakeTimer = 20;
+                shakeIntensity = 8;
+                gameState = 'gameover';
+                if (score > highScore) {
+                    highScore = score;
+                    localStorage.setItem('doodleHighScore', highScore);
+                }
+            }
+        }
+    }
+    enemies = enemies.filter(e => e.alive && e.y < cameraY + H + 200);
+
+    // Update particles
+    for (let p of particles) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.1;
+        p.life -= p.decay;
+    }
+    particles = particles.filter(p => p.life > 0);
+
+    // Update clouds
+    for (let c of clouds) {
+        c.x += c.speed;
+        if (c.x > W + 50) c.x = -c.w;
+    }
+
+    // Update stars
+    for (let s of stars) {
+        s.twinkle += 0.05;
+    }
+
+    // Fall death
+    if (player.y > cameraY + H + 50) {
+        player.alive = false;
+        dieSound();
+        shakeTimer = 20;
+        shakeIntensity = 8;
+        gameState = 'gameover';
+        if (score > highScore) {
+            highScore = score;
+            localStorage.setItem('doodleHighScore', highScore);
+        }
+    }
+
+    // Screen shake
+    if (shakeTimer > 0) shakeTimer--;
+}
+
+function drawBackground() {
+    // Sky gradient based on height
+    const heightFactor = Math.min(score / 5000, 1);
+    const r1 = Math.floor(200 - heightFactor * 150);
+    const g1 = Math.floor(230 - heightFactor * 180);
+    const b1 = Math.floor(255 - heightFactor * 100);
+    const r2 = Math.floor(240 - heightFactor * 180);
+    const g2 = Math.floor(255 - heightFactor * 200);
+    const b2 = Math.floor(255 - heightFactor * 120);
+
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, `rgb(${r1},${g1},${b1})`);
+    grad.addColorStop(1, `rgb(${r2},${g2},${b2})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid lines (notebook paper effect)
+    ctx.strokeStyle = 'rgba(180, 200, 220, 0.3)';
+    ctx.lineWidth = 0.5;
+    const gridOffset = (-cameraY * 0.1) % 30;
+    for (let y = gridOffset; y < H; y += 30) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(W, y);
+        ctx.stroke();
+    }
+    for (let x = 0; x < W; x += 30) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, H);
+        ctx.stroke();
+    }
+
+    // Stars at high altitude
+    if (heightFactor > 0.3) {
+        const starAlpha = (heightFactor - 0.3) / 0.7;
+        for (let s of stars) {
+            const sy = ((s.y - cameraY * 0.05) % (H * 3) + H * 3) % (H * 3) - H;
+            if (sy > -10 && sy < H + 10) {
+                const twinkle = 0.5 + 0.5 * Math.sin(s.twinkle);
+                ctx.fillStyle = `rgba(255, 255, 255, ${starAlpha * twinkle * 0.8})`;
+                ctx.beginPath();
+                ctx.arc(s.x, sy, s.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+    }
+
+    // Clouds
+    for (let c of clouds) {
+        const cy = ((c.y - cameraY * 0.2) % (H * 5) + H * 5) % (H * 5) - H;
+        if (cy > -50 && cy < H + 50) {
+            ctx.fillStyle = `rgba(255, 255, 255, ${c.opacity})`;
+            ctx.beginPath();
+            ctx.ellipse(c.x, cy, c.w / 2, c.h / 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(c.x - c.w * 0.25, cy + 3, c.w * 0.3, c.h * 0.4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.ellipse(c.x + c.w * 0.25, cy + 2, c.w * 0.35, c.h * 0.45, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+}
+
+function drawPlatform(p) {
+    const screenY = p.y - cameraY;
+    if (screenY > H + 20 || screenY < -30) return;
+
+    ctx.save();
+
+    if (p.broken) {
+        ctx.globalAlpha = p.breakTimer / 15;
+        ctx.translate(p.x + p.w / 2, screenY + p.h / 2);
+        ctx.rotate((15 - p.breakTimer) * 0.05 * (Math.random() > 0.5 ? 1 : -1));
+        ctx.translate(-(p.x + p.w / 2), -(screenY + p.h / 2));
+    }
+
+    if (p.type === PLAT_VANISH && p.vanishTimer > 0) {
+        ctx.globalAlpha = p.vanishTimer / 10;
+    }
+
+    // Platform body
+    let color1, color2;
+    switch (p.type) {
+        case PLAT_NORMAL:
+            color1 = '#7CB342';
+            color2 = '#558B2F';
+            break;
+        case PLAT_MOVING:
+            color1 = '#42A5F5';
+            color2 = '#1565C0';
+            break;
+        case PLAT_BREAK:
+            color1 = '#A1887F';
+            color2 = '#6D4C41';
+            break;
+        case PLAT_SPRING:
+            color1 = '#FFB300';
+            color2 = '#FF8F00';
+            break;
+        case PLAT_VANISH:
+            color1 = '#CE93D8';
+            color2 = '#8E24AA';
+            break;
+        default:
+            color1 = '#7CB342';
+            color2 = '#558B2F';
+    }
+
+    // Draw platform with rounded look
+    ctx.fillStyle = color1;
+    ctx.beginPath();
+    const rx = p.x, ry = screenY, rw = p.w, rh = p.h;
+    const radius = 5;
+    ctx.moveTo(rx + radius, ry);
+    ctx.lineTo(rx + rw - radius, ry);
+    ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + radius);
+    ctx.lineTo(rx + rw, ry + rh - radius);
+    ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - radius, ry + rh);
+    ctx.lineTo(rx + radius, ry + rh);
+    ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - radius);
+    ctx.lineTo(rx, ry + radius);
+    ctx.quadraticCurveTo(rx, ry, rx + radius, ry);
+    ctx.closePath();
+    ctx.fill();
+
+    // Top highlight
+    ctx.fillStyle = color2;
+    ctx.fillRect(rx + 2, ry + rh - 4, rw - 4, 3);
+
+    // Grass tufts on top for normal platforms
+    if (p.type === PLAT_NORMAL || p.type === PLAT_SPRING) {
+        ctx.fillStyle = '#8BC34A';
+        for (let i = 0; i < 3; i++) {
+            const gx = rx + 8 + i * (rw - 16) / 2;
+            ctx.beginPath();
+            ctx.moveTo(gx - 3, ry);
+            ctx.quadraticCurveTo(gx, ry - 6, gx + 3, ry);
+            ctx.fill();
+        }
+    }
+
+    // Spring
+    if (p.hasSpring) {
+        const springH = 12 + (p.springBounce > 0 ? -4 : 0);
+        const springX = p.x + p.w / 2 - 6;
+        const springY = screenY - springH;
+        ctx.fillStyle = '#FF5722';
+        ctx.fillRect(springX, springY, 12, springH);
+        ctx.fillStyle = '#FF8A65';
+        ctx.fillRect(springX + 2, springY + 2, 8, springH - 4);
+        // Spring coils
+        ctx.strokeStyle = '#BF360C';
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 3; i++) {
+            const sy = springY + 3 + i * (springH - 6) / 3;
+            ctx.beginPath();
+            ctx.moveTo(springX + 1, sy);
+            ctx.lineTo(springX + 11, sy);
+            ctx.stroke();
+        }
+    }
+
+    // Cracks for breakable
+    if (p.type === PLAT_BREAK) {
+        ctx.strokeStyle = '#4E342E';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(p.x + 15, screenY + 2);
+        ctx.lineTo(p.x + 20, screenY + 8);
+        ctx.lineTo(p.x + 18, screenY + 12);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(p.x + 40, screenY + 3);
+        ctx.lineTo(p.x + 45, screenY + 9);
+        ctx.stroke();
+    }
+
+    // Moving platform arrows
+    if (p.type === PLAT_MOVING) {
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        const arrowX = p.x + p.w / 2 - 4;
+        const arrowY = screenY + 4;
+        ctx.beginPath();
+        if (p.moveDir > 0) {
+            ctx.moveTo(arrowX, arrowY);
+            ctx.lineTo(arrowX + 8, arrowY + 4);
+            ctx.lineTo(arrowX, arrowY + 8);
+        } else {
+            ctx.moveTo(arrowX + 8, arrowY);
+            ctx.lineTo(arrowX, arrowY + 4);
+            ctx.lineTo(arrowX + 8, arrowY + 8);
+        }
+        ctx.fill();
+    }
+
+    ctx.restore();
+}
+
+function drawPlayer() {
+    if (!player.alive) return;
+
+    const sx = player.x;
+    const sy = player.y - cameraY;
+
+    ctx.save();
+    ctx.translate(sx + player.w / 2, sy + player.h / 2);
+    ctx.scale(player.dir, 1);
+    ctx.translate(-player.w / 2, -player.h / 2);
+
+    // Body
+    ctx.fillStyle = '#76FF03';
+    ctx.beginPath();
+    ctx.ellipse(player.w / 2, player.h * 0.55, player.w / 2 - 2, player.h * 0.45, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Head
+    ctx.fillStyle = '#76FF03';
+    ctx.beginPath();
+    ctx.ellipse(player.w / 2, player.h * 0.2, player.w / 2 - 1, player.h * 0.25, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Eyes
+    ctx.fillStyle = '#FFF';
+    ctx.beginPath();
+    ctx.ellipse(player.w * 0.55, player.h * 0.15, 5, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Pupil
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(player.w * 0.58, player.h * 0.16, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eye shine
+    ctx.fillStyle = '#FFF';
+    ctx.beginPath();
+    ctx.arc(player.w * 0.6, player.h * 0.13, 1, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Mouth
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (player.vy < -2) {
+        // Happy mouth when going up
+        ctx.arc(player.w * 0.45, player.h * 0.28, 4, 0, Math.PI);
+    } else {
+        // Neutral/sad when falling
+        ctx.arc(player.w * 0.45, player.h * 0.35, 3, Math.PI, 0);
+    }
+    ctx.stroke();
+
+    // Legs
+    const legOffset = player.onGround ? 0 : Math.sin(player.frame * Math.PI / 2) * 3;
+    ctx.fillStyle = '#76FF03';
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 1.5;
+
+    // Left leg
+    ctx.beginPath();
+    ctx.ellipse(player.w * 0.3, player.h * 0.9 + legOffset, 5, 4, -0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Right leg
+    ctx.beginPath();
+    ctx.ellipse(player.w * 0.7, player.h * 0.9 - legOffset, 5, 4, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Feet
+    ctx.fillStyle = '#33691E';
+    ctx.beginPath();
+    ctx.ellipse(player.w * 0.25, player.h * 0.95 + legOffset, 4, 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(player.w * 0.75, player.h * 0.95 - legOffset, 4, 2.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function drawEnemy(e) {
+    if (!e.alive) return;
+    const sx = e.x;
+    const sy = e.y - cameraY;
+    if (sy > H + 40 || sy < -40) return;
+
+    ctx.save();
+    ctx.translate(sx + e.w / 2, sy + e.h / 2);
+
+    if (e.type === 0) {
+        // Chomper - green monster
+        const chomp = Math.sin(e.frame * 3) * 3;
+
+        // Body
+        ctx.fillStyle = '#4CAF50';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, e.w / 2, e.h / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#2E7D32';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Spikes
+        ctx.fillStyle = '#2E7D32';
+        for (let i = 0; i < 5; i++) {
+            const angle = (i / 5) * Math.PI - Math.PI;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(angle) * e.w / 2, Math.sin(angle) * e.h / 2);
+            ctx.lineTo(Math.cos(angle) * (e.w / 2 + 8), Math.sin(angle) * (e.h / 2 + 8));
+            ctx.lineTo(Math.cos(angle + 0.3) * e.w / 2, Math.sin(angle + 0.3) * e.h / 2);
+            ctx.fill();
+        }
+
+        // Eyes
+        ctx.fillStyle = '#FFF';
+        ctx.beginPath();
+        ctx.ellipse(-6, -4, 5, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(6, -4, 5, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(-5, -3, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(7, -3, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Mouth
+        ctx.fillStyle = '#1B5E20';
+        ctx.beginPath();
+        ctx.ellipse(0, 5 + chomp, 8, 4 + chomp, 0, 0, Math.PI);
+        ctx.fill();
+
+        // Teeth
+        ctx.fillStyle = '#FFF';
+        for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            ctx.moveTo(-5 + i * 5, 5 + chomp);
+            ctx.lineTo(-3 + i * 5, 8 + chomp);
+            ctx.lineTo(-1 + i * 5, 5 + chomp);
+            ctx.fill();
+        }
+    } else {
+        // Flying enemy
+        const wingFlap = Math.sin(e.frame * 5) * 8;
+
+        // Wings
+        ctx.fillStyle = '#E91E63';
+        ctx.beginPath();
+        ctx.ellipse(-12, -2 + wingFlap, 10, 6, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(12, -2 - wingFlap, 10, 6, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Body
+        ctx.fillStyle = '#F44336';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, e.w / 2 - 2, e.h / 2 - 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#B71C1C';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Eyes
+        ctx.fillStyle = '#FFF';
+        ctx.beginPath();
+        ctx.ellipse(-5, -3, 4, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(5, -3, 4, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.arc(-4, -2, 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(6, -2, 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Angry eyebrows
+        ctx.strokeStyle = '#B71C1C';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-9, -9);
+        ctx.lineTo(-2, -7);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(9, -9);
+        ctx.lineTo(2, -7);
+        ctx.stroke();
+    }
+
+    ctx.restore();
+}
+
+function drawParticles() {
+    for (let p of particles) {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y - cameraY, p.size * p.life, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+}
+
+function drawUI() {
+    // Score
+    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.fillRect(0, 0, W, 40);
+
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 20px "Comic Sans MS", cursive, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${score}`, 10, 28);
+
+    ctx.textAlign = 'right';
+    ctx.fillText(`Best: ${highScore}`, W - 10, 28);
+}
+
+function drawMenu() {
+    drawBackground();
+
+    // Title
+    ctx.save();
+    const titleY = H * 0.25;
+    const bounce = Math.sin(Date.now() / 500) * 5;
+
+    ctx.fillStyle = '#76FF03';
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 48px "Comic Sans MS", cursive, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.strokeText('DOODLE JUMP', W / 2, titleY + bounce);
+    ctx.fillText('DOODLE JUMP', W / 2, titleY + bounce);
+
+    // Draw a doodle character
+    ctx.save();
+    ctx.translate(W / 2, H * 0.5 + Math.sin(Date.now() / 300) * 10);
+    ctx.scale(2, 2);
+
+    ctx.fillStyle = '#76FF03';
+    ctx.beginPath();
+    ctx.ellipse(0, 5, 14, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.fillStyle = '#76FF03';
+    ctx.beginPath();
+    ctx.ellipse(0, -8, 12, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#FFF';
+    ctx.beginPath();
+    ctx.ellipse(4, -10, 4, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(5, -9, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#FFF';
+    ctx.beginPath();
+    ctx.ellipse(-4, -10, 4, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.stroke();
+
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(-3, -9, 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = '#33691E';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(0, -3, 4, 0.2, Math.PI - 0.2);
+    ctx.stroke();
+
+    ctx.restore();
+
+    // Instructions
+    ctx.fillStyle = '#FFF';
+    ctx.font = '18px "Comic Sans MS", cursive, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('← → or A/D to move', W / 2, H * 0.72);
+    ctx.fillText('Jump on platforms to climb!', W / 2, H * 0.78);
+
+    // Start prompt
+    const alpha = 0.5 + 0.5 * Math.sin(Date.now() / 400);
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.font = 'bold 22px "Comic Sans MS", cursive, sans-serif';
+    ctx.fillText('Press SPACE or ENTER to start', W / 2, H * 0.9);
+
+    ctx.restore();
+}
+
+function drawGameOver() {
+    // Darken
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+
+    // Game Over text
+    ctx.fillStyle = '#FF5252';
+    ctx.strokeStyle = '#B71C1C';
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 44px "Comic Sans MS", cursive, sans-serif';
+    ctx.strokeText('GAME OVER', W / 2, H * 0.3);
+    ctx.fillText('GAME OVER', W / 2, H * 0.3);
+
+    // Score
+    ctx.fillStyle = '#FFF';
+    ctx.font = 'bold 28px "Comic Sans MS", cursive, sans-serif';
+    ctx.fillText(`Score: ${score}`, W / 2, H * 0.45);
+
+    if (score >= highScore && score > 0) {
+        ctx.fillStyle = '#FFD700';
+        ctx.font = 'bold 22px "Comic Sans MS", cursive, sans-serif';
+        ctx.fillText('★ NEW HIGH SCORE! ★', W / 2, H * 0.53);
+    } else {
+        ctx.fillStyle = '#AAA';
+        ctx.font = '20px "Comic Sans MS", cursive, sans-serif';
+        ctx.fillText(`Best: ${highScore}`, W / 2, H * 0.53);
+    }
+
+    // Restart prompt
+    const alpha = 0.5 + 0.5 * Math.sin(Date.now() / 400);
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+    ctx.font = 'bold 20px "Comic Sans MS", cursive, sans-serif';
+    ctx.fillText('Press SPACE or ENTER to retry', W / 2, H * 0.7);
+}
+
+function draw() {
+    ctx.save();
+
+    // Screen shake
+    if (shakeTimer > 0) {
+        const sx = (Math.random() - 0.5) * shakeIntensity * (shakeTimer / 20);
+        const sy = (Math.random() - 0.5) * shakeIntensity * (shakeTimer / 20);
+        ctx.translate(sx, sy);
+    }
+
+    if (gameState === 'menu') {
+        drawMenu();
+    } else {
+        drawBackground();
+
+        // Draw platforms
+        for (let p of platforms) {
+            drawPlatform(p);
+        }
+
+        // Draw enemies
+        for (let e of enemies) {
+            drawEnemy(e);
+        }
+
+        // Draw particles
+        drawParticles();
+
+        // Draw player
+        drawPlayer();
+
+        // Draw UI
+        drawUI();
+
+        if (gameState === 'gameover') {
+            drawGameOver();
+        }
+    }
+
+    ctx.restore();
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// Start
+generateClouds();
+generateStars();
+gameLoop();
+</script>
+</body>
+</html>

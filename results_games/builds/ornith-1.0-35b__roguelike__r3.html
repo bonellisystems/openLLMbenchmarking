@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#ccc;font-family:'Courier New',monospace;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{font-size:15px;line-height:15px;white-space:pre;text-shadow:0 0 2px currentColor;letter-spacing:1px}
+#hud{margin-top:8px;font-size:13px;color:#888;text-align:center}
+#msg{margin-top:4px;font-size:12px;color:#ff0;height:16px;text-align:center}
+</style>
+</head>
+<body>
+<div id="game">
+<div id="map"></div>
+<div id="hud"></div>
+<div id="msg"></div>
+</div>
+<script>
+const W=60,H=30,MAXFLOOR=10;
+const T_WALL=0,T_FLOOR=1,T_DOOR=2,T_STAIRS=3;
+const CHARS={'#':'#','.':'.','|':'|','>':'>','<':'<','@':'@'};
+const COLORS={'#':'#555','.':'#333','|':'#555','>':'#ff0','<':'#ff0','@':'#0f0'};
+const ENEMIES=[
+  {ch:'g',name:'goblin',hp:8,atk:2,def:0,xp:5,color:'#0a0'},
+  {ch:'o',name:'orc',hp:15,atk:4,def:1,xp:10,color:'#a50'},
+  {ch:'T',name:'troll',hp:25,atk:6,def:2,xp:20,color:'#0aa'},
+  {ch:'D',name:'dragon',hp:40,atk:9,def:3,xp:50,color:'#f00'},
+  {ch:'S',name:'skeleton',hp:10,atk:3,def:1,xp:8,color:'#ddd'},
+  {ch:'R',name:'rat',hp:4,atk:1,def:0,xp:2,color:'#a86'},
+  {ch:'B',name:'bat',hp:5,atk:2,def:0,xp:3,color:'#a0a'},
+  {ch:'V',name:'vampire',hp:20,atk:7,def:2,xp:25,color:'#f0f'},
+];
+const ITEMS=[
+  {ch:'!',name:'health potion',type:'potion',heal:15,color:'#f00'},
+  {ch:'/',name:'sword',type:'weapon',atk:2,color:'#ff0'},
+  {ch:'[',name:'shield',type:'armor',def:1,color:'#88f'},
+  {ch:'$',name:'gold',type:'gold',value:10,color:'#fd0'},
+];
+let map,visited,seen,player,enemies,items,level,turns,gameOver,deadMsg;
+let msgLog=[];
+function addMsg(m){msgLog.push(m);if(msgLog.length>5)msgLog.shift();deadMsg=m}
+function rng(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+function dist(x1,y1,x2,y2){return Math.abs(x1-x2)+Math.abs(y1-y2)}
+function generateDungeon(){
+  map=[];visited=[];seen=[];
+  for(let y=0;y<H;y++){map[y]=[];visited[y]=[];seen[y]=[];for(let x=0;x<W;x++){map[y][x]=T_WALL;visited[y][x]=false;seen[y][x]=false;}}
+  let rooms=[];
+  for(let i=0;i<15;i++){
+    let rw=rng(4,9),rh=rng(3,7);
+    let rx=rng(1,W-rw-1),ry=rng(1,H-rh-1);
+    let ok=true;
+    for(let r of rooms){if(rx<r.x+r.w&&rx+rw>r.x&&ry<r.y+r.h&&ry+rh>r.y){ok=false;break;}}
+    if(!ok)continue;
+    for(let y=ry;y<ry+rh;y++)for(let x=rx;x<rx+rw;x++)map[y][x]=T_FLOOR;
+    rooms.push({x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)});
+  }
+  for(let i=1;i<rooms.length;i++){
+    let a=rooms[i-1],b=rooms[i];
+    let cx=a.cx,cy=a.cy;
+    while(cx!==b.cx){if(map[cy][cx]===T_WALL)map[cy][cx]=T_FLOOR;cx+=cx<b.cx?1:-1;}
+    while(cy!==b.cy){if(map[cy][cx]===T_WALL)map[cy][cx]=T_FLOOR;cy+=cy<b.cy?1:-1;}
+  }
+  if(rooms.length>0){
+    player.x=rooms[0].cx;player.y=rooms[0].cy;
+    let last=rooms[rooms.length-1];
+    map[last.cy][last.cx]=T_STAIRS;
+  }
+  enemies=[];items=[];
+  let floorTiles=[];
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)if(map[y][x]===T_FLOOR)floorTiles.push({x,y});
+  floorTiles.sort(()=>Math.random()-0.0.5);
+  let ei=Math.floor(level*1.5)+rng(2,5);
+  let maxHp=10+level*3;
+  for(let i=0;i<ei&&i<floorTiles.length;i++){
+    let t=floorTiles[i];
+    let pool=ENEMIES.slice(0,Math.min(ENEMIES.length,1+Math.floor(level/2)));
+    let e=pool[rng(0,pool.length-1)];
+    let hpMult=1+Math.floor(level/3);
+    enemies.push({x:t.x,y:t.y,ch:e.ch,name:e.name,hp:Math.floor(e.hp*hpMult),maxHp:Math.floor(e.hp*hpMult),atk:Math.floor(e.atk*(1+level*0.1)),def:Math.floor(e.def*(1+level*0.1)),xp:e.xp,color:e.color,alive:true});
+  }
+  let ii=Math.floor(level*0.8)+rng(1,3);
+  for(let i=ei;i<ei+ii&&i<floorTiles.length;i++){
+    let t=floorTiles[i];
+    let it=ITEMS[rng(0,ITEMS.length-1)];
+    items.push({x:t.x,y:t.y,ch:it.ch,name:it.name,type:it.type,heal:it.heal,atk:it.atk,def:it.def,value:it.value,color:it.color});
+  }
+}
+function computeFOV(){
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)seen[y][x]=false;
+  let radius=8;
+  for(let a=0;a<360;a+=1){
+    let rad=a*Math.PI/180;
+    let dx=Math.cos(rad),dy=Math.sin(rad);
+    let ox=player.x+0.5,oy=player.y+0.5;
+    for(let d=0;d<radius;d++){
+      let tx=Math.floor(ox),ty=Math.floor(oy);
+      if(tx<0||tx>=W||ty<0||ty>=H)break;
+      seen[ty][tx]=true;
+      if(map[ty][tx]===T_WALL)break;
+      ox+=dx;oy+=dy;
+    }
+  }
+}
+function canMove(x,y){
+  if(x<0||x>=W||y<0||y>=H)return false;
+  if(map[y][x]===T_WALL)return false;
+  for(let e of enemies)if(e.alive&&e.x===x&&e.y===y)return false;
+  return true;
+}
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  let nx=player.x+dx,ny=player.y+dy;
+  if(!canMove(nx,ny))return;
+  for(let e of enemies){
+    if(e.alive&&e.x===nx&&e.y===ny){
+      let dmg=Math.max(1,player.atk-e.def+rng(-1,1));
+      e.hp-=dmg;
+      addMsg('You hit '+e.name+' for '+dmg+' damage!');
+      if(e.hp<=0){e.alive=false;player.xp+=e.xp;addMsg('Killed '+e.name+'! (+'+e.xp+' xp)');checkLevelUp();}
+      return;
+    }
+  }
+  player.x=nx;player.y=ny;
+  for(let i=items.length-1;i>=0;i--){
+    let it=items[i];
+    if(it.x===player.x&&it.y===player.y){
+      if(it.type==='potion'){player.hp=Math.min(player.maxHp,player.hp+it.heal);addMsg('Used '+it.name+'! (+'+it.heal+' hp)');}
+      else if(it.type==='weapon'){player.atk+=it.atk;addMsg('Picked up '+it.name+'! (atk+'+it.atk+')');}
+      else if(it.type==='armor'){player.def+=it.def;addMsg('Picked up '+it.name+'! (def+'+it.def+')');}
+      else if(it.type==='gold'){player.gold+=it.value;addMsg('Picked up '+it.value+' gold!');}
+      items.splice(i,1);
+    }
+  }
+  if(map[player.y][player.x]===T_STAIRS){
+    level++;
+    addMsg('You descend to level '+level+'...');
+    generateDungeon();
+    computeFOV();
+    render();return;
+  }
+  turns++;
+  enemyTurns();
+  computeFOV();
+  render();
+}
+function enemyTurns(){
+  for(let e of enemies){
+    if(!e.alive)continue;
+    let d=dist(e.x,e.y,player.x,player.y);
+    if(d>12)continue;
+    if(d===1){
+      let dmg=Math.max(1,e.atk-player.def+rng(-1,1));
+      player.hp-=dmg;
+      addMsg(e.name+' hits you for '+dmg+'!');
+      if(player.hp<=0){gameOver=true;addMsg('You died on level '+level+'...');}
+      continue;
+    }
+    let dx=Math.sign(player.x-e.x),dy=Math.sign(player.y-e.y);
+    let moved=false;
+    if(dx!==0){
+      if(canMove(e.x+dx,e.y)){e.x+=dx;moved=true;}
+      else if(dy!==0&&canMove(e.x,e.y+dy)){e.y+=dy;moved=true;}
+    }else if(dy!==0){
+      if(canMove(e.x,e.y+dy)){e.y+=dy;moved=true;}
+      else if(dx!==0&&canMove(e.x+dx,e.y)){e.x+=dx;moved=true;}
+    }
+  }
+}
+function checkLevelUp(){
+  let needed=player.xpNeeded;
+  if(player.xp>=needed){
+    player.level++;player.xp-=needed;player.xpNeeded=Math.floor(needed*1.5);
+    player.maxHp+=5;player.hp=player.maxHp;player.atk+=1;
+    addMsg('Level up! You are now level '+player.level+'!');
+  }
+}
+function render(){
+  let out='';
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      if(!seen[y][x]){out+=' ';continue;}
+      let ch=' ',color='#333';
+      if(player.x===x&&player.y===y){ch='@';color='#0f0';}
+      else{
+        let found=false;
+        for(let e of enemies){if(e.alive&&e.x===x&&e.y===y){ch=e.ch;color=e.color;found=true;}}
+        if(!found){
+          for(let it of items){if(it.x===x&&it.y===y){ch=it.ch;color=it.color;found=true;}}
+        }
+        if(!found){
+          if(map[y][x]===T_WALL){ch='#';color='#555';}
+          else if(map[y][x]===T_FLOOR){ch='.';color='#333';}
+          else if(map[y][x]===T_STAIRS){ch='>';color='#ff0';}
+        }
+      }
+      out+='<span style="color:'+color+'">'+ch+'</span>';
+    }
+    out+='\n';
+  }
+  document.getElementById('map').innerHTML=out;
+  let hpPct=player.hp/player.maxHp;
+  let hpCol=hpPct>0.5?'#0f0':hpPct>0.25?'#ff0':'#f00';
+  document.getElementById('hud').innerHTML=
+    '<span style="color:'+hpCol+'">HP:'+player.hp+'/'+player.maxHp+'</span> '+
+    'Lvl:'+player.level+' '+
+    'ATK:'+player.atk+' DEF:'+player.def+' '+
+    'XP:'+player.xp+'/'+player.xpNeeded+' '+
+    'Gold:'+player.gold+' '+
+    'Floor:'+level+' '+
+    'Turns:'+turns;
+  document.getElementById('msg').textContent=deadMsg||msgLog[msgLog.length-1]||'';
+}
+function init(){
+  player={x:0,y:0,hp:20,maxHp:20,atk:3,def:1,xp:0,xpNeeded:15,level:1,gold:0};
+  level=1;turns=0;gameOver=false;deadMsg='';msgLog=[];
+  generateDungeon();
+  computeFOV();
+  render();
+}
+document.addEventListener('keydown',function(e){
+  if(gameOver){if(e.key==='r'||e.key==='R')init();return;}
+  switch(e.key){
+    case'w':case'W':case'ArrowUp':movePlayer(0,-1);break;
+    case's':case'S':case'ArrowDown':movePlayer(0,1);break;
+    case'a':case'A':case'ArrowLeft':movePlayer(-1,0);break;
+    case'd':case'D':case'ArrowRight':movePlayer(1,0);break;
+    case' ':case'.':enemyTurns();computeFOV();render();break;
+  }
+  e.preventDefault();
+});
+init();
+</script>
+</body>
+</html>

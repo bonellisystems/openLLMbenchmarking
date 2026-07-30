@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Asteroids</title>
+<style>
+html,body{margin:0;padding:0;overflow:hidden;background:#000;}
+canvas{display:block;}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas=document.getElementById('game');
+const ctx=canvas.getContext('2d');
+function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;}
+window.addEventListener('resize',resize);
+resize();
+const W=canvas.width, H=canvas.height;
+
+// ---------- Utility ----------
+function rand(min,max){return Math.random()*(max-min)+min;}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y);}
+function wrap(x,y){if(x<0)x+=W; if(x>W)x-=W; if(y<0)y+=H; if(y>H)y-=H; return {x,y};}
+
+// ---------- Ship ----------
+const ship={
+  pos:{x:W/2,y:H/2},
+  vel:{x:0,y:0},
+  angle:0,
+  radius:15,
+  turnSpeed:0.08,
+  thrust:0.2,
+  thrustAccel:0.05,
+  bulletCooldown:0,
+  update(dt){
+    // rotation
+    if(keys['ArrowLeft']) this.angle-=this.turnSpeed*dt;
+    if(keys['ArrowRight']) this.angle+=this.turnSpeed*dt;
+    // thrust
+    if(keys['ArrowUp']){
+      this.vel.x+=Math.cos(this.angle)*this.thrustAccel;
+      this.vel.y+=Math.sin(this.angle)*this.thrustAccel;
+    }
+    // apply velocity
+    this.pos.x+=this.vel.x*dt;
+    this.pos.y+=this.vel.y*dt;
+    // wrap
+    this.pos=wrap(this.pos.x,this.pos.y);
+    // bullet cooldown
+    if(this.bulletCooldown>0)this.bulletCooldown-=dt;
+  },
+  draw(){ 
+    ctx.save();
+    ctx.translate(this.pos.x,this.pos.y);
+    ctx.rotate(this.angle);
+    ctx.strokeStyle='#fff';
+    ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.moveTo(0,-this.radius);
+    ctx.lineTo(-this.radius*0.85, this.radius*0.5);
+    ctx.lineTo(this.radius*0.85, this.radius*0.5);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+
+// ---------- Bullets ----------
+const bullets=[];
+function fire(){
+  if(ship.bulletCooldown>0)return;
+  const b={
+    pos:{x:ship.pos.x,y:ship.pos.y},
+    vel:{x:Math.cos(ship.angle)*(5+ship.vel.x), y:Math.sin(ship.angle)*(5+ship.vel.y)},
+    life:1
+  };
+  bullets.push(b);
+  ship.bulletCooldown=0.2;
+}
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.key]=true; if(e.code==='Space'){e.preventDefault(); fire();}});
+window.addEventListener('keyup',e=>{keys[e.key]=false;});
+
+// ---------- Rocks ----------
+class Rock{
+  constructor(x,y,size){
+    this.pos={x,y};
+    const speed=rand(20,80);
+    const dir=rand(0,Math.PI*2);
+    this.vel={x:Math.cos(dir)*speed, y:Math.sin(dir)*speed};
+    this.size=size;
+    this.age=0;
+    this.color='rgba(255,255,255,0.8)';
+    // random rotation
+    this.ang=rand(0,Math.PI*2);
+    this.angVel=rand(-0.02,0.02);
+  }
+  update(dt){
+    this.pos.x+=this.vel.x*dt;
+    this.pos.y+=this.vel.y*dt;
+    this.pos=wrap(this.pos.x,this.pos.y);
+    this.ang+=this.angVel*dt;
+    this.age+=dt;
+  }
+  draw(){
+    ctx.save();
+    ctx.translate(this.pos.x,this.pos.y);
+    ctx.rotate(this.ang);
+    ctx.fillStyle=this.color;
+    ctx.beginPath();
+    ctx.moveTo(0,-this.size);
+    ctx.lineTo(-this.size*0.85, this.size*0.5);
+    ctx.lineTo(this.size*0.85, this.size*0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  hit(r){
+    const d=dist(this.pos,r.pos);
+    return d<this.size+r.size;
+  }
+}
+const rocks=[];
+function spawnRocks(count=5,size=40){
+  for(let i=0;i<count;i++){
+    let x,y;
+    do{
+      x=rand(0,W);
+      y=rand(0,H);
+    }while(dist({x,y},ship.pos)<100);
+    rocks.push(new Rock(x,y,size));
+  }
+}
+spawnRocks(12,40);
+
+// ---------- Game State ----------
+let last=performance.now();
+let gameOver=false;
+
+// ---------- Main Loop ----------
+function loop(now){
+  const dt=(now-last)/1000;
+  last=now;
+  if(!gameOver){
+    // update ship
+    ship.update(dt);
+    // update bullets
+    for(let i=bullets.length-1;i>=0;i--){
+      const b=bullets[i];
+      b.life-=dt;
+      if(b.life<=0) bullets.splice(i,1);
+      else{
+        // move bullet
+        b.pos.x+=b.vel.x*dt;
+        b.pos.y+=b.vel.y*dt;
+        b.pos=wrap(b.pos.x,b.pos.y);
+        // check hit
+        for(let j=rocks.length-1;j>=0;j--){
+          const r=rocks[j];
+          if(r.hit(b.pos)){
+            // split
+            const newSize=r.size/2;
+            if(newSize>5){
+              for(let k=0;k<3;k++) rocks.push(new Rock(r.pos.x,r.pos.y,newSize));
+            }
+            rocks.splice(j,1);
+            break;
+          }
+        }
+      }
+    }
+    // update rocks
+    for(let i=rocks.length-1;i>=0;i--){
+      const r=rocks[i];
+      r.update(dt);
+      if(r.age>5){ // remove old rocks
+        rocks.splice(i,1);
+      }
+    }
+    // render
+    ctx.clearRect(0,0,W,H);
+    // rocks
+    for(const r of rocks) r.draw();
+    // bullets
+    ctx.fillStyle='#fff';
+    for(const b of bullets){
+      ctx.beginPath();
+      ctx.arc(b.pos.x,b.pos.y,2,0,Math.PI*2);
+      ctx.fill();
+    }
+    // ship
+    ship.draw();
+    requestAnimationFrame(loop);
+  }
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

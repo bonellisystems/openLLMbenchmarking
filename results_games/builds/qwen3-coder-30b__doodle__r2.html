@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Doodle Jump</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: linear-gradient(to bottom, #87CEEB, #E0F7FA);
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        #gameContainer {
+            position: relative;
+            width: 400px;
+            height: 600px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.3);
+        }
+        #gameCanvas {
+            background: linear-gradient(to bottom, #87CEEB, #E0F7FA);
+            display: block;
+        }
+        #scoreDisplay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+        }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+        }
+        #restartButton {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        #startScreen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        #startButton {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="400" height="600"></canvas>
+        <div id="scoreDisplay">Score: 0</div>
+        <div id="gameOver">
+            <h2>Game Over</h2>
+            <p id="finalScore">Score: 0</p>
+            <button id="restartButton">Play Again</button>
+        </div>
+        <div id="startScreen">
+            <h2>Doodle Jump</h2>
+            <p>Use Arrow Keys to move</p>
+            <button id="startButton">Start Game</button>
+        </div>
+    </div>
+
+    <script>
+        // Game variables
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('scoreDisplay');
+        const gameOverScreen = document.getElementById('gameOver');
+        const finalScore = document.getElementById('finalScore');
+        const restartButton = document.getElementById('restartButton');
+        const startScreen = document.getElementById('startScreen');
+        const startButton = document.getElementById('startButton');
+
+        // Game state
+        let gameRunning = false;
+        let score = 0;
+        let cameraY = 0;
+        let platforms = [];
+        let doodle = {
+            x: 200,
+            y: 500,
+            width: 40,
+            height: 40,
+            velocityY: 0,
+            velocityX: 0,
+            jumping: false
+        };
+
+        // Platform types
+        const PLATFORM_TYPES = {
+            NORMAL: 0,
+            MOVING: 1,
+            BREAKING: 2,
+            SPRING: 3
+        };
+
+        // Initialize game
+        function initGame() {
+            gameRunning = true;
+            score = 0;
+            cameraY = 0;
+            doodle.x = 200;
+            doodle.y = 500;
+            doodle.velocityY = 0;
+            doodle.velocityX = 0;
+            doodle.jumping = false;
+            
+            // Generate initial platforms
+            platforms = [];
+            for (let i = 0; i < 15; i++) {
+                generatePlatform(200, 600 - i * 40);
+            }
+            
+            scoreDisplay.textContent = `Score: ${score}`;
+            gameOverScreen.style.display = 'none';
+            startScreen.style.display = 'none';
+        }
+
+        // Generate a platform
+        function generatePlatform(x, y) {
+            const type = Math.random() < 0.7 ? PLATFORM_TYPES.NORMAL : 
+                        Math.random() < 0.9 ? PLATFORM_TYPES.MOVING : 
+                        Math.random() < 0.95 ? PLATFORM_TYPES.BREAKING : 
+                        PLATFORM_TYPES.SPRING;
+            
+            platforms.push({
+                x: x,
+                y: y,
+                width: 60,
+                height: 15,
+                type: type,
+                moving: type === PLATFORM_TYPES.MOVING,
+                breaking: type === PLATFORM_TYPES.BREAKING,
+                broken: false,
+                spring: type === PLATFORM_TYPES.SPRING,
+                direction: Math.random() > 0.5 ? 1 : -1,
+                speed: Math.random() * 2 + 1
+            });
+        }
+
+        // Update game state
+        function update() {
+            if (!gameRunning) return;
+            
+            // Apply gravity
+            doodle.velocityY += 0.5;
+            
+            // Update doodle position
+            doodle.x += doodle.velocityX;
+            doodle.y += doodle.velocityY;
+            
+            // Boundary checks
+            if (doodle.x < 0) doodle.x = 0;
+            if (doodle.x > canvas.width - doodle.width) doodle.x = canvas.width - doodle.width;
+            
+            // Camera follows doodle
+            if (doodle.y < cameraY + 150) {
+                cameraY = doodle.y - 150;
+                score += 1;
+                scoreDisplay.textContent = `Score: ${score}`;
+            }
+            
+            // Platform collision
+            let onPlatform = false;
+            for (let i = 0; i < platforms.length; i++) {
+                const platform = platforms[i];
+                
+                // Skip if platform is broken
+                if (platform.broken) continue;
+                
+                // Check collision
+                if (doodle.x + doodle.width > platform.x &&
+                    doodle.x < platform.x + platform.width &&
+                    doodle.y + doodle.height > platform.y &&
+                    doodle.y + doodle.height < platform.y + platform.height &&
+                    doodle.velocityY > 0) {
+                    
+                    // Spring platform
+                    if (platform.spring) {
+                        doodle.velocityY = -15;
+                        doodle.jumping = true;
+                    } else {
+                        // Normal platform
+                        doodle.velocityY = -10;
+                        doodle.jumping = true;
+                        
+                        // Breaking platform
+                        if (platform.breaking) {
+                            platform.broken = true;
+                        }
+                    }
+                    onPlatform = true;
+                }
+                
+                // Update moving platforms
+                if (platform.moving) {
+                    platform.x += platform.direction * platform.speed;
+                    if (platform.x < 0 || platform.x > canvas.width - platform.width) {
+                        platform.direction *= -1;
+                    }
+                }
+            }
+            
+            // If not on platform, doodle is falling
+            if (!onPlatform) {
+                doodle.jumping = false;
+            }
+            
+            // Generate new platforms as needed
+            while (platforms.length < 20) {
+                const x = Math.random() * (canvas.width - 60);
+                const y = cameraY - 100;
+                generatePlatform(x, y);
+            }
+            
+            // Remove platforms that are far below camera
+            platforms = platforms.filter(platform => platform.y < cameraY + 700);
+            
+            // Game over condition
+            if (doodle.y > cameraY + 700) {
+                gameOver();
+            }
+        }
+
+        // Draw game
+        function draw() {
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw background
+            ctx.fillStyle = '#87CEEB';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw clouds
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            for (let i = 0; i < 5; i++) {
+                const x = (i * 100 + Date.now() * 0.01) % (canvas.width + 100) - 50;
+                const y = 50 + i * 30;
+                ctx.beginPath();
+                ctx.arc(x, y, 20, 0, Math.PI * 2);
+                ctx.arc(x + 15, y - 10, 15, 0, Math.PI * 2);
+                ctx.arc(x + 30, y, 20, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Draw platforms
+            for (let i = 0; i < platforms.length; i++) {
+                const platform = platforms[i];
+                if (platform.broken) continue;
+                
+                // Platform color based on type
+                switch (platform.type) {
+                    case PLATFORM_TYPES.BREAKING:
+                        ctx.fillStyle = '#8B4513';
+                        break;
+                    case PLATFORM_TYPES.SPRING:
+                        ctx.fillStyle = '#FFD700';
+                        break;
+                    default:
+                        ctx.fillStyle = '#228B22';
+                }
+                
+                ctx.fillRect(platform.x, platform.y - cameraY, platform.width, platform.height);
+                
+                // Draw spring
+                if (platform.spring) {
+                    ctx.fillStyle = '#FF0000';
+                    ctx.fillRect(platform.x + platform.width/2 - 5, platform.y - cameraY + platform.height, 10, 10);
+                }
+            }
+            
+            // Draw doodle
+            ctx.fillStyle = '#FF69B4';
+            ctx.beginPath();
+            ctx.arc(doodle.x + doodle.width/2, doodle.y + doodle.height/2 - cameraY, doodle.width/2, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw doodle eyes
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(doodle.x + doodle.width/2 - 10, doodle.y + doodle.height/2 - 10 - cameraY, 5, 0, Math.PI * 2);
+            ctx.arc(doodle.x + doodle.width/2 + 10, doodle.y + doodle.height/2 - 10 - cameraY, 5, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Draw doodle smile
+            ctx.beginPath();
+            ctx.arc(doodle.x + doodle.width/2, doodle.y + doodle.height/2 + 5 - cameraY, 10, 0, Math.PI);
+            ctx.stroke();
+        }
+
+        // Game loop
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Game over
+        function gameOver() {
+            gameRunning = false;
+            finalScore.textContent = `Score: ${score}`;
+            gameOverScreen.style.display = 'block';
+        }
+
+        // Event listeners
+        document.addEventListener('keydown', (e) => {
+            if (!gameRunning) return;
+            
+            switch (e.key) {
+                case 'ArrowLeft':
+                    doodle.velocityX = -5;
+                    break;
+                case 'ArrowRight':
+                    doodle.velocityX = 5;
+                    break;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (!gameRunning) return;
+            
+            switch (e.key) {
+                case 'ArrowLeft':
+                case 'ArrowRight':
+                    doodle.velocityX = 0;
+                    break;
+            }
+        });
+
+        restartButton.addEventListener('click', initGame);
+        startButton.addEventListener('click', initGame);
+
+        // Start the game loop
+        gameLoop();
+    </script>
+</body>
+</html>

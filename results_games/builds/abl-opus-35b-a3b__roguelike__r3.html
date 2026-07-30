@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Roguelike</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #ccc; font-family: 'Courier New', monospace; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+#game { display: flex; gap: 16px; }
+#map { font-size: 15px; line-height: 15px; white-space: pre; background: #111; padding: 8px; border: 1px solid #333; user-select: none; }
+#sidebar { width: 220px; padding: 8px; }
+#stats { font-size: 14px; line-height: 1.6; }
+#log { margin-top: 12px; font-size: 13px; line-height: 1.5; max-height: 300px; overflow-y: auto; }
+#log div { padding: 1px 0; }
+#controls { margin-top: 12px; font-size: 12px; color: #666; }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="map"></div>
+  <div id="sidebar">
+    <div id="stats"></div>
+    <div id="log"></div>
+    <div id="controls">WASD/QJKE - move &amp; attack<br>Space - wait<br>Enter - descend stairs</div>
+  </div>
+</div>
+<script>
+const W=80,H=25,MAX_DEPTH=20;
+const TILES={WALL:'#',FLOOR:'.',CORRIDOR:'+',DOOR:'=',STAIRS_DOWN:'>',STAIRS_UP:'<',PLAYER:'@',POTION:'!',WEAPON:'/',ARMOR:'[',GOLD:'$',SCROLL:'?',PILL:'~',FOOD:'*'};
+const COLORS={WALL:'#444',FLOOR:'#222',CORRIDOR:'#333',DOOR:'#888',STAIRS_DOWN:'#ff0',STAIRS_UP:'#0ff',PLAYER:'#fff',POTION:'#f44',WEAPON:'#fa0',ARMOR:'#aaf',GOLD:'#ff0',SCROLL:'#afa',PILL:'#f0f',FOOD:'#8f8'};
+const MONSTERS=[
+  {name:'Rat',ch:'r',hp:5,atk:1,def:0,xp:2,color:'#a88'},
+  {name:'Goblin',ch:'g',hp:10,atk:3,def:1,xp:5,color:'#8f8'},
+  {name:'Orc',ch:'O',hp:20,atk:5,def:2,xp:10,color:'#8f8'},
+  {name:'Troll',ch:'T',hp:30,atk:7,def:3,xp:15,color:'#88f'},
+  {name:'Dragon',ch:'D',hp:50,atk:10,def:5,xp:30,color:'#f88'},
+];
+const ITEMS=[
+  {ch:'!',name:'Health Potion',type:'potion',effect:15,color:'#f44'},
+  {ch:'/',name:'Sword',type:'weapon',effect:3,color:'#fa0'},
+  {ch:'[',name:'Shield',type:'armor',effect:2,color:'#aaf'},
+  {ch:'$',name:'Gold',type:'gold',effect:10,color:'#ff0'},
+  {ch:'?',name:'Scroll of Fire',type:'scroll',effect:20,color:'#afa'},
+  {ch:'~',name:'Pill',type:'potion',effect:30,color:'#f0f'},
+  {ch:'*',name:'Ration',type:'food',effect:10,color:'#8f8'},
+];
+let map,vis,player,monsters,items,depth,msgLog,gameOver;
+function init(){
+  depth=1;gameOver=false;msgLog=[];
+  genMap();
+  player={x:0,y:0,hp:30,maxHp:30,atk:3,def:1,xp:0,level:1,gold:0,weapon:0,armor:0};
+  spawnMonsters();spawnItems();
+  update();
+}
+function genMap(){
+  map=[];vis=[];
+  for(let y=0;y<H;y++){map[y]=[];vis[y]=[];for(let x=0;x<W;x++){map[y][x]=TILES.WALL;vis[y][x]=false;}}
+  const rooms=[];
+  for(let i=0;i<15;i++){
+    const rx=2+Math.floor(Math.random()*(W-6)),ry=2+Math.floor(Math.random()*(H-6));
+    const rw=3+Math.floor(Math.random()*5),rh=3+Math.floor(Math.random()*5);
+    const r={x:rx,y:ry,w:rw,h:rh};
+    let ok=true;
+    for(const o of rooms)if(rx-1<o.x+o.w&&rx+rw+1>o.x&&ry-1<o.y+o.h&&ry+rh+1>o.y)ok=false;
+    if(ok)rooms.push(r);
+  }
+  for(const r of rooms)for(let y=r.y;y<r.y+r.h;y++)for(let x=r.x;x<r.x+r.w;x++)map[y][x]=TILES.FLOOR;
+  for(let i=1;i<rooms.length;i++){
+    const a=rooms[i-1],b=rooms[i];
+    const ax=Math.floor(a.x+a.w/2),ay=Math.floor(a.y+a.h/2);
+    const bx=Math.floor(b.x+b.w/2),by=Math.floor(b.y+b.h/2);
+    let cx=ax,cy=ay;
+    while(cx!==bx){map[cy][cx]=TILES.CORRIDOR;cx+=cx<bx?1:-1;}
+    while(cy!==by){map[cy][cx]=TILES.CORRIDOR;cy+=cy<by?1:-1;}
+    map[cy][cx]=TILES.CORRIDOR;
+  }
+  const last=rooms[rooms.length-1];
+  map[last.y+Math.floor(last.h/2)][last.x+Math.floor(last.w/2)]=TILES.STAIRS_DOWN;
+  if(depth>1){
+    const first=rooms[0];
+    map[first.y+Math.floor(first.h/2)][first.x+Math.floor(first.w/2)]=TILES.STAIRS_UP;
+  }
+  player.x=Math.floor(rooms[0].x+rooms[0].w/2);
+  player.y=Math.floor(rooms[0].y+rooms[0].h/2);
+}
+function spawnMonsters(){
+  monsters=[];
+  const count=5+depth*2;
+  for(let i=0;i<count;i++){
+    let x,y,tries=0;
+    do{x=1+Math.floor(Math.random()*(W-2));y=1+Math.floor(Math.random()*(H-2));tries++;}
+    while(map[y][x]!==TILES.FLOOR&&tries<100);
+    if(tries>=100)continue;
+    const tier=Math.min(MONSTERS.length-1,Math.floor(Math.random()*(1+depth/3)));
+    const m={...MONSTERS[tier],x,y};
+    m.hp=m.maxHp=m.hp+Math.floor(depth*0.5);
+    m.atk=m.atk+Math.floor(depth*0.3);
+    monsters.push(m);
+  }
+}
+function spawnItems(){
+  items=[];
+  const count=3+depth;
+  for(let i=0;i<count;i++){
+    let x,y,tries=0;
+    do{x=1+Math.floor(Math.random()*(W-2));y=1+Math.floor(Math.random()*(H-2));tries++;}
+    while(map[y][x]!==TILES.FLOOR&&tries<100);
+    if(tries>=100)continue;
+    const it={...ITEMS[Math.floor(Math.random()*ITEMS.length)],x,y};
+    items.push(it);
+  }
+}
+function computeVis(){
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)vis[y][x]=false;
+  vis[player.y][player.x]=true;
+  const r=8+Math.floor(depth/2);
+  for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+    const x=player.x+dx,y=player.y+dy;
+    if(x<0||x>=W||y<0||y>=H)continue;
+    if(Math.abs(dx)+Math.abs(dy)>r+1)continue;
+    let blocked=false;
+    for(let t=1;t<=Math.max(Math.abs(dx),Math.abs(dy));t++){
+      const tx=Math.round(player.x+dx*t/Math.max(Math.abs(dx),Math.abs(dy),1));
+      const ty=Math.round(player.y+dy*t/Math.max(Math.abs(dx),Math.abs(dy),1));
+      if(ty>=0&&ty<H&&tx>=0&&tx<W&&map[ty][tx]===TILES.WALL){blocked=true;break;}
+    }
+    if(!blocked)vis[y][x]=true;
+  }
+}
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y);}
+function findMonAt(x,y){return monsters.find(m=>m.x===x&&m.y===y);}
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  const nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=W||ny<0||ny>=H)return;
+  if(map[ny][nx]===TILES.WALL)return;
+  const m=findMonAt(nx,ny);
+  if(m){
+    const dmg=Math.max(1,player.atk+player.weapon-m.def);
+    m.hp-=dmg;
+    msg(m.name+' takes '+dmg+' damage!','#f88');
+    if(m.hp<=0){
+      msg('Killed '+m.name+'!','#ff0');
+      player.xp+=m.xp;
+      checkLevel();
+      monsters=monsters.filter(x=>x!==m);
+    }
+  }else{
+    player.x=nx;player.y=ny;
+    if(map[ny][nx]===TILES.STAIRS_DOWN){
+      msg('Descend stairs (Enter)?','#ff0');
+    }
+  }
+  for(const it of items){
+    if(it.x===player.x&&it.y===player.y){
+      pickup(it);
+      items=items.filter(x=>x!==it);
+    }
+  }
+  moveMonsters();
+  computeVis();
+  update();
+}
+function pickup(it){
+  if(it.type==='potion'){player.hp=Math.min(player.maxHp,player.hp+it.effect);msg('Drink '+it.name+'!','#f44');}
+  else if(it.type==='weapon'){player.weapon=Math.max(player.weapon,it.effect);msg('Equip '+it.name+'!','#fa0');}
+  else if(it.type==='armor'){player.armor=Math.max(player.armor,it.effect);msg('Equip '+it.name+'!','#aaf');}
+  else if(it.type==='gold'){player.gold+=it.effect;msg('Pick up '+it.effect+' gold!','#ff0');}
+  else if(it.type==='scroll'){player.xp+=it.effect;msg('Read scroll!','#afa');checkLevel();}
+  else if(it.type==='food'){player.hp=Math.min(player.maxHp,player.hp+it.effect);msg('Eat '+it.name+'!','#8f8');}
+}
+function moveMonsters(){
+  for(const m of monsters){
+    if(m.hp<=0)continue;
+    const d=dist(m,player);
+    if(d<=1){
+      const dmg=Math.max(1,m.atk-player.def-player.armor);
+      player.hp-=dmg;
+      msg(m.name+' hits you for '+dmg+'!','#f88');
+      if(player.hp<=0){gameOver=true;msg('You die!','#f00');}
+      continue;
+    }
+    if(d>12)continue;
+    let dx=0,dy=0;
+    if(m.x<player.x)dx=1;else if(m.x>player.x)dx=-1;
+    if(m.y<player.y)dy=1;else if(m.y>player.y)dy=-1;
+    if(dx&&dy&&Math.random()<0.5)dx=0;
+    if(dx||dy){
+      const nx=m.x+dx,ny=m.y+dy;
+      if(nx>=0&&nx<W&&ny>=0&&ny<H&&map[ny][nx]!==TILES.WALL&&!findMonAt(nx,ny)){
+        m.x=nx;m.y=ny;
+      }
+    }
+  }
+}
+function checkLevel(){
+  const req=player.level*10;
+  if(player.xp>=req){
+    player.level++;player.xp-=req;
+    player.maxHp+=5;player.hp=player.maxHp;
+    player.atk+=1;player.def+=1;
+    msg('Level up! Now level '+player.level+'!','#ff0');
+  }
+}
+function msg(t,c){msgLog.push({t,c});if(msgLog.length>50)msgLog.shift();}
+function update(){
+  let s='';
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      if(!vis[y][x]){s+=' ';continue;}
+      const m=findMonAt(x,y);
+      if(m&&m.hp>0){s+=m.ch;s+=`<span style="color:${m.color}">${m.ch}</span>`;continue;}
+      const it=items.find(i=>i.x===x&&i.y===y);
+      if(it){s+=`<span style="color:${it.color}">${it.ch}</span>`;continue;}
+      if(x===player.x&&y===player.y)s+=`<span style="color:#fff">`+TILES.PLAYER+`</span>`;
+      else s+=`<span style="color:${COLORS[map[y][x]]}">${map[y][x]}</span>`;
+    }
+    s+='\n';
+  }
+  document.getElementById('map').innerHTML=s;
+  let ss='';
+  ss+=`<b>HP:</b> ${player.hp}/${player.maxHp} `;
+  ss+=`<b>ATK:</b> ${player.atk+player.weapon} `;
+  ss+=`<b>DEF:</b> ${player.def+player.armor} `;
+  ss+=`<b>LVL:</b> ${player.level} `;
+  ss+=`<b>XP:</b> ${player.xp}/${player.level*10} `;
+  ss+=`<b>GOLD:</b> ${player.gold} `;
+  ss+=`<b>DEP:</b> ${depth}`;
+  if(gameOver)ss+=`<br><b style="color:#f00">YOU DIED</b>`;
+  document.getElementById('stats').innerHTML=ss;
+  const log=document.getElementById('log');
+  log.innerHTML=msgLog.map(m=>`<div style="color:${m.c}">${m.t}</div>`).join('');
+  log.scrollTop=log.scrollHeight;
+}
+document.addEventListener('keydown',e=>{
+  if(gameOver&&e.key==='Enter'){init();return;}
+  if(gameOver)return;
+  switch(e.key){
+    case'w':case'W':movePlayer(0,-1);break;
+    case's':case'S':movePlayer(0,1);break;
+    case'a':case'A':movePlayer(-1,0);break;
+    case'd':case'D':movePlayer(1,0);break;
+    case'q':case'Q':movePlayer(-1,-1);break;
+    case'e':case'E':movePlayer(1,-1);break;
+    case'j':case'J':movePlayer(-1,1);break;
+    case'k':case'K':movePlayer(1,1);break;
+    case' ':moveMonsters();computeVis();update();break;
+    case'Enter':
+      if(map[player.y][player.x]===TILES.STAIRS_DOWN){
+        depth++;genMap();spawnMonsters();spawnItems();
+        msg('Descended to level '+depth+'!','#ff0');
+        computeVis();update();
+      }
+      break;
+    default:return;
+  }
+  e.preventDefault();
+});
+init();
+</script>
+</body>
+</html>

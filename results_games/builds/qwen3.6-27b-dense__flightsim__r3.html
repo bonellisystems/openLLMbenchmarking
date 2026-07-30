@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Flight Simulator</title>
+<style>
+*{margin:0;padding:0;overflow:hidden}
+body{background:#000}
+canvas{display:block;width:100vw;height:100vh}
+#hud{position:fixed;top:10px;left:10px;color:#0f0;font:14px monospace;text-shadow:0 0 4px #000;pointer-events:none;z-index:10}
+#help{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);color:#fff;font:12px monospace;text-shadow:0 0 4px #000;pointer-events:none;opacity:.7;z-index:10}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="help">W/S Pitch | A/D Roll | Q/E Yaw | Shift/Ctrl Throttle | R Reset</div>
+<script>
+const canvas=document.getElementById('c');
+const gl=canvas.getContext('webgl',{antialias:true,alpha:false});
+if(!gl){document.body.innerHTML='<h1 style="color:#fff;text-align:center;margin-top:40vh">WebGL not supported</h1>';throw'no gl';}
+
+function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight;gl.viewport(0,0,canvas.width,canvas.height);}
+window.addEventListener('resize',resize);resize();
+
+// Matrix math
+const M4={
+  create(){return new Float32Array(16)},
+  identity(o){o.fill(0);o[0]=o[5]=o[10]=o[15]=1;return o},
+  perspective(o,fov,asp,n,f){const t=1/Math.tan(fov/2);o.fill(0);o[0]=t/asp;o[5]=t;o[10]=(f+n)/(n-f);o[11]=-1;o[14]=2*f*n/(n-f);return o},
+  multiply(o,a,b){
+    for(let i=0;i<4;i++)for(let j=0;j<4;j++){
+      o[j*4+i]=a[i]*b[j*4]+a[4+i]*b[j*4+1]+a[8+i]*b[j*4+2]+a[12+i]*b[j*4+3];
+    }return o;
+  },
+  translate(o,a,v){
+    const t=M4.create();M4.identity(t);t[12]=v[0];t[13]=v[1];t[14]=v[2];
+    return M4.multiply(o,a,t);
+  },
+  rotateX(o,a,r){const c=Math.cos(r),s=Math.sin(r),t=M4.create();M4.identity(t);t[5]=c;t[6]=s;t[9]=-s;t[10]=c;return M4.multiply(o,a,t);},
+  rotateY(o,a,r){const c=Math.cos(r),s=Math.sin(r),t=M4.create();M4.identity(t);t[0]=c;t[2]=-s;t[8]=s;t[10]=c;return M4.multiply(o,a,t);},
+  rotateZ(o,a,r){const c=Math.cos(r),s=Math.sin(r),t=M4.create();M4.identity(t);t[0]=c;t[1]=s;t[4]=-s;t[5]=c;return M4.multiply(o,a,t);},
+  lookAt(o,eye,ctr,up){
+    let zx=eye[0]-ctr[0],zy=eye[1]-ctr[1],zz=eye[2]-ctr[2];
+    let l=1/Math.sqrt(zx*zx+zy*zy+zz*zz);zx*=l;zy*=l;zz*=l;
+    let xx=up[1]*zz-up[2]*zy,xy=up[2]*zx-up[0]*zz,xz=up[0]*zy-up[1]*zx;
+    l=Math.sqrt(xx*xx+xy*xy+xz*xz);if(l){l=1/l;xx*=l;xy*=l;xz*=l;}
+    let yx=zy*xz-zz*xy,yy=zz*xx-zx*xz,yz=zx*xy-zy*xx;
+    o[0]=xx;o[1]=yx;o[2]=zx;o[3]=0;
+    o[4]=xy;o[5]=yy;o[6]=zy;o[7]=0;
+    o[8]=xz;o[9]=yz;o[10]=zz;o[11]=0;
+    o[12]=-(xx*eye[0]+xy*eye[1]+xz*eye[2]);
+    o[13]=-(yx*eye[0]+yy*eye[1]+yz*eye[2]);
+    o[14]=-(zx*eye[0]+zy*eye[1]+zz*eye[2]);
+    o[15]=1;return o;
+  },
+  copy(o,a){for(let i=0;i<16;i++)o[i]=a[i];return o;}
+};
+
+// Shaders
+const vsB=`attribute vec3 aPos;attribute vec3 aNorm;attribute vec3 aCol;
+uniform mat4 uMVP;varying vec3 vNorm;varying vec3 vCol;varying float vH;
+void main(){gl_Position=uMVP*vec4(aPos,1.0);vNorm=aNorm;vCol=aCol;vH=aPos.y;}`;
+
+const fsB=`precision mediump float;varying vec3 vNorm;varying vec3 vCol;varying float vH;
+void main(){
+  vec3 light=normalize(vec3(0.5,1.0,0.3));
+  float diff=max(dot(normalize(vNorm),light),0.0)*0.7+0.3;
+  vec3 c=vCol*diff;
+  float fog=clamp((1200.0-vH*0.5)/1200.0,0.0,1.0);
+  vec3 sky=vec3(0.45,0.6,0.85);
+  c=mix(c,sky,fog*0.5);
+  gl_FragColor=vec4(c,1.0);}`;
+
+const vsG=`attribute vec3 aPos;attribute vec3 aCol;
+uniform mat4 uMVP;varying vec3 vCol;
+void main(){gl_Position=uMVP*vec4(aPos,1.0);vCol=aCol;}`;
+
+const fsG=`precision mediump float;varying vec3 vCol;
+void main(){gl_FragColor=vec4(vCol,1.0);}`;
+
+const vsP=`attribute vec3 aPos;attribute vec3 aNorm;
+uniform mat4 uMVP;varying vec3 vNorm;
+void main(){gl_Position=uMVP*vec4(aPos,1.0);vNorm=aNorm;}`;
+
+const fsP=`precision mediump float;varying vec3 vNorm;
+void main(){
+  vec3 light=normalize(vec3(0.5,1.0,0.3));
+  float diff=max(dot(normalize(vNorm),light),0.0)*0.6+0.4;
+  vec3 c=vec3(0.9,0.25,0.15)*diff;
+  gl_FragColor=vec4(c,1.0);}`;
+
+function compileShader(src,type){
+  const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error(gl.getShaderInfoLog(s));return null;}return s;
+}
+function createProgram(vs,fs){
+  const p=gl.createProgram();
+  gl.attachShader(p,compileShader(vs,gl.VERTEX_SHADER));
+  gl.attachShader(p,compileShader(fs,gl.FRAGMENT_SHADER));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)){console.error(gl.getProgramInfoLog(p));return null;}
+  return p;
+}
+
+const progB=createProgram(vsB,fsB);
+const progG=createProgram(vsG,fsG);
+const progP=createProgram(vsP,fsP);
+
+// Generate building geometry
+function generateCity(){
+  const verts=[],norms=[],cols=[],indices=[];
+  const gridSize=40,spacing=25;
+  const seed=Math.random()*99999;
+  function hash(x,z){let n=Math.sin(x*127.1+z*311.7+seed)*43758.5453;return n-Math.floor(n);}
+  let vi=0;
+  for(let gx=-gridSize;gx<=gridSize;gx++){
+    for(let gz=-gridSize;gz<=gridSize;gz++){
+      const r=hash(gx,gz);
+      if(r<0.15)continue;
+      const h=5+r*80+Math.random()*20;
+      const w=4+Math.random()*6;
+      const d=4+Math.random()*6;
+      const cx=gx*spacing+(Math.random()-0.5)*8;
+      const cz=gz*spacing+(Math.random()-0.5)*8;
+      const hue=r*0.15+0.55;
+      const sat=0.1+Math.random()*0.2;
+      const lit=0.3+Math.random()*0.3;
+      const col=hsl2rgb(hue,sat,lit);
+      const hw=w/2,hh=h/2,hd=d/2;
+      const bx=cx-hw,bz=cz-hd;
+      // 6 faces
+      const faces=[
+        {n:[0,1,0],v:[[bx,hh,bz],[bx+2*hw,hh,bz],[bx+2*hw,hh,bz+2*hd],[bx,hh,bz+2*hd]]},
+        {n:[0,-1,0],v:[[bx,0,bz+2*hd],[bx+2*hw,0,bz+2*hd],[bx+2*hw,0,bz],[bx,0,bz]]},
+        {n:[1,0,0],v:[[cx+hw,0,bz],[cx+hw,hh,bz],[cx+hw,hh,bz+2*hd],[cx+hw,0,bz+2*hd]]},
+        {n:[-1,0,0],v:[[cx-hw,0,bz+2*hd],[cx-hw,hh,bz+2*hd],[cx-hw,hh,bz],[cx-hw,0,bz]]},
+        {n:[0,0,1],v:[[cx+hw,0,bz+2*hd],[cx+hw,hh,bz+2*hd],[cx-hw,hh,bz+2*hd],[cx-hw,0,bz+2*hd]]},
+        {n:[0,0,-1],v:[[cx-hw,0,bz],[cx-hw,hh,bz],[cx+hw,hh,bz],[cx+hw,0,bz]]}
+      ];
+      for(const f of faces){
+        for(const v of f.v){verts.push(v[0],v[1],v[2]);norms.push(f.n[0],f.n[1],f.n[2]);cols.push(col[0],col[1],col[2]);}
+        indices.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;
+      }
+      // windows
+      const winRows=Math.floor(h/4),winCols=Math.floor(w/2.5);
+      for(let wy=1;wy<winRows;wy++){
+        for(let wx=0;wx<winCols;wx++){
+          const wy2=wy*4+1;
+          if(wy2>h-1)continue;
+          const wx2=-hw+wx*2.5+1.25;
+          // front face windows
+          const lit2=hash(gx*100+wx,gz*100+wy)>0.4;
+          const wc=lit2?[0.9,0.85,0.5]:[0.15,0.15,0.2];
+          const ww=0.8,wh=1.5;
+          const winVerts=[
+            [cx+hw-0.01,wy2-wh/2,bz+wx2],[cx+hw-0.01,wy2+wh/2,bz+wx2],
+            [cx+hw-0.01,wy2+wh/2,bz+wx2+ww],[cx+hw-0.01,wy2-wh/2,bz+wx2+ww]
+          ];
+          for(const v of winVerts){verts.push(v[0],v[1],v[2]);norms.push(1,0,0);cols.push(wc[0],wc[1],wc[2]);}
+          indices.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;
+          // back face
+          const winVerts2=[
+            [cx-hw+0.01,wy2-wh/2,bz+2*hd-wx2-ww],[cx-hw+0.01,wy2+wh/2,bz+2*hd-wx2-ww],
+            [cx-hw+0.01,wy2+wh/2,bz+2*hd-wx2],[cx-hw+0.01,wy2-wh/2,bz+2*hd-wx2]
+          ];
+          for(const v of winVerts2){verts.push(v[0],v[1],v[2]);norms.push(-1,0,0);cols.push(wc[0],wc[1],wc[2]);}
+          indices.push(vi,vi+1,vi+2,vi,vi+2,vi+3);vi+=4;
+        }
+      }
+    }
+  }
+  return{verts:new Float32Array(verts),norms:new Float32Array(norms),cols:new Float32Array(cols),indices:new Uint16Array(indices.length>65535?new Uint32Array(indices):indices)};
+}
+
+function hsl2rgb(h,s,l){
+  let r,g,b;
+  if(s===0){r=g=b=l;}else{
+    const hue2rgb=(p,q,t)=>{if(t<0)t+=1;if(t>1)t-=1;if(t<1/6)return p+(q-p)*6*t;if(t<1/2)return q;if(t<2/3)return p+(q-p)*(2/3-t)*6;return p;};
+    const q=l<0.5?l*(1+s):l+s-l*s,p=2*l-q;
+    r=hue2rgb(p,q,h+1/3);g=hue2rgb(p,q,h);b=hue2rgb(p,q,h-1/3);
+  }return[r,g,b];
+}
+
+const city=generateCity();
+
+// Ground
+function generateGround(){
+  const verts=[],cols=[],indices=[];
+  const size=2000,seg=80;
+  let vi=0;
+  for(let i=0;i<=seg;i++)for(let j=0;j<=seg;j++){
+    const x=(i/seg-0.5)*size,z=(j/seg-0.5)*size;
+    verts.push(x,0,z);
+    const c=0.15+Math.random()*0.05;
+    cols.push(c,c+0.02,c);
+  }
+  for(let i=0;i<seg;i++)for(let j=0;j<seg;j++){
+    const a=i*(seg+1)+j,b=a+1,c=a+(seg+1),d=c+1;
+    indices.push(a,c,b,b,c,d);vi++;
+  }
+  return{verts:new Float32Array(verts),cols:new Float32Array(cols),indices:new Uint16Array(indices)};
+}
+const ground=generateGround();
+
+// Plane geometry
+function generatePlane(){
+  const verts=[],norms=[];
+  function addTri(a,b,n){
+    verts.push(a[0],a[1],a[2],b[0],b[1],b[2]);
+    norms.push(n[0],n[1],n[2],n[0],n[1],n[2]);
+  }
+  function addQuad(a,b,c,d,n){addTri(a,b,n);addTri(b,c,n);addTri(b,d,n);addTri(d,a,n);}
+  // Fuselage
+  const F=[
+    [[0,0,2],[0.4,0,0],[0,0,-3]],
+    [[0,0,2],[0,0,-3],[-0.4,0,0]],
+    [[0.4,0,0],[0,0.3,0],[0,0,-3]],
+    [[0,0,-3],[0,0.3,0],[-0.4,0,0]],
+    [[0,0.3,0],[-0.4,0,0],[0,0,2]],
+    [[0,0,2],[0,0.3,0],[0.4,0,0]],
+  ];
+  for(const f of F){addTri(f[0],f[1],f[2]);addTri(f[1],f[2],f[0]);addTri(f[2],f[0],f[1]);}
+  // Wings
+  addQuad([0.3,0,-0.5],[4,0,-1.5],[4,0,0.5],[0.3,0,0.5],[0,-1,0]);
+  addQuad([-0.3,0,-0.5],[-4,0,-1.5],[-4,0,0.5],[-0.3,0,0.5],[0,-1,0]);
+  // Wing tops
+  addQuad([0.3,0,-0.5],[4,0,-1.5],[4,0,0.5],[0.3,0,0.5],[0,1,0]);
+  addQuad([-0.3,0,-0.5],[-4,0,-1.5],[-4,0,0.5],[-0.3,0,0.5],[0,1,0]);
+  // Tail
+  addQuad([0,0,-2.5],[0,0.8,-3.5],[0,0,-3.5],[0,0,-2.5],[0,1,0]);
+  addQuad([0,0,-2.5],[1.5,0,-3],[0,0,-3.5],[0,0,-2.5],[-1,0,0]);
+  addQuad([0,0,-2.5],[-1.5,0,-3],[0,0,-3.5],[0,0,-2.5],[1,0,0]);
+  // Propeller
+  addQuad([0,0.1,2.1],[0,0.6,2.2],[0,-0.1,2.1],[0,-0.6,2.2],[1,0,0]);
+  addQuad([0,0.1,2.1],[0,-0.6,2.2],[0,0.6,2.2],[0,-0.1,2.1],[-1,0,0]);
+
+  return{verts:new Float32Array(verts),norms:new Float32Array(norms)};
+}
+const plane=generatePlane();
+
+// Create buffers
+function createBuffer(data,type){
+  const b=gl.createBuffer();
+  gl.bindBuffer(type||gl.ARRAY_BUFFER,b);
+  gl.bufferData(type||gl.ARRAY_BUFFER,data,gl.STATIC_DRAW);
+  return b;
+}
+
+const cityBuf={
+  pos:createBuffer(city.verts),
+  norm:createBuffer(city.norms),
+  col:createBuffer(city.cols),
+  idx:createBuffer(city.indices,gl.ELEMENT_ARRAY_BUFFER),
+  count:city.indices.length
+};
+
+const groundBuf={
+  pos:createBuffer(ground.verts),
+  col:createBuffer(ground.cols),
+  idx:createBuffer(ground.indices,gl.ELEMENT_ARRAY_BUFFER),
+  count:ground.indices.length
+};
+
+const planeBuf={
+  pos:createBuffer(plane.verts),
+  norm:createBuffer(plane.norms),
+  count:plane.verts.length/3
+};
+
+// Plane state
+const planeState={
+  x:0,y:80,z:0,
+  pitch:0,roll:0,yaw:0,
+  speed:60,
+  throttle:60
+};
+
+// Input
+const keys={};
+window.addEventListener('keydown',e=>{keys[e.code]=true;e.preventDefault();},{passive:false});
+window.addEventListener('keyup',e=>{keys[e.code]=false;e.preventDefault();},{passive:false});
+
+// Camera
+const camDist=25,camHeight=8;
+const projMat=M4.create(),viewMat=M4.create(),mvpMat=M4.create(),tempMat=M4.create();
+const eye=[0,0,0],ctr=[0,0,0];
+
+// HUD
+const hud=document.getElementById('hud');
+
+let lastTime=performance.now();
+let propAngle=0;
+
+function update(dt){
+  const p=planeState;
+  const turnRate=1.8*dt;
+  const rollRate=2.5*dt;
+  const pitchRate=2.0*dt;
+
+  if(keys['KeyW']||keys['ArrowUp'])p.pitch-=pitchRate;
+  if(keys['KeyS']||keys['ArrowDown'])p.pitch+=pitchRate;
+  if(keys['KeyA']||keys['ArrowLeft'])p.roll-=rollRate;
+  if(keys['KeyD']||keys['ArrowRight'])p.roll+=rollRate;
+  if(keys['KeyQ'])p.yaw-=turnRate;
+  if(keys['KeyE'])p.yaw+=turnRate;
+  if(keys['ShiftLeft']||keys['ShiftRight'])p.throttle=Math.min(p.throttle+40*dt,150);
+  if(keys['ControlLeft']||keys['ControlRight'])p.throttle=Math.max(p.throttle-40*dt,10);
+  if(keys['KeyR']){p.x=0;p.y=80;p.z=0;p.pitch=0;p.roll=0;p.yaw=0;p.throttle=60;}
+
+  p.speed+=(p.throttle-p.speed)*dt*0.5;
+  p.speed=Math.max(10,Math.min(150,p.speed));
+
+  // Auto-yaw from roll
+  p.yaw+=Math.sin(p.roll)*dt*0.8;
+
+  // Clamp pitch
+  p.pitch=Math.max(-Math.PI/2.5,Math.min(Math.PI/2.5,p.pitch));
+
+  // Move
+  const spd=p.speed*dt;
+  p.x+=Math.sin(p.yaw)*Math.cos(p.pitch)*spd;
+  p.y+=Math.sin(p.pitch)*spd;
+  p.z+=Math.cos(p.yaw)*Math.cos(p.pitch)*spd;
+
+  // Ground collision
+  if(p.y<2){p.y=2;p.pitch=Math.max(p.pitch,0);}
+
+  propAngle+=p.speed*dt*0.3;
+}
+
+function draw(){
+  gl.clearColor(0.45,0.6,0.85,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  const asp=canvas.width/canvas.height;
+  M4.perspective(projMat,Math.PI/3,asp,1,2000);
+
+  const p=planeState;
+
+  // Camera behind plane
+  const fwd=[Math.sin(p.yaw)*Math.cos(p.pitch),Math.sin(p.pitch),Math.cos(p.yaw)*Math.cos(p.pitch)];
+  const camX=p.x-fwd[0]*camDist;
+  const camY=p.y-fwd[1]*camDist+camHeight;
+  const camZ=p.z-fwd[2]*camDist;
+  eye[0]=camX;eye[1]=camY;eye[2]=camZ;
+  ctr[0]=p.x+fwd[0]*10;ctr[1]=p.y+fwd[1]*10;ctr[2]=p.z+fwd[2]*10;
+  M4.lookAt(viewMat,eye,ctr,[0,1,0]);
+  M4.multiply(mvpMat,projMat,viewMat);
+
+  // Draw ground
+  gl.useProgram(progG);
+  const uMVPg=gl.getUniformLocation(progG,'uMVP');
+  gl.uniformMatrix4fv(uMVPg,false,mvpMat);
+  const aPosG=gl.getAttribLocation(progG,'aPos');
+  const aColG=gl.getAttribLocation(progG,'aCol');
+  gl.bindBuffer(gl.ARRAY_BUFFER,groundBuf.pos);
+  gl.enableVertexAttribArray(aPosG);
+  gl.vertexAttribPointer(aPosG,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,groundBuf.col);
+  gl.enableVertexAttribArray(aColG);
+  gl.vertexAttribPointer(aColG,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,groundBuf.idx);
+  gl.drawElements(gl.TRIANGLES,groundBuf.count,gl.UNSIGNED_SHORT,0);
+  gl.disableVertexAttribArray(aColG);
+
+  // Draw city
+  gl.useProgram(progB);
+  const uMVPb=gl.getUniformLocation(progB,'uMVP');
+  gl.uniformMatrix4fv(uMVPb,false,mvpMat);
+  const aPosB=gl.getAttribLocation(progB,'aPos');
+  const aNormB=gl.getAttribLocation(progB,'aNorm');
+  const aColB=gl.getAttribLocation(progB,'aCol');
+  gl.bindBuffer(gl.ARRAY_BUFFER,cityBuf.pos);
+  gl.enableVertexAttribArray(aPosB);
+  gl.vertexAttribPointer(aPosB,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,cityBuf.norm);
+  gl.enableVertexAttribArray(aNormB);
+  gl.vertexAttribPointer(aNormB,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,cityBuf.col);
+  gl.enableVertexAttribArray(aColB);
+  gl.vertexAttribPointer(aColB,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,cityBuf.idx);
+  const idxType=city.indices.length>65535?gl.UNSIGNED_INT:gl.UNSIGNED_SHORT;
+  gl.drawElements(gl.TRIANGLES,cityBuf.count,idxType,0);
+  gl.disableVertexAttribArray(aNormB);
+  gl.disableVertexAttribArray(aColB);
+
+  // Draw plane
+  gl.useProgram(progP);
+  // Model matrix for plane
+  const modelMat=M4.create();
+  M4.identity(modelMat);
+  M4.translate(modelMat,modelMat,[p.x,p.y,p.z]);
+  M4.rotateY(modelMat,modelMat,p.yaw);
+  M4.rotateX(modelMat,modelMat,p.pitch);
+  M4.rotateZ(modelMat,modelMat,p.roll);
+  // Propeller rotation
+  const propMat=M4.create();
+  M4.identity(propMat);
+  M4.rotateZ(propMat,propMat,propAngle);
+  M4.multiply(tempMat,modelMat,propMat);
+  M4.multiply(mvpMat,projMat,viewMat);
+  M4.multiply(tempMat,mvpMat,modelMat);
+
+  const uMVPP=gl.getUniformLocation(progP,'uMVP');
+  gl.uniformMatrix4fv(uMVPP,false,tempMat);
+  const aPosP=gl.getAttribLocation(progP,'aPos');
+  const aNormP=gl.getAttribLocation(progP,'aNorm');
+  gl.bindBuffer(gl.ARRAY_BUFFER,planeBuf.pos);
+  gl.enableVertexAttribArray(aPosP);
+  gl.vertexAttribPointer(aPosP,3,gl.FLOAT,false,0,0);
+  gl.bindBuffer(gl.ARRAY_BUFFER,planeBuf.norm);
+  gl.enableVertexAttribArray(aNormP);
+  gl.vertexAttribPointer(aNormP,3,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.TRIANGLES,0,planeBuf.count);
+  gl.disableVertexAttribArray(aNormP);
+
+  // HUD
+  hud.innerHTML=
+    `ALT: ${Math.round(p.y)}m<br>`+
+    `SPD: ${Math.round(p.speed)} kts<br>`+
+    `THR: ${Math.round(p.throttle)}%<br>`+
+    `HDG: ${Math.round(((p.yaw*180/Math.PI)%360+360)%360)}°`;
+}
+
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000,0.05);
+  lastTime=now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

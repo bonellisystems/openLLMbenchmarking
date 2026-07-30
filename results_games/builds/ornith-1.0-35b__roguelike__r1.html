@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Roguelike</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; color: #ccc; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+#game { text-align: center; }
+#display { background: #111; border: 1px solid #333; display: inline-block; line-height: 1; letter-spacing: 1px; }
+#msg { color: #ff0; margin-top: 8px; height: 20px; font-size: 14px; }
+#stats { color: #8f8; margin-top: 4px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="game">
+<div id="display"></div>
+<div id="msg"></div>
+<div id="stats"></div>
+</div>
+<script>
+const W = 70, H = 25;
+const TILES = { WALL: 0, FLOOR: 1, DOOR: 2 };
+const CHARS = { WALL: '#', FLOOR: '.', DOOR: '+' };
+const COLORS = { WALL: '#555', FLOOR: '#888', DOOR: '#aa0', PLAYER: '#0f0', ENEMY: '#f44', ITEM: '#ff0', STAIRS: '#f0f', POTION: '#f88', WEAPON: '#88f' };
+
+const display = document.getElementById('display');
+const msgEl = document.getElementById('msg');
+const statsEl = document.getElementById('stats');
+
+let player, dungeon, explored, visible, messages, depth, turn;
+
+function rand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function pick(arr) { return arr[rand(0, arr.length - 1)]; }
+
+function generateDungeon() {
+    let map = Array.from({length: H}, () => Array(W).fill(TILES.WALL));
+    let rooms = [];
+    let maxRooms = rand(8, 14);
+    
+    for (let attempt = 0; attempt < 200 && rooms.length < maxRooms; attempt++) {
+        let rw = rand(4, 10), rh = rand(3, 7);
+        let rx = rand(1, W - rw - 1), ry = rand(1, H - rh - 1);
+        let overlap = false;
+        for (let r of rooms) {
+            if (rx - 1 < r.x + r.w && rx + rw + 1 > r.x && ry - 1 < r.y + r.h && ry + rh + 1 > r.y) {
+                overlap = true; break;
+            }
+        }
+        if (overlap) continue;
+        for (let y = ry; y < ry + rh; y++)
+            for (let x = rx; x < rx + rw; x++)
+                map[y][x] = TILES.FLOOR;
+        rooms.push({x: rx, y: ry, w: rw, h: rh, cx: Math.floor(rx + rw/2), cy: Math.floor(ry + rh/2)});
+    }
+    
+    for (let i = 1; i < rooms.length; i++) {
+        let a = rooms[i-1], b = rooms[i];
+        let ax = a.cx, ay = a.cy, bx = b.cx, by = b.cy;
+        if (Math.random() < 0.5) {
+            carveCorridor(map, ax, ay, bx, ay);
+            carveCorridor(map, bx, ay, bx, by);
+        } else {
+            carveCorridor(map, ax, ay, ax, by);
+            carveCorridor(map, ax, by, bx, by);
+        }
+    }
+    
+    // Extra connections for loops
+    for (let i = 0; i < 3; i++) {
+        let a = pick(rooms), b = pick(rooms);
+        if (a !== b) {
+            carveCorridor(map, a.cx, a.cy, b.cx, b.cy);
+        }
+    }
+    
+    // Place doors
+    for (let y = 1; y < H-1; y++) {
+        for (let x = 1; x < W-1; x++) {
+            if (map[y][x] === TILES.FLOOR) {
+                let adj = 0;
+                for (let dy = -1; dy <= 1; dy++)
+                    for (let dx = -1; dx <= 1; dx++)
+                        if (Math.abs(dx) + Math.abs(dy) === 1 && map[y+dy][x+dx] === TILES.WALL) adj++;
+                if (adj >= 3 && Math.random() < 0.15) map[y][x] = TILES.DOOR;
+            }
+        }
+    }
+    
+    return { map, rooms };
+}
+
+function carveCorridor(map, x1, y1, x2, y2) {
+    let x = x1, y = y1;
+    while (x !== x2 || y !== y2) {
+        if (x >= 0 && x < W && y >= 0 && y < H) map[y][x] = TILES.FLOOR;
+        if (x !== x2) x += x < x2 ? 1 : -1;
+        else y += y < y2 ? 1 : -1;
+    }
+    if (x >= 0 && x < W && y >= 0 && y < H) map[y][x] = TILES.FLOOR;
+}
+
+function computeFOV() {
+    let vis = Array.from({length: H}, () => Array(W).fill(false));
+    let px = player.x, py = player.y;
+    vis[py][px] = true;
+    
+    for (let a = 0; a < 360; a += 1) {
+        let rad = a * Math.PI / 180;
+        let dx = Math.cos(rad), dy = Math.sin(rad);
+        let x = px + 0.5, y = py + 0.5;
+        for (let dist = 0; dist < 10; dist++) {
+            let ix = Math.floor(x), iy = Math.floor(y);
+            if (ix < 0 || ix >= W || iy < 0 || iy >= H) break;
+            vis[iy][ix] = true;
+            explored[iy][ix] = true;
+            if (dungeon.map[iy][ix] === TILES.WALL) break;
+            x += dx; y += dy;
+        }
+    }
+    return vis;
+}
+
+const ENEMIES = [
+    { ch: 'g', name: 'goblin', hp: 10, atk: 2, def: 0, xp: 5, speed: 1 },
+    { ch: 'o', name: 'orc', hp: 20, atk: 4, def: 1, xp: 10, speed: 1 },
+    { ch: 'T', name: 'troll', hp: 35, atk: 6, def: 2, xp: 20, speed: 1 },
+    { ch: 'D', name: 'dragon', hp: 60, atk: 10, def: 4, xp: 50, speed: 1 },
+];
+
+const ITEMS = [
+    { ch: '!', name: 'health potion', type: 'potion', heal: 20, color: COLORS.POTION },
+    { ch: '/', name: 'sword', type: 'weapon', atk: 3, color: COLORS.WEAPON },
+    { ch: ']', name: 'shield', type: 'armor', def: 2, color: COLORS.WEAPON },
+];
+
+function spawnEntities() {
+    let entities = [];
+    let floorTiles = [];
+    for (let y = 0; y < H; y++)
+        for (let x = 0; x < W; x++)
+            if (dungeon.map[y][x] === TILES.FLOOR) floorTiles.push({x, y});
+    
+    // Shuffle
+    for (let i = floorTiles.length - 1; i > 0; i--) {
+        let j = rand(0, i);
+        [floorTiles[i], floorTiles[j]] = [floorTiles[j], floorTiles[i]];
+    }
+    
+    let idx = 0;
+    let numEnemies = rand(5, 10) + depth * 2;
+    let numItems = rand(3, 6);
+    
+    for (let i = 0; i < numEnemies && idx < floorTiles.length; i++) {
+        let t = floorTiles[idx++];
+        let eType = ENEMIES[Math.min(ENEMIES.length - 1, Math.floor(Math.random() * (1 + depth * 0.5)))];
+        entities.push({
+            x: t.x, y: t.y, ch: eType.ch, name: eType.name,
+            hp: eType.hp + depth * 2, maxHp: eType.hp + depth * 2,
+            atk: eType.atk + Math.floor(depth * 0.5), def: eType.def,
+            xp: eType.xp, speed: eType.speed, alive: true
+        });
+    }
+    
+    for (let i = 0; i < numItems && idx < floorTiles.length; i++) {
+        let t = floorTiles[idx++];
+        let itemType = pick(ITEMS);
+        entities.push({
+            x: t.x, y: t.y, ch: itemType.ch, name: itemType.name,
+            type: itemType.type, heal: itemType.heal, atk: itemType.atk || 0, def: itemType.def || 0,
+            color: itemType.color, alive: true
+        });
+    }
+    
+    // Stairs
+    let st = floorTiles[idx] || floorTiles[floorTiles.length - 1];
+    entities.push({ x: st.x, y: st.y, ch: '>', name: 'stairs down', type: 'stairs', alive: true });
+    
+    return entities;
+}
+
+function initGame() {
+    depth = 1;
+    messages = [];
+    turn = 0;
+    player = { x: 0, y: 0, hp: 50, maxHp: 50, atk: 5, def: 1, level: 1, xp: 0, xpNext: 20 };
+    newLevel();
+}
+
+function newLevel() {
+    dungeon = generateDungeon();
+    explored = Array.from({length: H}, () => Array(W).fill(false));
+    visible = computeFOV();
+    entities = spawnEntities();
+    
+    // Place player in first room
+    let firstRoom = dungeon.rooms[0];
+    player.x = firstRoom.cx;
+    player.y = firstRoom.cy;
+    
+    // Ensure no entity on player
+    entities = entities.filter(e => !(e.x === player.x && e.y === player.y));
+    
+    addMessage('Welcome, adventurer. Descend to level ' + depth + '.', '#ff0');
+    render();
+}
+
+function addMessage(text, color) {
+    messages.push({text, color: color || '#ccc'});
+    if (messages.length > 5) messages.shift();
+    msgEl.textContent = messages[messages.length - 1].text;
+    msgEl.style.color = messages[messages.length - 1].color;
+}
+
+function getEntityAt(x, y) {
+    return entities.find(e => e.alive && e.x === x && e.y === y);
+}
+
+function movePlayer(dx, dy) {
+    let nx = player.x + dx, ny = player.y + dy;
+    if (nx < 0 || nx >= W || ny < 0 || ny >= H) return;
+    if (dungeon.map[ny][nx] === TILES.WALL) return;
+    
+    let target = getEntityAt(nx, ny);
+    if (target && target.alive && (target.hp !== undefined)) {
+        // Attack
+        let dmg = Math.max(1, player.atk - target.def + rand(-1, 1));
+        target.hp -= dmg;
+        addMessage('You hit ' + target.name + ' for ' + dmg + ' damage.', '#0f0');
+        if (target.hp <= 0) {
+            target.alive = false;
+            addMessage('You kill ' + target.name + '!', '#ff0');
+            player.xp += target.xp;
+            if (player.xp >= player.xpNext) {
+                player.level++;
+                player.xp -= player.xpNext;
+                player.xpNext = Math.floor(player.xpNext * 1.5);
+                player.maxHp += 10;
+                player.hp = player.maxHp;
+                player.atk += 2;
+                player.def += 1;
+                addMessage('You level up to level ' + player.level + '!', '#0ff');
+            }
+        }
+    } else {
+        player.x = nx;
+        player.y = ny;
+    }
+    
+    // Pick up items
+    let item = entities.find(e => e.alive && e.x === player.x && e.y === player.y && e.type !== 'stairs');
+    if (item) {
+        if (item.type === 'potion') {
+            player.hp = Math.min(player.maxHp, player.hp + item.heal);
+            addMessage('You drink a health potion. (+ ' + item.heal + ' HP)', '#f88');
+        } else if (item.type === 'weapon') {
+            player.atk += item.atk;
+            addMessage('You equip a sword. (+ ' + item.atk + ' ATK)', '#88f');
+        } else if (item.type === 'armor') {
+            player.def += item.def;
+            addMessage('You equip a shield. (+ ' + item.def + ' DEF)', '#88f');
+        }
+        item.alive = false;
+    }
+    
+    // Check stairs
+    let stairs = entities.find(e => e.alive && e.type === 'stairs' && e.x === player.x && e.y === player.y);
+    if (stairs) {
+        depth++;
+        addMessage('You descend to level ' + depth + '.', '#f0f');
+        newLevel();
+        return;
+    }
+    
+    // Enemy turns
+    turn++;
+    for (let e of entities) {
+        if (!e.alive || e.hp === undefined) continue;
+        let dist = Math.abs(e.x - player.x) + Math.abs(e.y - player.y);
+        if (dist > 8) continue;
+        if (!visible[e.y][e.x]) continue;
+        
+        if (dist === 1) {
+            let dmg = Math.max(1, e.atk - player.def + rand(-1, 1));
+            player.hp -= dmg;
+            addMessage(e.name + ' hits you for ' + dmg + ' damage.', '#f44');
+            if (player.hp <= 0) {
+                addMessage('You have died. Game over.', '#f00');
+                render();
+                return;
+            }
+        } else if (dist <= 2) {
+            // Move toward player
+            let dx = Math.sign(player.x - e.x), dy = Math.sign(player.y - e.y);
+            let moves = [{x: dx, y: 0}, {x: 0, y: dy}, {x: dx, y: dy}];
+            moves.sort(() => Math.random() - 0.5);
+            for (let m of moves) {
+                let nx = e.x + m.x, ny = e.y + m.y;
+                if (nx >= 0 && nx < W && ny >= 0 && ny < H &&
+                    dungeon.map[ny][nx] !== TILES.WALL &&
+                    !getEntityAt(nx, ny) && !(nx === player.x && ny === player.y)) {
+                    e.x = nx; e.y = ny; break;
+                }
+            }
+        }
+    }
+    
+    visible = computeFOV();
+    render();
+}
+
+function render() {
+    let html = '';
+    for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+            let ch, color;
+            if (visible[y][x]) {
+                if (x === player.x && y === player.y) { ch = '@'; color = COLORS.PLAYER; }
+                else {
+                    let ent = getEntityAt(x, y);
+                    if (ent && ent.alive) {
+                        ch = ent.ch;
+                        color = ent.hp !== undefined ? COLORS.ENEMY : (ent.color || '#ff0');
+                    } else {
+                        let tile = dungeon.map[y][x];
+                        ch = CHARS[tile];
+                        color = COLORS[tile];
+                    }
+                }
+            } else if (explored[y][x]) {
+                let tile = dungeon.map[y][x];
+                ch = CHARS[tile];
+                color = '#333';
+            } else {
+                ch = ' ';
+                color = '#000';
+            }
+            html += '<span style="color:' + color + '">' + ch + '</span>';
+        }
+        html += '\n';
+    }
+    display.innerHTML = '<pre>' + html + '</pre>';
+    
+    statsEl.innerHTML = 'HP:' + player.hp + '/' + player.maxHp +
+        ' ATK:' + player.atk + ' DEF:' + player.def +
+        ' Lvl:' + player.level + ' XP:' + player.xp + '/' + player.xpNext +
+        ' Depth:' + depth + ' Turn:' + turn;
+}
+
+document.addEventListener('keydown', function(e) {
+    if (player.hp <= 0) return;
+    switch(e.key) {
+        case 'ArrowUp': case 'w': case 'W': movePlayer(0, -1); break;
+        case 'ArrowDown': case 's': case 'S': movePlayer(0, 1); break;
+        case 'ArrowLeft': case 'a': case 'A': movePlayer(-1, 0); break;
+        case 'ArrowRight': case 'd': case 'D': movePlayer(1, 0); break;
+        case ' ': case '.': turn++; for (let e of entities) { if (!e.alive || e.hp === undefined) continue; let dist = Math.abs(e.x - player.x) + Math.abs(e.y - player.y); if (dist > 8 || !visible[e.y][e.x]) continue; if (dist === 1) { let dmg = Math.max(1, e.atk - player.def + rand(-1,1)); player.hp -= dmg; addMessage(e.name + ' hits you for ' + dmg + '.', '#f44'); if (player.hp <= 0) { addMessage('You have died.', '#f00'); render(); return; } } else if (dist <= 2) { let dx = Math.sign(player.x - e.x), dy = Math.sign(player.y - e.y); let moves = [{x:dx,y:0},{x:0,y:dy},{x:dx,y:dy}]; moves.sort(()=>Math.random()-0.5); for (let m of moves) { let nx=e.x+m.x,ny=e.y+m.y; if(nx>=0&&nx<W&&ny>=0&&ny<H&&dungeon.map[ny][nx]!==TILES.WALL&&!getEntityAt(nx,ny)&&!(nx===player.x&&ny===player.y)){e.x=nx;e.y=ny;break;} } } } visible=computeFOV(); render(); break;
+        default: return;
+    }
+    e.preventDefault();
+});
+
+initGame();
+</script>
+</body>
+</html>

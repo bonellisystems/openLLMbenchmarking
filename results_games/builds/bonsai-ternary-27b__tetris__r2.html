@@ -1,0 +1,1531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tetris</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a1a;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:'Segoe UI',Arial,sans-serif;overflow:hidden}
+#game-wrapper{display:flex;gap:24px;align-items:flex-start}
+#main-area{position:relative}
+canvas{display:block;border:2px solid #2a2a4a;border-radius:4px}
+#side-panel{width:160px;display:flex;flex-direction:column;gap:16px}
+.panel-box{background:#12122a;border:2px solid #2a2a4a;border-radius:6px;padding:14px;text-align:center}
+.panel-box h3{color:#8888aa;font-size:13px;text-transform:uppercase;letter-spacing:2px;margin-bottom:10px}
+.panel-box .value{color:#e0e0ff;font-size:22px;font-weight:bold}
+#next-canvas{display:block;margin:0 auto}
+#hold-canvas{display:block;margin:0 auto}
+#controls-info{color:#555577;font-size:11px;line-height:1.6;text-align:left;padding-left:4px}
+#controls-info kbd{background:#1a1a3a;color:#7777aa;padding:1px 5px;border-radius:3px;font-family:inherit}
+#start-overlay{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column;justify-content:center;align-items:center;background:rgba(10,10,26,0.92);z-index:10;color:#e0e0ff}
+#start-overlay h1{font-size:48px;margin-bottom:8px;letter-spacing:6px}
+#start-overlay p{color:#666688;font-size:14px;margin-bottom:24px}
+#start-overlay .blink{animation:blink 1.2s ease-in-out infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+</style>
+</head>
+<body>
+<div id="game-wrapper">
+  <div id="main-area">
+    <canvas id="game" width="300" height="600"></canvas>
+    <div id="start-overlay">
+      <h1>TETRIS</h1>
+      <p>Press any key to start</p>
+      <p class="blink">Press any key</p>
+    </div>
+  </div>
+  <div id="side-panel">
+    <div class="panel-box">
+      <h3>Next</h3>
+      <canvas id="next-canvas" width="100" height="80"></canvas>
+    </div>
+    <div class="panel-box">
+      <h3>Hold</h3>
+      <canvas id="hold-canvas" width="100" height=80></canvas>
+    </div>
+    <div class="panel-box">
+      <h3>Score</h3>
+      <div class="value" id="score">0</div>
+    </div>
+    <div class="panel-box">
+      <h3>Level</h3>
+      <div class="value" id="level">1</div>
+    </div>
+    <div class="panel-box">
+      <h3>Lines</h3>
+      <div class="value" id="lines">0</div>
+    </div>
+    <div class="panel-box" id="controls-info">
+      <kbd>←</kbd> <kbd>→</kbd> Move<br>
+      <kbd>↑</kbd> Rotate CW<br>
+      <kbd>Z</kbd> Rotate CCW<br>
+      <kbd>↓</kbd> Soft Drop<br>
+      <kbd>Space</kbd> Hard Drop<br>
+      <kbd>C</kbd> Hold Piece
+    </div>
+  </div>
+</div>
+
+<script>
+const COLS=10, ROWS=20, BLOCK=30;
+const gameCanvas=document.getElementById('game');
+const gameCtx=gameCanvas.getContext('2d');
+const nextCanvas=document.getElementById('next-canvas');
+const nextCtx=nextCanvas.getContext('2d');
+const holdCanvas=document.getElementById('hold-canvas');
+const holdCtx=holdCanvas.getContext('2d');
+const scoreEl=document.getElementById('score');
+const levelEl=document.getElementById('level');
+const linesEl=document.getElementById('lines');
+const startOverlay=document.getElementById('start-overlay');
+
+const COLORS={
+  I:'#00e5ff',O:'#ffd600',T:'#d500f9',
+  S:'#00e676',Z:'#ff1744',J:'#2979ff',L:'#ff9100'
+};
+const SHADOW={
+  I:'#008399',O:'#998a00',T:'#8a0099',
+  S:'#008a44',Z:'#990a22',J:'#164499',L:'#995500'
+};
+
+const SHAPES={
+  I:[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]]],
+  O:[[[1,1],[1,1]]],
+  T:[[[0,1,0],[1,1,1],[0,0,0]]],
+  S:[[[0,1,1],[1,1,0],[0,0,0]]],
+  Z:[[[1,1,0],[0,1,1],[0,0,0]]],
+  J:[[[1,0,0],[1,1,1],[0,0,0]]],
+  L:[[[0,0,1],[1,1,1],[0,0,0]]]
+};
+
+const PIECE_TYPES=['I','O','T','S','Z','J','L'];
+
+let board=[];
+let currentPiece=null;
+let nextPiece=null;
+let holdPiece=null;
+let canHold=true;
+let score=0, level=1, lines=0;
+let gameOver=false;
+let started=false;
+let dropTimer=0;
+let dropInterval=1000;
+let lastTime=0;
+let bag=[];
+
+function initBoard(){board=[];for(let r=0;r<ROWS;r++)board.push(new Array(COLS).fill(0))}
+
+function shuffleBag(){
+  bag=[];
+  const t=[...PIECE_TYPES];
+  for(let i=t.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[t[i],t[j]]=[t[j],t[i]]}
+  for(let p of t)bag.push(p);
+}
+
+function nextFromBag(){
+  if(bag.length<4)shuffleBag();
+  return bag.pop();
+}
+
+function createPiece(type){
+  const shape=SHAPES[type][0];
+  return{type,shape,rotation:0,x:Math.floor((COLS-shape[0].length)/2),y:0};
+}
+
+function rotateCW(shape){
+  const n=shape.length;
+  const r=Array.from({length:n},()=>Array(n).fill(0));
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++)r[j][n-1-i]=shape[i][j];
+  return r;
+}
+
+function rotateCCW(shape){
+  const n=shape.length;
+  const r=Array.from({length:n},()=>Array(n).fill(0));
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++)r[n-1-j][i]=shape[i][j];
+  return r;
+}
+
+function getRotatedShape(piece){
+  return piece.shape;
+}
+
+function getRotated(piece, dir){
+  const s=piece.shape;
+  const rotated=dir===1?rotateCW(s):rotateCCW(s);
+  return rotated;
+}
+
+function isValid(piece, dx, dy){
+  const s=piece.shape;
+  for(let r=0;r<s.length;r++)for(let c=0;c<s[r].length;c++){
+    if(!s[r][c])continue;
+    const nx=piece.x+c+dx, ny=piece.y+r+dy;
+    if(nx<0||nx>=COLS||ny>=ROWS)return false;
+    if(ny>=0&&board[ny][nx])return false;
+  }
+  return true;
+}
+
+function lockPiece(){
+  const s=currentPiece.shape;
+  for(let r=0;r<s.length;r++)for(let c=0;c<s[r].length;c++){
+    if(!s[r][c])continue;
+    const ny=currentPiece.y+r, nx=currentPiece.x+c;
+    if(ny>=0)board[ny][nx]=currentPiece.type;
+  }
+  clearLines();
+  currentPiece=nextPiece;
+  nextPiece=createPiece(nextFromBag());
+  canHold=true;
+  if(!isValid(currentPiece,0,0)){gameOver=true;startOverlay.style.display='flex';startOverlay.querySelector('h1').textContent='GAME OVER';startOverlay.querySelector('p').textContent='Press any key to restart';startOverlay.querySelector('.blink').textContent='Press any key';}
+}
+
+function clearLines(){
+  let cleared=0;
+  for(let r=ROWS-1;r>=0;r--){
+    if(board[r].every(v=>v!==0)){
+      board.splice(r,1);
+      board.unshift(new Array(COLS).fill(0));
+      cleared++;
+      r++;
+    }
+  }
+  if(cleared>0){
+    const pts=[0,100,300,500,800];
+    score+=pts[cleared]*level;
+    lines+=cleared;
+    level=Math.floor(lines/10)+1;
+    dropInterval=Math.max(100,1000-(level-1)*80);
+    scoreEl.textContent=score;
+    levelEl.textContent=level;
+    linesEl.textContent=lines;
+  }
+}
+
+function drawBlock(ctx, x, y, color, shadowColor, size){
+  const s=size||BLOCK;
+  ctx.fillStyle=shadowColor;
+  ctx.fillRect(x+2,y+2,s-4,s-4);
+  ctx.fillStyle=color;
+  ctx.fillRect(x,y,s,s);
+  ctx.fillStyle='rgba(255,255,255,0.25)';
+  ctx.fillRect(x,y,s,2);
+  ctx.fillRect(x,y,2,s);
+  ctx.fillStyle='rgba(0,0,0,0.15)';
+  ctx.fillRect(x,y+s-2,s,2);
+  ctx.fillRect(x+s-2,y,2,s);
+}
+
+function drawGhost(){
+  const s=currentPiece.shape;
+  let gy=currentPiece.y;
+  while(isValid(currentPiece,0,gy+1-gy))gy++;
+  const ghostY=gy;
+  for(let r=0;r<s.length;r++)for(let c=0;c<s[r].length;c++){
+    if(!s[r][c])continue;
+    const ny=ghostY+r, nx=currentPiece.x+c;
+    if(ny>=0){
+      gameCtx.fillStyle=COLORS[currentPiece.type]+'33';
+      gameCtx.fillRect(nx*BLOCK,ny*BLOCK,BLOCK-1,BLOCK-1);
+      gameCtx.strokeStyle=COLORS[currentPiece.type]+'55';
+      gameCtx.lineWidth=1;
+      gameCtx.strokeRect(nx*BLOCK+0.5,ny*BLOCK+0.5,BLOCK-1,BLOCK-1);
+    }
+  }
+}
+
+function drawBoard(){
+  gameCtx.clearRect(0,0,gameCanvas.width,gameCanvas.height);
+  gameCtx.fillStyle='#0d0d20';
+  gameCtx.fillRect(0,0,gameCanvas.width,gameCanvas.height);
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    if(board[r][c]){
+      drawBlock(gameCtx,c*BLOCK,r*BLOCK,COLORS[board[r][c]],SHADOW[board[r][c]]);
+    }
+  }
+  // grid lines
+  gameCtx.strokeStyle='rgba(255,255,255,0.04)';
+  gameCtx.lineWidth=1;
+  for(let c=0;c<=COLS;c++){gameCtx.beginPath();gameCtx.moveTo(c*BLOCK,0);gameCtx.lineTo(c*BLOCK,ROWS*BLOCK);gameCtx.stroke()}
+  for(let r=0;r<=ROWS;r++){gameCtx.beginPath();gameCtx.moveTo(0,r*BLOCK);gameCtx.lineTo(COLS*BLOCK,r*BLOCK);gameCtx.stroke()}
+}
+
+function drawPiece(){
+  const s=currentPiece.shape;
+  for(let r=0;r<s.length;r++)for(let c=0;c<s[r].length;c++){
+    if(!s[r][c])continue;
+    const ny=currentPiece.y+r, nx=currentPiece.x+c;
+    if(ny>=0)drawBlock(gameCtx,nx*BLOCK,ny*BLOCK,COLORS[currentPiece.type],SHADOW[currentPiece.type]);
+  }
+}
+
+function drawPreview(ctx, canvas, pieceType, size){
+  ctx.clearRect(0,canvas.width,canvas.height);
+  if(!pieceType){return;}
+  const s=SHAPES[pieceType][0];
+  const n=s.length;
+  const cell=size||20;
+  const ox=(canvas.width-n*cell)/2;
+  const oy=(canvas.height-n*cell)/2;
+  for(let r=0;r<n;r++)for(let c=0;c<n;c++){
+    if(!s[r][c])continue;
+    drawBlock(ctx,ox+c*cell,oy+r*cell,COLORS[pieceType],SHADOW[pieceType],cell);
+  }
+}
+
+function update(dt){
+  if(!started||gameOver)return;
+  dropTimer+=dt;
+  if(dropTimer>=dropInterval){
+    dropTimer=0;
+    if(!isValid(currentPiece,0,1))lockPiece();
+    else currentPiece.y++;
+  }
+}
+
+function handleKey(e){
+  if(!started){
+    startOverlay.style.display='none';
+    started=true;
+    initBoard();
+    bag=[];
+    nextPiece=createPiece(nextFromBag());
+    currentPiece=createPiece(nextFromBag());
+    holdPiece=null;
+    canHold=true;
+    score=0;level=1;lines=0;
+    dropInterval=1000;
+    scoreEl.textContent='0';levelEl.textContent='1';linesEl.textContent='0';
+    lastTime=performance.now();
+    return;
+  }
+  if(gameOver){
+    initBoard();
+    bag=[];
+    nextPiece=createPiece(nextFromBag());
+    currentPiece=createPiece(nextFromBag());
+    holdPiece=null;
+    canHold=true;
+    score=0;level=1;lines=0;
+    dropInterval=1000;
+    scoreEl.textContent='0';levelEl.textContent='1';linesEl.textContent='0';
+    startOverlay.style.display='none';
+    gameOver=false;
+    lastTime=performance.now();
+    return;
+  }
+  switch(e.key){
+    case 'ArrowLeft':
+      if(isValid(currentPiece,-1,0))currentPiece.x--;break;
+    case 'ArrowRight':
+      if(isValid(currentPiece,1,0))currentPiece.x++;break;
+    case 'ArrowDown':
+      if(isValid(currentPiece,0,1)){currentPiece.y++;score+=1;}break;
+    case 'ArrowUp':
+    case 'x':
+      {const rotated=rotateCW(currentPiece.shape);
+       if(isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x-1,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x+1,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x-2,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x+2,y:currentPiece.y}))
+        currentPiece.shape=rotated;
+      }break;
+    case 'z':
+    case 'Z':
+    case 'Control':
+      {const rotated=rotateCCW(currentPiece.shape);
+       if(isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x-1,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x+1,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x-2,y:currentPiece.y})||
+          isValid({type:currentPiece.type,shape:rotated,x:currentPiece.x+2,y:currentPiece.y}))
+        currentPiece.shape=rotated;
+      }break;
+    case ' ':
+      {let gy=currentPiece.y;
+       while(isValid(currentPiece,0,gy+1-gy))gy++;
+       currentPiece.y=gy;
+       score+=Math.abs(gy-currentPiece.y)*2;
+       scoreEl.textContent=score;
+       lockPiece();
+      }break;
+    case 'c':
+    case 'C':
+      if(canHold){
+        if(!holdPiece){holdPiece=currentPiece.type;currentPiece=createPiece(nextFromBag());nextPiece=createPiece(nextFromBag());}
+        else{const t=holdPiece;holdPiece=currentPiece.type;currentPiece=createPiece(t);}
+        canHold=false;
+      }break;
+  }
+  e.preventDefault();
+}
+
+document.addEventListener('keydown',handleKey);
+
+function render(){
+  drawBoard();
+  if(currentPiece&&!gameOver){
+    drawGhost();
+    drawPiece();
+  }
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null);
+  drawPreview(nextCtx,null,null,null

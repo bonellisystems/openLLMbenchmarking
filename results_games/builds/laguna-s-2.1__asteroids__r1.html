@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Asteroids</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #score { position: absolute; top: 10px; left: 10px; color: #0f0; font-family: monospace; font-size: 16px; }
+  #gameOver { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #f00; font-family: monospace; font-size: 32px; display: none; }
+</style>
+</head>
+<body>
+<div id="score">SCORE: 0</div>
+<div id="gameOver">GAME OVER</div>
+<canvas id="gameCanvas"></canvas>
+<script>
+(() => {
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const scoreElement = document.getElementById('score');
+    const gameOverElement = document.getElementById('gameOver');
+
+    // Set canvas size
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Game state
+    let score = 0;
+    let gameActive = true;
+    let keys = {};
+    let lastTime = 0;
+    let bulletCooldown = 0;
+    let invincible = false;
+    let invincibleTimer = 0;
+
+    // Player ship
+    const ship = {
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+        vx: 0,
+        vy: 0,
+        angle: 0,
+        radius: 15,
+        thrust: 0.2,
+        friction: 0.98,
+        maxSpeed: 5,
+        alive: true
+    };
+
+    // Arrays for game objects
+    const bullets = [];
+    const asteroids = [];
+    const particles = [];
+
+    // Input handling
+    window.addEventListener('keydown', e => {
+        keys[e.code] = true;
+        if (!gameActive && e.code === 'Space') {
+            resetGame();
+        }
+    });
+
+    window.addEventListener('keyup', e => {
+        keys[e.code === 'Space' ? 'Space' : e.code] = false;
+    });
+
+    // Make sure keys object has Space property
+    keys['Space'] = false;
+
+    // Asteroid class
+    class Asteroid {
+        constructor(x, y, size, vx = 0, vy = 0) {
+            this.x = x;
+            this.y = y;
+            this.size = size; // 3 = large, 2 = medium, 1 = small
+            this.radius = size * 15;
+            this.vx = vx || (Math.random() - 0.5) * 2;
+            this.vy = vy || (Math.random() - 0.5) * 2;
+            this.angle = Math.random() * Math.PI * 2;
+            this.rotation = (Math.random() - 0.5) * 0.1;
+            this.vertices = [];
+            this.generateShape();
+        }
+
+        generateShape() {
+            const sides = 8 + Math.floor(Math.random() * 4);
+            const detail = 0.3;
+            for (let i = 0; i < sides; i++) {
+                const angle = (i / sides) * Math.PI * 2;
+                const r = this.radius * (0.7 + Math.random() * detail);
+                this.vertices.push({
+                    x: Math.cos(angle) * r,
+                    y: Math.sin(angle) * r
+                });
+            }
+        }
+
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.angle += this.rotation;
+
+            // Wrap around screen
+            if (this.x < -this.radius) this.x = canvas.width + this.radius;
+            if (this.x > canvas.width + this.radius) this.x = -this.radius;
+            if (this.y < -this.radius) this.y = canvas.height + this.radius;
+            if (this.y > canvas.height + this.radius) this.y = -this.radius;
+        }
+
+        draw() {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.angle);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let i = 0; i < this.vertices.length; i++) {
+                const v = this.vertices[i];
+                if (i === 0) {
+                    ctx.moveTo(v.x, v.y);
+                } else {
+                    ctx.lineTo(v.x, v.y);
+                }
+            }
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        split() {
+            if (this.size > 1) {
+                // Create two smaller asteroids
+                const newSize = this.size - 1;
+                const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy) + 1;
+                const angle1 = this.angle + Math.PI / 4;
+                const angle2 = this.angle - Math.PI / 4;
+                
+                asteroids.push(new Asteroid(
+                    this.x, this.y, newSize,
+                    Math.cos(angle1) * speed * 0.5,
+                    Math.sin(angle1) * speed * 0.5
+                ));
+                asteroids.push(new Asteroid(
+                    this.x, this.y, newSize,
+                    Math.cos(angle2) * speed * 0.5,
+                    Math.sin(angle2) * speed * 0.5
+                ));
+            }
+            
+            // Create explosion particles
+            for (let i = 0; i < 10; i++) {
+                particles.push({
+                    x: this.x,
+                    y: this.y,
+                    vx: (Math.random() - 0.5) * 3,
+                    vy: (Math.random() - 0.5) * 3,
+                    life: 30 + Math.random() * 20,
+                    size: 2 + Math.random() * 2
+                });
+            }
+        }
+    }
+
+    // Bullet class
+    class Bullet {
+        constructor(x, y, angle) {
+            this.x = x;
+            this.y = y;
+            this.vx = Math.cos(angle) * 8;
+            this.vy = Math.sin(angle) * 8;
+            this.life = 60;
+            this.radius = 2;
+        }
+
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.life--;
+
+            // Wrap around screen
+            if (this.x < 0) this.x = canvas.width;
+            if (this.x > canvas.width) this.x = 0;
+            if (this.y < 0) this.y = canvas.height;
+            if (this.y > canvas.height) this.y = 0;
+        }
+
+        draw() {
+            ctx.fillStyle = '#0ff';
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    // Particle class
+    class Particle {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.vx = (Math.random() - 0.5) * 4;
+            this.vy = (Math.random() - 0.5) * 4;
+            this.life = 20 + Math.random() * 20;
+            this.size = 2 + Math.random() * 3;
+        }
+
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.life--;
+        }
+
+        draw() {
+            ctx.fillStyle = '#f80';
+            ctx.globalAlpha = this.life / 40;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    // Initialize asteroids
+    function initAsteroids() {
+        asteroids.length = 0;
+        const count = 5 + Math.floor(Math.random() * 3);
+        for (let i = 0; i < count; i++) {
+            let x, y;
+            // Place asteroids away from the center
+            do {
+                x = Math.random() * canvas.width;
+                y = Math.random() * canvas.height;
+            } while (Math.sqrt((x - ship.x) ** 2 + (y - ship.y) ** 2) < 150);
+            
+            asteroids.push(new Asteroid(x, y, 3));
+        }
+    }
+
+    // Reset game
+    function resetGame() {
+        score = 0;
+        gameActive = true;
+        gameOverElement.style.display = 'none';
+        ship.x = canvas.width / 2;
+        ship.y = canvas.height / 2;
+        ship.vx = 0;
+        ship.vy = 0;
+        ship.angle = 0;
+        ship.alive = true;
+        bullets.length = 0;
+        particles.length = 0;
+        invincible = true;
+        invincibleTimer = 180; // 3 seconds at 60fps
+        initAsteroids();
+        scoreElement.textContent = 'SCORE: 0';
+    }
+
+    // Collision detection
+    function circleRectCollision(circle, rect) {
+        const distX = Math.abs(circle.x - rect.x);
+        const distY = Math.abs(circle.y - rect.y);
+        if (distX > (rect.width / 2 + circle.radius)) return false;
+        if (distY > (rect.height / 2 + circle.radius)) return false;
+        if (distX <= (rect.width / 2)) return true;
+        if (distY <= (rect.height / 2)) return true;
+        const dx = distX - rect.width / 2;
+        const dy = distY - rect.height / 2;
+        return (dx * dx + dy * dy <= (circle.radius * circle.radius));
+    }
+
+    function distance(x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    // Game loop
+    function gameLoop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        const deltaTime = timestamp - lastTime;
+        lastTime = timestamp;
+
+        // Clear canvas
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (!gameActive) {
+            requestAnimationFrame(gameLoop);
+            return;
+        }
+
+        // Update
+        update(deltaTime);
+
+        // Draw
+        draw();
+
+        requestAnimationFrame(gameLoop);
+    }
+
+    function update(deltaTime) {
+        // Update bullet cooldown
+        if (bulletCooldown > 0) bulletCooldown--;
+
+        // Update invincibility
+        if (invincible) {
+            invincibleTimer--;
+            if (invincibleTimer <= 0) {
+                invincible = false;
+            }
+        }
+
+        // Update ship
+        if (keys['ArrowUp'] || keys['w']) {
+            ship.vx += Math.cos(ship.angle) * ship.thrust;
+            ship.vy += Math.sin(ship.angle) * ship.thrust;
+        }
+
+        if (keys['ArrowLeft'] || keys['a']) {
+            ship.angle -= 0.08;
+        }
+
+        if (keys['ArrowRight'] || keys['d']) {
+            ship.angle += 0.08;
+        }
+
+        // Apply friction
+        ship.vx *= ship.friction;
+        ship.vy *= ship.friction;
+
+        // Limit speed
+        const speed = Math.sqrt(ship.vx * ship.vx + ship.vy * ship.vy);
+        if (speed > ship.maxSpeed) {
+            ship.vx = (ship.vx / speed) * ship.maxSpeed;
+            ship.vy = (ship.vy / speed) * ship.maxSpeed;
+        }
+
+        // Update ship position
+        ship.x += ship.vx;
+        ship.y += ship.vy;
+
+        // Wrap around screen
+        if (ship.x < -ship.radius) ship.x = canvas.width + ship.radius;
+        if (ship.x > canvas.width + ship.radius) ship.x = -ship.radius;
+        if (ship.y < -ship.radius) ship.y = canvas.height + ship.radius;
+        if (ship.y > canvas.height + ship.radius) ship.y = -ship.radius;
+
+        // Shooting
+        if ((keys['Space'] || keys['x']) && bulletCooldown <= 0) {
+            bullets.push(new Bullet(
+                ship.x + Math.cos(ship.angle) * ship.radius,
+                ship.y + Math.sin(ship.angle) * ship.radius,
+                ship.angle
+            ));
+            bulletCooldown = 15;
+        }
+
+        // Update bullets
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            bullets[i].update();
+            if (bullets[i].life <= 0) {
+                bullets.splice(i, 1);
+            }
+        }
+
+        // Update asteroids
+        for (let i = asteroids.length - 1; i >= 0; i--) {
+            asteroids[i].update();
+        }
+
+        // Update particles
+        for (let i = particles.length - 1; i >= 0; i--) {
+            particles[i].update();
+            if (particles[i].life <= 0) {
+                particles.splice(i, 1);
+            }
+        }
+
+        // Check collisions
+        checkCollisions();
+    }
+
+    function checkCollisions() {
+        // Bullet-asteroid collisions
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            for (let j = asteroids.length - 1; j >= 0; j--) {
+                const bullet = bullets[i];
+                const asteroid = asteroids[j];
+                const dist = distance(bullet.x, bullet.y, asteroid.x, asteroid.y);
+                if (dist < asteroid.radius) {
+                    // Remove bullet
+                    bullets.splice(i, 1);
+                    // Split asteroid
+                    asteroid.split();
+                    asteroids.splice(j, 1);
+                    // Add score
+                    score += asteroid.size * 100;
+                    scoreElement.textContent = 'SCORE: ' + score;
+                    break;
+                }
+            }
+        }
+
+        // Ship-asteroid collisions
+        if (!invincible) {
+            for (let i = asteroids.length - 1; i >= 0; i--) {
+                const asteroid = asteroids[i];
+                const dist = distance(ship.x, ship.y, asteroid.x, asteroid.y);
+                if (dist < asteroid.radius + ship.radius) {
+                    // Ship destroyed
+                    ship.alive = false;
+                    gameActive = false;
+                    gameOverElement.style.display = 'block';
+                    
+                    // Create explosion
+                    for (let j = 0; j < 30; j++) {
+                        particles.push({
+                            x: ship.x,
+                            y: ship.y,
+                            vx: (Math.random() - 0.5) * 6,
+                            vy: (Math.random() - 0.5) * 6,
+                            life: 30 + Math.random() * 20,
+                            size: 3 + Math.random() * 3
+                        });
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    function draw() {
+        // Draw particles
+        for (const p of particles) {
+            p.draw();
+        }
+
+        // Draw asteroids
+        for (const asteroid of asteroids) {
+            asteroid.draw();
+        }
+
+        // Draw bullets
+        for (const bullet of bullets) {
+            bullet.draw();
+        }
+
+        // Draw ship
+        if (ship.alive) {
+            drawShip();
+        }
+    }
+
+    function drawShip() {
+        ctx.save();
+        ctx.translate(ship.x, ship.y);
+        ctx.rotate(ship.angle);
+
+        // Flashing when invincible
+        if (invincible && Math.floor(invincibleTimer / 5) % 2) {
+            ctx.globalAlpha = 0.5;
+        }
+
+        ctx.strokeStyle = '#0f0';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(ship.radius, 0);
+        ctx.lineTo(-ship.radius * 0.7, -ship.radius * 0.6);
+        ctx.lineTo(-ship.radius * 0.4, 0);
+        ctx.lineTo(-ship.radius * 0.7, ship.radius * 0.6);
+        ctx.closePath();
+        ctx.stroke();
+
+        // Draw thrust
+        if (keys['ArrowUp'] || keys['w']) {
+            ctx.fillStyle = '#f80';
+            ctx.beginPath();
+            ctx.moveTo(-ship.radius * 0.4, 0);
+            ctx.lineTo(-ship.radius * 0.8, -ship.radius * 0.3);
+            ctx.lineTo(-ship.radius * 0.8, ship.radius * 0.3);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        ctx.restore();
+    }
+
+    // Start the game
+    resetGame();
+    requestAnimationFrame(gameLoop);
+})();
+</script>
+</body>
+</html>

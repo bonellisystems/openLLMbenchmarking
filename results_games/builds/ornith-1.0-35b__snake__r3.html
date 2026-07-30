@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snake Game</title>
+<style>
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+body {
+    background: #1a1a2e;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    font-family: 'Courier New', monospace;
+    overflow: hidden;
+}
+#gameContainer {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+#scoreBoard {
+    color: #e94560;
+    font-size: 24px;
+    font-weight: bold;
+    text-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
+    letter-spacing: 2px;
+}
+canvas {
+    border: 3px solid #e94560;
+    border-radius: 4px;
+    box-shadow: 0 0 30px rgba(233, 69, 96, 0.3), inset 0 0 30px rgba(0,0,0,0.3);
+    display: block;
+}
+#message {
+    color: #0f3460;
+    font-size: 18px;
+    height: 24px;
+    text-align: center;
+    transition: color 0.3s;
+}
+#message.visible {
+    color: #e94560;
+    text-shadow: 0 0 10px rgba(233, 69, 96, 0.5);
+}
+</style>
+</head>
+<body>
+<div id="gameContainer">
+    <div id="scoreBoard">SCORE: 0</div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="message">Use Arrow Keys or WASD to play</div>
+</div>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const scoreBoard = document.getElementById('scoreBoard');
+const messageEl = document.getElementById('message');
+
+const GRID_SIZE = 20;
+const TILE_COUNT = 25;
+canvas.width = GRID_SIZE * TILE_COUNT;
+canvas.height = GRID_SIZE * TILE_COUNT;
+
+let snake, food, direction, nextDirection, score, gameRunning, gameOver, gameStarted;
+let lastTime = 0;
+let accumulator = 0;
+let moveInterval = 120;
+let particles = [];
+
+function init() {
+    snake = [
+        { x: 12, y: 12 },
+        { x: 11, y: 12 },
+        { x: 10, y: 12 }
+    ];
+    direction = { x: 1, y: 0 };
+    nextDirection = { x: 1, y: 0 };
+    score = 0;
+    gameRunning = true;
+    gameOver = false;
+    gameStarted = false;
+    accumulator = 0;
+    moveInterval = 120;
+    particles = [];
+    spawnFood();
+    scoreBoard.textContent = 'SCORE: 0';
+    messageEl.textContent = 'Use Arrow Keys or WASD to play';
+    messageEl.classList.remove('visible');
+}
+
+function spawnFood() {
+    let newFood;
+    do {
+        newFood = {
+            x: Math.floor(Math.random() * TILE_COUNT),
+            y: Math.floor(Math.random() * TILE_COUNT)
+        };
+    } while (snake.some(seg => seg.x === newFood.x && seg.y === newFood.y));
+    food = newFood;
+}
+
+function createParticles(x, y) {
+    for (let i = 0; i < 8; i++) {
+        particles.push({
+            x: x * GRID_SIZE + GRID_SIZE / 2,
+            y: y * GRID_SIZE + GRID_SIZE / 2,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            life: 1.0,
+            color: Math.random() > 0.5 ? '#e94560' : '#ff6b6b',
+            size: Math.random() * 4 + 2
+        });
+    }
+}
+
+function updateParticles(dt) {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= dt * 2.5;
+        if (p.life <= 0) {
+            particles.splice(i, 1);
+        }
+    }
+}
+
+function drawParticles() {
+    for (let p of particles) {
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+}
+
+function update(dt) {
+    if (!gameRunning) return;
+
+    accumulator += dt;
+
+    if (accumulator >= moveInterval) {
+        accumulator -= moveInterval;
+        direction = { ...nextDirection };
+
+        const head = {
+            x: snake[0].x + direction.x,
+            y: snake[0].y + direction.y
+        };
+
+        if (head.x < 0 || head.x >= TILE_COUNT || head.y < 0 || head.y >= TILE_COUNT) {
+            endGame();
+            return;
+        }
+
+        for (let i = 0; i < snake.length; i++) {
+            if (snake[i].x === head.x && snake[i].y === head.y) {
+                endGame();
+                return;
+            }
+        }
+
+        snake.unshift(head);
+
+        if (head.x === food.x && head.y === food.y) {
+            score += 10;
+            scoreBoard.textContent = 'SCORE: ' + score;
+            createParticles(food.x, food.y);
+            spawnFood();
+            if (moveInterval > 60) {
+                moveInterval -= 2;
+            }
+        } else {
+            snake.pop();
+        }
+    }
+
+    updateParticles(dt);
+}
+
+function endGame() {
+    gameRunning = false;
+    gameOver = true;
+    messageEl.textContent = 'Game Over! Press any key to restart';
+    messageEl.classList.add('visible');
+}
+
+function draw() {
+    ctx.fillStyle = '#16213e';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= TILE_COUNT; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * GRID_SIZE, 0);
+        ctx.lineTo(i * GRID_SIZE, canvas.height);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, i * GRID_SIZE);
+        ctx.lineTo(canvas.width, i * GRID_SIZE);
+        ctx.stroke();
+    }
+
+    if (food) {
+        const pulse = Math.sin(Date.now() / 200) * 0.2 + 0.8;
+        ctx.fillStyle = '#e94560';
+        ctx.shadowColor = '#e94560';
+        ctx.shadowBlur = 15 * pulse;
+        ctx.beginPath();
+        ctx.arc(
+            food.x * GRID_SIZE + GRID_SIZE / 2,
+            food.y * GRID_SIZE + GRID_SIZE / 2,
+            GRID_SIZE / 2 - 2,
+            0,
+            Math.PI * 2
+        );
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    for (let i = snake.length - 1; i >= 0; i--) {
+        const seg = snake[i];
+        const ratio = 1 - (i / snake.length) * 0.6;
+
+        if (i === 0) {
+            ctx.fillStyle = '#e94560';
+            ctx.shadowColor = '#e94560';
+            ctx.shadowBlur = 10;
+        } else {
+            const g = Math.floor(200 * ratio);
+            ctx.fillStyle = 'rgb(15, ' + g + ', 96)';
+            ctx.shadowBlur = 0;
+        }
+
+        const padding = i === 0 ? 1 : 2;
+        ctx.fillRect(
+            seg.x * GRID_SIZE + padding,
+            seg.y * GRID_SIZE + padding,
+            GRID_SIZE - padding * 2,
+            GRID_SIZE - padding * 2
+        );
+
+        if (i === 0) {
+            ctx.shadowBlur = 0;
+            const eyeSize = 3;
+            ctx.fillStyle = '#fff';
+            let ex1, ey1, ex2, ey2;
+            const cx = seg.x * GRID_SIZE + GRID_SIZE / 2;
+            const cy = seg.y * GRID_SIZE + GRID_SIZE / 2;
+            if (direction.x === 1) { ex1 = cx + 3; ey1 = cy - 4; ex2 = cx + 3; ey2 = cy + 4; }
+            else if (direction.x === -1) { ex1 = cx - 3; ey1 = cy - 4; ex2 = cx - 3; ey2 = cy + 4; }
+            else if (direction.y === -1) { ex1 = cx - 4; ey1 = cy - 3; ex2 = cx + 4; ey2 = cy - 3; }
+            else { ex1 = cx - 4; ey1 = cy + 3; ex2 = cx + 4; ey2 = cy + 3; }
+            ctx.beginPath();
+            ctx.arc(ex1, ey1, eyeSize, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(ex2, ey2, eyeSize, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    drawParticles();
+}
+
+function gameLoop(timestamp) {
+    if (!lastTime) lastTime = timestamp;
+    const dt = (timestamp - lastTime) / 1000;
+    lastTime = timestamp;
+
+    update(dt);
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', function(e) {
+    if (!gameStarted && !gameOver) {
+        gameStarted = true;
+        messageEl.textContent = '';
+    }
+
+    if (gameOver) {
+        init();
+        return;
+    }
+
+    const key = e.key;
+    let newDir = null;
+
+    if (key === 'ArrowUp' || key === 'w' || key === 'W') {
+        newDir = { x: 0, y: -1 };
+    } else if (key === 'ArrowDown' || key === 's' || key === 'S') {
+        newDir = { x: 0, y: 1 };
+    } else if (key === 'ArrowLeft' || key === 'a' || key === 'A') {
+        newDir = { x: -1, y: 0 };
+    } else if (key === 'ArrowRight' || key === 'd' || key === 'D') {
+        newDir = { x: 1, y: 0 };
+    }
+
+    if (newDir) {
+        if (newDir.x !== -direction.x || newDir.y !== -direction.y) {
+            nextDirection = newDir;
+        }
+        e.preventDefault();
+    }
+});
+
+init();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

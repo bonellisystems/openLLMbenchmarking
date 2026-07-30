@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tiny Roguelike</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            font-family: monospace;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+        }
+        #game {
+            display: inline-block;
+            border: 1px solid #0f0;
+            padding: 10px;
+            margin: 20px;
+        }
+        #stats {
+            margin: 10px 0;
+        }
+        #message {
+            height: 20px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Tiny Roguelike</h1>
+    <div id="stats">HP: <span id="hp">10</span> | Level: <span id="level">1</span></div>
+    <div id="game"></div>
+    <div id="message"></div>
+    <div>Controls: WASD to move, Q to quit</div>
+
+    <script>
+        const WIDTH = 40;
+        const HEIGHT = 20;
+        const MAX_LEVELS = 5;
+        
+        let dungeon = [];
+        let player = {x: 1, y: 1, hp: 10, maxHp: 10, level: 1, exp: 0};
+        let monsters = [];
+        let items = [];
+        let level = 1;
+        let gameOver = false;
+        
+        function generateDungeon() {
+            dungeon = [];
+            for (let y = 0; y < HEIGHT; y++) {
+                dungeon[y] = [];
+                for (let x = 0; x < WIDTH; x++) {
+                    if (x === 0 || y === 0 || x === WIDTH - 1 || y === HEIGHT - 1) {
+                        dungeon[y][x] = '#'; // walls
+                    } else {
+                        dungeon[y][x] = Math.random() < 0.3 ? '#' : '.'; // 30% walls
+                    }
+                }
+            }
+            
+            // Ensure player start is clear
+            dungeon[1][1] = '.';
+            
+            // Add some doors
+            for (let i = 0; i < 5; i++) {
+                const x = Math.floor(Math.random() * (WIDTH - 2)) + 1;
+                const y = Math.floor(Math.random() * (HEIGHT - 2)) + 1;
+                if (dungeon[y][x] === '.') {
+                    dungeon[y][x] = '+';
+                }
+            }
+            
+            // Add stairs
+            let stairsX, stairsY;
+            do {
+                stairsX = Math.floor(Math.random() * (WIDTH - 2)) + 1;
+                stairsY = Math.floor(Math.random() * (HEIGHT - 2)) + 1;
+            } while (dungeon[stairsY][stairsX] !== '.');
+            dungeon[stairsY][stairsX] = '>';
+            
+            // Place monsters
+            monsters = [];
+            for (let i = 0; i < 5 + level; i++) {
+                let x, y;
+                do {
+                    x = Math.floor(Math.random() * (WIDTH - 2)) + 1;
+                    y = Math.floor(Math.random() * (HEIGHT - 2)) + 1;
+                } while (dungeon[y][x] !== '.');
+                monsters.push({x, y, hp: 2 + level, maxHp: 2 + level, type: 'g'});
+            }
+            
+            // Place items
+            items = [];
+            for (let i = 0; i < 2 + level; i++) {
+                let x, y;
+                do {
+                    x = Math.floor(Math.random() * (WIDTH - 2)) + 1;
+                    y = Math.floor(Math.random() * (HEIGHT - 2)) + 1;
+                } while (dungeon[y][x] !== '.');
+                items.push({x, y, type: Math.random() < 0.5 ? 'p' : 'w'});
+            }
+        }
+        
+        function render() {
+            const gameDiv = document.getElementById('game');
+            let output = '';
+            
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    let char = '.';
+                    if (x === player.x && y === player.y) {
+                        char = '@';
+                    } else {
+                        for (const monster of monsters) {
+                            if (monster.x === x && monster.y === y) {
+                                char = monster.type;
+                                break;
+                            }
+                        }
+                        for (const item of items) {
+                            if (item.x === x && item.y === y) {
+                                char = item.type;
+                                break;
+                            }
+                        }
+                    }
+                    output += char;
+                }
+                output += '<br>';
+            }
+            
+            gameDiv.innerHTML = output;
+            document.getElementById('hp').textContent = player.hp;
+            document.getElementById('level').textContent = player.level;
+        }
+        
+        function showMessage(msg) {
+            document.getElementById('message').textContent = msg;
+        }
+        
+        function movePlayer(dx, dy) {
+            if (gameOver) return;
+            
+            const newX = player.x + dx;
+            const newY = player.y + dy;
+            
+            if (newX < 0 || newX >= WIDTH || newY < 0 || newY >= HEIGHT) return;
+            
+            const tile = dungeon[newY][newX];
+            if (tile === '#') return;
+            
+            // Check for monsters
+            for (let i = 0; i < monsters.length; i++) {
+                const monster = monsters[i];
+                if (monster.x === newX && monster.y === newY) {
+                    // Attack monster
+                    monster.hp--;
+                    showMessage(`You hit the ${monster.type} for 1 damage!`);
+                    if (monster.hp <= 0) {
+                        monsters.splice(i, 1);
+                        player.exp += 2;
+                        showMessage(`You killed the ${monster.type}!`);
+                    }
+                    return;
+                }
+            }
+            
+            // Check for items
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.x === newX && item.y === newY) {
+                    if (item.type === 'p') {
+                        player.hp = Math.min(player.maxHp, player.hp + 3);
+                        showMessage('You found a health potion!');
+                    } else if (item.type === 'w') {
+                        player.maxHp += 1;
+                        player.hp += 1;
+                        showMessage('You found a weapon! Max HP increased!');
+                    }
+                    items.splice(i, 1);
+                    break;
+                }
+            }
+            
+            // Check for stairs
+            if (tile === '>') {
+                player.level++;
+                showMessage(`You descend to level ${player.level}!`);
+                if (player.level > MAX_LEVELS) {
+                    showMessage('You win! You escaped the dungeon!');
+                    gameOver = true;
+                    return;
+                }
+                generateDungeon();
+                player.x = 1;
+                player.y = 1;
+                return;
+            }
+            
+            player.x = newX;
+            player.y = newY;
+            
+            // Monster movement
+            for (const monster of monsters) {
+                const dx = player.x - monster.x;
+                const dy = player.y - monster.y;
+                const moveX = dx !== 0 ? (dx > 0 ? 1 : -1) : 0;
+                const moveY = dy !== 0 ? (dy > 0 ? 1 : -1) : 0;
+                
+                const newX = monster.x + moveX;
+                const newY = monster.y + moveY;
+                
+                if (newX >= 0 && newX < WIDTH && newY >= 0 && newY < HEIGHT) {
+                    if (dungeon[newY][newX] !== '#' && !(newX === player.x && newY === player.y)) {
+                        monster.x = newX;
+                        monster.y = newY;
+                    }
+                }
+            }
+            
+            // Check for monster collisions
+            for (const monster of monsters) {
+                if (monster.x === player.x && monster.y === player.y) {
+                    player.hp--;
+                    showMessage(`The ${monster.type} hits you for 1 damage!`);
+                    if (player.hp <= 0) {
+                        showMessage('You died! Game over.');
+                        gameOver = true;
+                    }
+                    break;
+                }
+            }
+            
+            render();
+        }
+        
+        document.addEventListener('keydown', (e) => {
+            if (gameOver) return;
+            
+            switch (e.key) {
+                case 'w': movePlayer(0, -1); break;
+                case 's': movePlayer(0, 1); break;
+                case 'a': movePlayer(-1, 0); break;
+                case 'd': movePlayer(1, 0); break;
+                case 'q': gameOver = true; showMessage('You quit the game.'); break;
+            }
+        });
+        
+        // Start game
+        generateDungeon();
+        render();
+    </script>
+</body>
+</html>

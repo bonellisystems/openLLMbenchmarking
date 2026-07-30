@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Roguelike</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #ccc; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+#game { display: flex; flex-direction: column; align-items: center; }
+#map { background: #111; border: 1px solid #333; line-height: 1.1; font-size: 16px; letter-spacing: 2px; white-space: pre; }
+#ui { width: 100%; display: flex; justify-content: space-between; padding: 8px 0; font-size: 14px; color: #aaa; }
+#stats { color: #4af; }
+#log { width: 100%; height: 80px; overflow: hidden; font-size: 13px; color: #888; border-top: 1px solid #222; padding-top: 4px; }
+#log div { margin: 1px 0; }
+#log .danger { color: #f55; }
+#log .good { color: #5f5; }
+#log .info { color: #5af; }
+#log .gold { color: #fa5; }
+</style>
+</head>
+<body>
+<div id="game">
+  <div id="ui">
+    <div id="stats"></div>
+    <div id="level">Level 1</div>
+  </div>
+  <pre id="map"></pre>
+  <div id="log"></div>
+</div>
+<script>
+const W = 60, H = 25, MAX_ROOMS = 12, ROOM_MIN = 4, ROOM_MAX = 10;
+const FOV_RADIUS = 8;
+const mapEl = document.getElementById('map');
+const statsEl = document.getElementById('stats');
+const levelEl = document.getElementById('level');
+const logEl = document.getElementById('log');
+
+let dungeon = [], visible = [], explored = [];
+let player, enemies, items, stairs, messages = [];
+let depth = 1, gameOver = false, turn = 0;
+
+function addMsg(text, cls) {
+  messages.push({ text, cls });
+  if (messages.length > 6) messages.shift();
+  logEl.innerHTML = messages.map(m => `<div class="${m.cls||''}">${m.text}</div>`).join('');
+}
+
+function initPlayer() {
+  return { x: 0, y: 0, hp: 30, maxHp: 30, atk: 4, def: 2, lvl: 1, xp: 0, xpNext: 10, gold: 0, weapon: 0, armor: 0 };
+}
+
+function generateDungeon() {
+  dungeon = Array.from({length: H}, () => Array(W).fill(1));
+  visible = Array.from({length: H}, () => Array(W).fill(false));
+  explored = Array.from({length: H}, () => Array(W).fill(false));
+  enemies = [];
+  items = [];
+  let rooms = [];
+
+  for (let attempt = 0; attempt < 200 && rooms.length < MAX_ROOMS; attempt++) {
+    let rw = ROOM_MIN + Math.floor(Math.random() * (ROOM_MAX - ROOM_MIN + 1));
+    let rh = ROOM_MIN + Math.floor(Math.random() * (ROOM_MAX - ROOM_MIN + 1));
+    let rx = 1 + Math.floor(Math.random() * (W - rw - 2));
+    let ry = 1 + Math.floor(Math.random() * (H - rh - 2));
+    let overlap = false;
+    for (let r of rooms) {
+      if (rx < r.x + r.w + 1 && rx + rw + 1 > r.x && ry < r.y + r.h + 1 && ry + rh + 1 > r.y) {
+        overlap = true; break;
+      }
+    }
+    if (overlap) continue;
+    for (let y = ry; y < ry + rh; y++)
+      for (let x = rx; x < rx + rw; x++)
+        dungeon[y][x] = 0;
+    rooms.push({ x: rx, y: ry, w: rw, h: rh, cx: Math.floor(rx + rw/2), cy: Math.floor(ry + rh/2) });
+  }
+
+  for (let i = 1; i < rooms.length; i++) {
+    let a = rooms[i-1], b = rooms[i];
+    if (Math.random() < 0.5) {
+      carveH(a.cx, b.cx, a.cy);
+      carveV(a.cy, b.cy, b.cx);
+    } else {
+      carveV(a.cy, b.cy, a.cx);
+      carveH(a.cx, b.cx, b.cy);
+    }
+  }
+
+  player.x = rooms[0].cx;
+  player.y = rooms[0].cy;
+  stairs = { x: rooms[rooms.length-1].cx, y: rooms[rooms.length-1].cy };
+
+  for (let i = 1; i < rooms.length - 1; i++) {
+    let r = rooms[i];
+    let numEnemies = 1 + Math.floor(Math.random() * (1 + Math.floor(depth/2)));
+    for (let e = 0; e < numEnemies; e++) {
+      let ex = r.x + 1 + Math.floor(Math.random() * (r.w - 2));
+      let ey = r.y + 1 + Math.floor(Math.random() * (r.h - 2));
+      if (dungeon[ey][ex] === 0 && !(ex === player.x && ey === player.y)) {
+        let type = Math.random() < 0.3 + depth*0.05 ? 'orc' : 'goblin';
+        enemies.push({
+          x: ex, y: ey, type,
+          hp: type === 'orc' ? 12 + depth*3 : 6 + depth*2,
+          maxHp: type === 'orc' ? 12 + depth*3 : 6 + depth*2,
+          atk: type === 'orc' ? 3 + depth : 2 + Math.floor(depth/2),
+          def: type === 'orc' ? 2 : 1,
+          name: type === 'orc' ? 'Orc' : 'Goblin',
+          xp: type === 'orc' ? 5 : 3
+        });
+      }
+    }
+    let numItems = Math.floor(Math.random() * 2);
+    for (let it = 0; it < numItems; it++) {
+      let ix = r.x + 1 + Math.floor(Math.random() * (r.w - 2));
+      let iy = r.y + 1 + Math.floor(Math.random() * (r.h - 2));
+      if (dungeon[iy][ix] === 0) {
+        let roll = Math.random();
+        if (roll < 0.4) items.push({ x: ix, y: iy, type: 'potion', name: 'Health Potion', ch: '!', color: '#f55' });
+        else if (roll < 0.7) items.push({ x: ix, y: iy, type: 'weapon', name: 'Sword', ch: '^', color: '#aaa', bonus: 1 + Math.floor(depth/2) });
+        else items.push({ x: ix, y: iy, type: 'gold', name: 'Gold', ch: '$', color: '#fa5', amount: 5 + Math.floor(Math.random()*10*depth) });
+      }
+    }
+  }
+}
+
+function carveH(x1, x2, y) {
+  for (let x = Math.min(x1,x2); x <= Math.max(x1,x2); x++) dungeon[y][x] = 0;
+}
+function carveV(y1, y2, x) {
+  for (let y = Math.min(y1,y2); y <= Math.max(y1,y2); y++) dungeon[y][x] = 0;
+}
+
+function computeFOV() {
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) visible[y][x] = false;
+  for (let a = 0; a < 360; a += 1) {
+    let dx = Math.cos(a * Math.PI / 180);
+    let dy = Math.sin(a * Math.PI / 180);
+    let cx = player.x + 0.5, cy = player.y + 0.5;
+    for (let r = 0; r < FOV_RADIUS; r += 0.5) {
+      let tx = Math.floor(cx), ty = Math.floor(cy);
+      if (tx < 0 || tx >= W || ty < 0 || ty >= H) break;
+      visible[ty][tx] = true;
+      explored[ty][tx] = true;
+      if (dungeon[ty][tx] === 1) break;
+      cx += dx * 0.5;
+      cy += dy * 0.5;
+    }
+  }
+  visible[player.y][player.x] = true;
+  explored[player.y][player.x] = true;
+}
+
+function render() {
+  let out = '';
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!explored[y][x]) { out += ' '; continue; }
+      if (!visible[y][x]) { out += dungeon[y][x] === 1 ? '#' : '·'; continue; }
+      if (x === player.x && y === player.y) { out += '@'; continue; }
+      let found = false;
+      for (let e of enemies) {
+        if (e.x === x && e.y === y) {
+          out += e.hp > 0 ? (e.type === 'orc' ? 'O' : 'g') : '+';
+          found = true; break;
+        }
+      }
+      if (found) continue;
+      for (let it of items) {
+        if (it.x === x && it.y === y) { out += it.ch; continue; }
+      }
+      if (x === stairs.x && y === stairs.y) { out += '>'; continue; }
+      out += dungeon[y][x] === 1 ? '#' : '.';
+    }
+    out += '\n';
+  }
+  mapEl.textContent = out;
+  let totalAtk = player.atk + player.weapon;
+  let totalDef = player.def + player.armor;
+  statsEl.innerHTML = `HP: ${player.hp}/${player.maxHp} ATK:${totalAtk} DEF:${totalDef} LVL:${player.lvl} XP:${player.xp}/${player.xpNext} Gold:${player.gold}`;
+  levelEl.textContent = `Dungeon Level ${depth}`;
+}
+
+function movePlayer(dx, dy) {
+  if (gameOver) return;
+  let nx = player.x + dx, ny = player.y + dy;
+  if (nx < 0 || nx >= W || ny < 0 || ny >= H) return;
+  if (dungeon[ny][nx] === 1) return;
+
+  let target = null;
+  for (let e of enemies) {
+    if (e.x === nx && e.y === ny && e.hp > 0) { target = e; break; }
+  }
+
+  if (target) {
+    let dmg = Math.max(1, (player.atk + player.weapon) - target.def + Math.floor(Math.random()*2));
+    target.hp -= dmg;
+    addMsg(`You hit ${target.name} for ${dmg} damage.`, 'info');
+    if (target.hp <= 0) {
+      addMsg(`${target.name} dies! +${target.xp} XP`, 'good');
+      player.xp += target.xp;
+      checkLevelUp();
+    }
+  } else {
+    player.x = nx;
+    player.y = ny;
+  }
+
+  for (let i = items.length - 1; i >= 0; i--) {
+    let it = items[i];
+    if (it.x === player.x && it.y === player.y) {
+      if (it.type === 'potion') {
+        let heal = 10 + depth * 2;
+        player.hp = Math.min(player.maxHp, player.hp + heal);
+        addMsg(`You drink a potion. +${heal} HP.`, 'good');
+      } else if (it.type === 'weapon') {
+        if (it.bonus > player.weapon) {
+          addMsg(`You equip ${it.name} (+${it.bonus} ATK).`, 'good');
+          player.weapon = it.bonus;
+        } else {
+          addMsg(`You find ${it.name} but your weapon is better.`, 'info');
+        }
+      } else if (it.type === 'gold') {
+        player.gold += it.amount;
+        addMsg(`You pick up ${it.amount} gold.`, 'gold');
+      }
+      items.splice(i, 1);
+    }
+  }
+
+  if (player.x === stairs.x && player.y === stairs.y) {
+    addMsg(`You descend deeper...`, 'info');
+    depth++;
+    generateDungeon();
+    computeFOV();
+    render();
+    return;
+  }
+
+  turn++;
+  enemyTurn();
+  computeFOV();
+  render();
+}
+
+function checkLevelUp() {
+  while (player.xp >= player.xpNext) {
+    player.xp -= player.xpNext;
+    player.lvl++;
+    player.xpNext = Math.floor(player.xpNext * 1.6);
+    player.maxHp += 5;
+    player.hp = player.maxHp;
+    player.atk += 1;
+    player.def += 1;
+    addMsg(`Level up! You are now level ${player.lvl}!`, 'good');
+  }
+}
+
+function enemyTurn() {
+  for (let e of enemies) {
+    if (e.hp <= 0) continue;
+    let dx = player.x - e.x, dy = player.y - e.y;
+    let dist = Math.abs(dx) + Math.abs(dy);
+    if (dist > 10) continue;
+    if (dist <= 1) {
+      let dmg = Math.max(1, e.atk - (player.def + player.armor) + Math.floor(Math.random()*2));
+      player.hp -= dmg;
+      addMsg(`${e.name} hits you for ${dmg} damage!`, 'danger');
+      if (player.hp <= 0) {
+        gameOver = true;
+        addMsg(`You have died! Final level: ${depth}, Gold: ${player.gold}`, 'danger');
+        return;
+      }
+      continue;
+    }
+    let mx = 0, my = 0;
+    if (Math.abs(dx) >= Math.abs(dy)) mx = dx > 0 ? 1 : -1;
+    else my = dy > 0 ? 1 : -1;
+    if (Math.random() < 0.5) { let t = mx; mx = my; my = t; }
+    let nx = e.x + mx, ny = e.y + my;
+    if (nx < 0 || nx >= W || ny < 0 || ny >= H) continue;
+    if (dungeon[ny][nx] === 1) continue;
+    let blocked = false;
+    if (nx === player.x && ny === player.y) blocked = true;
+    for (let o of enemies) {
+      if (o !== e && o.hp > 0 && o.x === nx && o.y === ny) { blocked = true; break; }
+    }
+    if (!blocked) { e.x = nx; e.y = ny; }
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (gameOver && (e.key === 'r' || e.key === 'R')) {
+    depth = 1; gameOver = false;
+    player = initPlayer();
+    generateDungeon();
+    computeFOV();
+    addMsg('Welcome to the dungeon!', 'info');
+    render();
+    return;
+  }
+  switch(e.key) {
+    case 'ArrowUp': case 'w': case 'W': e.preventDefault(); movePlayer(0, -1); break;
+    case 'ArrowDown': case 's': case 'S': e.preventDefault(); movePlayer(0, 1); break;
+    case 'ArrowLeft': case 'a': case 'A': e.preventDefault(); movePlayer(-1, 0); break;
+    case 'ArrowRight': case 'd': case 'D': e.preventDefault(); movePlayer(1, 0); break;
+    case '.': case ' ': movePlayer(0, 0); break;
+  }
+});
+
+player = initPlayer();
+generateDungeon();
+computeFOV();
+addMsg('Welcome to the dungeon! Use WASD or arrows to move.', 'info');
+addMsg('Find the stairs (>) to descend.', 'info');
+render();
+</script>
+</body>
+</html>

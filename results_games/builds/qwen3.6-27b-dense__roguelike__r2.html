@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#ccc;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{font-size:14px;line-height:14px;letter-spacing:2px;white-space:pre;background:#111;padding:8px;border:1px solid #333;border-radius:4px}
+#hud{display:flex;gap:24px;margin:8px 0;font-size:14px;color:#aaa}
+#hud span{color:#fff}
+#log{width:720px;height:100px;overflow-y:auto;font-size:12px;color:#888;border:1px solid #222;padding:6px;background:#0d0d0d;border-radius:4px;margin-top:4px}
+#log div{margin:1px 0}
+#log .dmg{color:#e55}
+#log .heal{color:#5e5}
+#log .info{color:#5be}
+#log .gold{color:#eb5}
+#log .level{color:#e5e}
+#title{color:#e5e;font-size:18px;margin-bottom:4px;letter-spacing:4px}
+#help{color:#555;font-size:11px;margin-top:4px}
+</style>
+</head>
+<body>
+<div id="game">
+<div id="title">⚔ DUNGEON OF SHADOWS ⚔</div>
+<div id="hud"></div>
+<div id="map"></div>
+<div id="log"></div>
+<div id="help">WASD/Arrows: Move &amp; Attack | &gt; or .: Wait | G: Pick up | 1-3: Use item | Q: Quit to surface</div>
+</div>
+<script>
+const W=80,H=24,MAP_W=80,MAP_H=45;
+const T_WALL=0,T_FLOOR=1,T_DOOR=2,T_STAIRS=3,T_CORRIDOR=4;
+const COLORS={
+  wall:'#444',floor:'#2a2a2a',door:'#a85',stairs:'#5be',
+  player:'#fff',enemy:'#e55',item:'#eb5',potion:'#5e5',
+  sword:'#ccc',shield:'#5be',gold:'#eb5',explored:'#1a1a1a',
+  fog:'#0a0a0a'
+};
+let map,rooms,player,enemies,items,particles,logMsgs,gameOver,turnCount,depth;
+let visible,explored;
+const keys={};
+let lastTime=0;
+const TICK=120;
+
+document.addEventListener('keydown',e=>{
+  keys[e.key]=true;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();
+});
+document.addEventListener('keyup',e=>{keys[e.key]=false;});
+
+function rng(min,max){return Math.floor(Math.random()*(max-min+1))+min}
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)}
+function manhattan(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)}
+
+function generateDungeon(){
+  map=[];
+  for(let y=0;y<MAP_H;y++){map[y]=[];for(let x=0;x<MAP_W;x++)map[y][x]=T_WALL;}
+  rooms=[];
+  const maxRooms=rng(8,14);
+  for(let i=0;i<100&&rooms.length<maxRooms;i++){
+    const rw=rng(4,12),rh=rng(3,9);
+    const rx=rng(1,MAP_W-rw-1),ry=rng(1,MAP_H-rh-1);
+    let overlap=false;
+    for(const r of rooms){
+      if(rx-1<r.x+r.w&&rx+rw+1>r.x&&ry-1<r.y+r.h&&ry+rh+1>r.y){overlap=true;break;}
+    }
+    if(!overlap){
+      const room={x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)};
+      for(let y=ry;y<ry+rh;y++)for(let x=rx;x<rx+rw;x++)map[y][x]=T_FLOOR;
+      rooms.push(room);
+    }
+  }
+  for(let i=1;i<rooms.length;i++){
+    const a=rooms[i-1],b=rooms[i];
+    let cx=a.cx,cy=a.cy;
+    while(cx!==b.cx){
+      if(map[cy][cx]===T_WALL)map[cy][cx]=T_CORRIDOR;
+      cx+=cx<b.cx?1:-1;
+    }
+    while(cy!==b.cy){
+      if(map[cy][cx]===T_WALL)map[cy][cx]=T_CORRIDOR;
+      cy+=cy<b.cy?1:-1;
+    }
+    if(map[cy][cx]===T_WALL)map[cy][cx]=T_CORRIDOR;
+  }
+  // Place doors
+  for(const r of rooms){
+    const doorX=r.x+rng(1,r.w-2);
+    const doorY=r.y;
+    if(map[doorY-1][doorX]===T_WALL||map[doorY-1][doorX]===T_CORRIDOR)map[doorY][doorX]=T_DOOR;
+  }
+  // Stairs in last room
+  const lastRoom=rooms[rooms.length-1];
+  map[lastRoom.cy][lastRoom.cx]=T_STAIRS;
+  // Player in first room
+  const firstRoom=rooms[0];
+  player.x=firstRoom.cx;
+  player.y=firstRoom.cy;
+  // Enemies
+  enemies=[];
+  const numEnemies=rng(6,10)+depth*2;
+  for(let i=0;i<numEnemies;i++){
+    const room=rooms[rng(1,rooms.length-1)];
+    const ex=room.x+rng(0,room.w-1),ey=room.y+rng(0,room.h-1);
+    if(map[ey][ex]===T_FLOOR&&!(ex===player.x&&ey===player.y)){
+      const types=['rat','goblin','skeleton','orc','troll','demon'];
+      const maxType=Math.min(types.length-1,Math.floor(depth/2)+rng(0,1));
+      const type=types[rng(0,maxType)];
+      const stats=getEnemyStats(type,depth);
+      enemies.push({x:ex,y:ey,type,...stats,alive:true});
+    }
+  }
+  // Items
+  items=[];
+  const numItems=rng(4,8);
+  for(let i=0;i<numItems;i++){
+    const room=rooms[rng(1,rooms.length-1)];
+    const ix=room.x+rng(0,room.w-1),iy=room.y+rng(0,room.h-1);
+    if(map[iy][ix]===T_FLOOR){
+      const r=Math.random();
+      let item;
+      if(r<0.35)item={x:ix,y:iy,type:'potion',name:'Health Potion',sym:'!',color:COLORS.potion};
+      else if(r<0.55)item={x:ix,y:iy,type:'gold',name:'Gold',sym:'$',color:COLORS.gold,value:rng(5,15+depth*5)};
+      else if(r<0.75)item={x:ix,y:iy,type:'sword',name:'Sword +1',sym:'/',color:COLORS.sword,atk:1};
+      else item={x:ix,y:iy,type:'shield',name:'Shield +1',sym:'[',color:COLORS.shield,def:1};
+      items.push(item);
+    }
+  }
+  computeVisibility();
+}
+
+function getEnemyStats(type,d){
+  const s={
+    rat:{hp:4,atk:1,def:0,sym:'r',color:'#a85',xp:2},
+    goblin:{hp:8,atk:2,def:1,sym:'g',color:'#5e5',xp:5},
+    skeleton:{hp:12,atk:3,def:2,sym:'s',color:'#ccc',xp:8},
+    orc:{hp:18,atk:4,def:3,sym:'O',color:'#5a5',xp:12},
+    troll:{hp:25,atk:5,def:4,sym:'T',color:'#585',xp:18},
+    demon:{hp:35,atk:7,def:5,sym:'D',color:'#e55',xp:25}
+  };
+  const st=s[type]||s.rat;
+  const scale=1+d*0.15;
+  return{hp:Math.floor(st.hp*scale),maxHp:Math.floor(st.hp*scale),atk:Math.floor(st.atk*scale),def:Math.floor(st.def*scale),sym:st.sym,color:st.color,xp:Math.floor(st.xp*scale)};
+}
+
+function computeVisibility(){
+  visible=[];explored=[];
+  for(let y=0;y<MAP_H;y++){visible[y]=[];explored[y]=[];for(let x=0;x<MAP_W;x++){visible[y][x]=false;explored[y][x]=false;}}
+  const radius=8;
+  for(let dy=-radius;dy<=radius;dy++){
+    for(let dx=-radius;dx<=radius;dx++){
+      const tx=player.x+dx,ty=player.y+dy;
+      if(tx<0||tx>=MAP_W||ty<0||ty>=MAP_H)continue;
+      if(dx*dx+dy*dy>radius*radius)continue;
+      if(lineOfSight(player.x,player.y,tx,ty)){
+        visible[ty][tx]=true;
+        explored[ty][tx]=true;
+      }
+    }
+  }
+}
+
+function lineOfSight(x0,y0,x1,y1){
+  let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0);
+  let sx=x0<x1?1:-1,sy=y0<y1?1:-1;
+  let err=dx-dy;
+  let cx=x0,cy=y0;
+  while(true){
+    if(map[cy][cx]===T_WALL&&!(cx===x0&&cy===y0))return false;
+    if(cx===x1&&cy===y1)return true;
+    const e2=2*err;
+    if(e2>-dy){err-=dy;cx+=sx;}
+    if(e2<dx){err+=dx;cy+=sy;}
+  }
+}
+
+function initGame(){
+  player={x:0,y:0,hp:30,maxHp:30,atk:3,def:1,xp:0,level:1,xpNext:10,gold:0,
+    inventory:[],maxInv:6,baseAtk:3,baseDef:1};
+  logMsgs=[];
+  gameOver=false;
+  turnCount=0;
+  depth=1;
+  generateDungeon();
+  addLog("You descend into the Dungeon of Shadows...","info");
+  addLog("Find the stairs (>) to go deeper.","info");
+}
+
+function addLog(msg,cls){
+  logMsgs.push({msg,cls:cls||''});
+  if(logMsgs.length>100)logMsgs.shift();
+}
+
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  const nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=MAP_W||ny<0||ny>=MAP_H)return;
+  if(map[ny][nx]===T_WALL)return;
+  const enemy=enemies.find(e=>e.alive&&e.x===nx&&e.y===ny);
+  if(enemy){
+    attackEnemy(enemy);
+  }else{
+    player.x=nx;player.y=ny;
+    if(map[ny][nx]===T_STAIRS){
+      depth++;
+      addLog("You descend deeper... (Depth: "+depth+")","level");
+      generateDungeon();
+      computeVisibility();
+      render();
+      return;
+    }
+  }
+  endTurn();
+}
+
+function attackEnemy(enemy){
+  const dmg=Math.max(1,player.atk-enemy.def+rng(-1,1));
+  enemy.hp-=dmg;
+  addLog("You hit the "+enemy.type+" for "+dmg+" damage!","dmg");
+  if(enemy.hp<=0){
+    enemy.alive=false;
+    player.xp+=enemy.xp;
+    addLog("The "+enemy.type+" dies! (+"+enemy.xp+" XP)","info");
+    checkLevelUp();
+  }
+}
+
+function checkLevelUp(){
+  while(player.xp>=player.xpNext){
+    player.xp-=player.xpNext;
+    player.level++;
+    player.xpNext=Math.floor(player.xpNext*1.5);
+    player.maxHp+=5;
+    player.hp=Math.min(player.hp+5,player.maxHp);
+    player.atk+=1;
+    player.def+=1;
+    addLog("LEVEL UP! You are now level "+player.level+"!","level");
+  }
+}
+
+function enemyTurn(){
+  for(const e of enemies){
+    if(!e.alive)continue;
+    const d=manhattan(e,player);
+    if(d>12)continue;
+    if(d<=1){
+      const dmg=Math.max(1,e.atk-player.def+rng(-1,1));
+      player.hp-=dmg;
+      addLog("The "+e.type+" hits you for "+dmg+" damage!","dmg");
+      if(player.hp<=0){
+        player.hp=0;
+        gameOver=true;
+        addLog("You have died! Final depth: "+depth+", Level: "+player.level,"dmg");
+        return;
+      }
+    }else if(d<=8){
+      // Move toward player
+      const dx=Math.sign(player.x-e.x),dy=Math.sign(player.y-e.y);
+      let moved=false;
+      // Try direct path
+      const moves=[[dx,dy],[dx,0],[0,dy]];
+      for(const[mdx,mdy]of moves){
+        if(mdx===0&&mdy===0)continue;
+        const nx=e.x+mdx,ny=e.y+mdy;
+        if(nx<0||nx>=MAP_W||ny<0||ny>=MAP_H)continue;
+        if(map[ny][nx]===T_WALL)continue;
+        if(enemies.some(o=>o.alive&&o!==e&&o.x===nx&&o.y===ny))continue;
+        if(nx===player.x&&ny===player.y)continue;
+        e.x=nx;e.y=ny;
+        moved=true;
+        break;
+      }
+    }
+  }
+}
+
+function endTurn(){
+  turnCount++;
+  enemyTurn();
+  computeVisibility();
+  render();
+}
+
+function pickupItem(){
+  const item=items.find(i=>i.x===player.x&&i.y===player.y);
+  if(!item)return;
+  if(item.type==='gold'){
+    player.gold+=item.value;
+    addLog("Picked up "+item.value+" gold!","gold");
+    items.splice(items.indexOf(item),1);
+  }else if(player.inventory.length<player.maxInv){
+    player.inventory.push(item);
+    addLog("Picked up "+item.name,"info");
+    items.splice(items.indexOf(item),1);
+  }else{
+    addLog("Inventory full!","dmg");
+  }
+  render();
+}
+
+function useItem(slot){
+  if(slot>=player.inventory.length)return;
+  const item=player.inventory[slot];
+  if(item.type==='potion'){
+    const heal=rng(8,15)+depth*2;
+    player.hp=Math.min(player.hp+heal,player.maxHp);
+    addLog("Used "+item.name+". Healed "+heal+" HP!","heal");
+    player.inventory.splice(slot,1);
+  }else if(item.type==='sword'){
+    player.atk+=item.atk;
+    player.baseAtk+=item.atk;
+    addLog("Equipped "+item.name+"! ATK +"+item.atk,"info");
+    player.inventory.splice(slot,1);
+  }else if(item.type==='shield'){
+    player.def+=item.def;
+    player.baseDef+=item.def;
+    addLog("Equipped "+item.name+"! DEF +"+item.def,"info");
+    player.inventory.splice(slot,1);
+  }
+  render();
+}
+
+function wait(){
+  if(gameOver)return;
+  addLog("You wait...","info");
+  endTurn();
+}
+
+function render(){
+  const mapEl=document.getElementById('map');
+  const hudEl=document.getElementById('hud');
+  const logEl=document.getElementById('log');
+  let html='';
+  for(let y=0;y<MAP_H;y++){
+    for(let x=0;x<MAP_W;x++){
+      if(!explored[y][x]){html+='<span style="color:'+COLORS.fog+'"> </span>';continue;}
+      if(!visible[y][x]){
+        // Explored but not visible - dim
+        const tile=map[y][x];
+        let ch='.',c=COLORS.explored;
+        if(tile===T_WALL)ch='#';
+        else if(tile===T_DOOR)ch='+';
+        else if(tile===T_STAIRS)ch='>';
+        html+='<span style="color:'+c+';opacity:0.4">'+ch+'</span>';
+        continue;
+      }
+      const tile=map[y][x];
+      let ch='.',c=COLORS.floor;
+      if(tile===T_WALL){ch='#';c=COLORS.wall;}
+      else if(tile===T_DOOR){ch='+';c=COLORS.door;}
+      else if(tile===T_STAIRS){ch='>';c=COLORS.stairs;}
+      else if(tile===T_CORRIDOR){ch='.';c=COLORS.floor;}
+      // Check for items
+      const item=items.find(i=>i.x===x&&i.y===y);
+      if(item){ch=item.sym;c=item.color;}
+      // Check for enemies
+      const enemy=enemies.find(e=>e.alive&&e.x===x&&e.y===y);
+      if(enemy){ch=enemy.sym;c=enemy.color;}
+      // Player
+      if(x===player.x&&y===player.y){ch='@';c=COLORS.player;}
+      html+='<span style="color:'+c+'">'+ch+'</span>';
+    }
+    html+='\n';
+  }
+  mapEl.innerHTML=html;
+  // HUD
+  const invStr=player.inventory.map((it,i)=>(i+1)+':'+it.name).join(' | ')||'(empty)';
+  hudEl.innerHTML=
+    '<div>HP: <span style="color:#e55">'+player.hp+'/'+player.maxHp+'</span></div>'+
+    '<div>ATK: <span>'+player.atk+'</span> DEF: <span>'+player.def+'</span></div>'+
+    '<div>LVL: <span>'+player.level+'</span> XP: <span>'+player.xp+'/'+player.xpNext+'</span></div>'+
+    '<div>Depth: <span>'+depth+'</span> Gold: <span style="color:#eb5">'+player.gold+'</span></div>'+
+    '<div>Inv: <span>'+invStr+'</span></div>';
+  // Log
+  logEl.innerHTML=logMsgs.slice(-20).map(m=>'<div class="'+m.cls+'">'+m.msg+'</div>').join('');
+  logEl.scrollTop=logEl.scrollHeight;
+}
+
+function gameLoop(time){
+  if(time-lastTime>=TICK){
+    lastTime=time;
+    if(!gameOver){
+      if(keys['ArrowUp']||keys['w']||keys['W']){movePlayer(0,-1);keys['ArrowUp']=keys['w']=keys['W']=false;}
+      else if(keys['ArrowDown']||keys['s']||keys['S']){movePlayer(0,1);keys['ArrowDown']=keys['s']=keys['S']=false;}
+      else if(keys['ArrowLeft']||keys['a']||keys['A']){movePlayer(-1,0);keys['ArrowLeft']=keys['a']=keys['A']=false;}
+      else if(keys['ArrowRight']||keys['d']||keys['D']){movePlayer(1,0);keys['ArrowRight']=keys['d']=keys['D']=false;}
+      else if(keys['>']||keys['.']){wait();keys['>']=keys['.']=false;}
+      else if(keys['g']||keys['G']){pickupItem();keys['g']=keys['G']=false;}
+      else if(keys['1']){useItem(0);keys['1']=false;}
+      else if(keys['2']){useItem(1);keys['2']=false;}
+      else if(keys['3']){useItem(2);keys['3']=false;}
+      else if(keys['4']){useItem(3);keys['4']=false;}
+      else if(keys['5']){useItem(4);keys['5']=false;}
+      else if(keys['6']){useItem(5);keys['6']=false;}
+      else if(keys['q']||keys['Q']){
+        if(confirm('Quit to surface?')){initGame();}
+        keys['q']=keys['Q']=false;
+      }
+    }
+    if(gameOver){
+      if(keys['Enter']||keys['r']||keys['R']){initGame();keys['Enter']=keys['r']=keys['R']=false;}
+    }
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+initGame();
+render();
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

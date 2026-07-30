@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Flight Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 14px;
+            text-shadow: 0 0 5px black;
+            pointer-events: none;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 12px;
+            text-shadow: 0 0 5px black;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">3D Flight Simulator - Fly over a procedurally generated city</div>
+    <div id="controls">WASD: Move | Q/E: Rotate | R/F: Up/Down | Mouse: Look around</div>
+    <script>
+        // Simple 3D engine implementation
+        class Vector3 {
+            constructor(x = 0, y = 0, z = 0) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
+
+            add(v) {
+                return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
+            }
+
+            subtract(v) {
+                return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+            }
+
+            multiply(scalar) {
+                return new Vector3(this.x * scalar, this.y * scalar, this.z * scalar);
+            }
+
+            normalize() {
+                const length = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+                if (length > 0) {
+                    return new Vector3(this.x / length, this.y / length, this.z / length);
+                }
+                return new Vector3(0, 0, 0);
+            }
+
+            dot(v) {
+                return this.x * v.x + this.y * v.y + this.z * v.z;
+            }
+
+            cross(v) {
+                return new Vector3(
+                    this.y * v.z - this.z * v.y,
+                    this.z * v.x - this.x * v.z,
+                    this.x * v.y - this.y * v.x
+                );
+            }
+        }
+
+        class Matrix4 {
+            constructor() {
+                this.elements = new Float32Array(16);
+                this.identity();
+            }
+
+            identity() {
+                const m = this.elements;
+                m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 0;
+                m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
+                m[8] = 0; m[9] = 0; m[10] = 1; m[11] = 0;
+                m[12] = 0; m[13] = 0; m[14] = 0; m[15] = 1;
+            }
+
+            multiply(m) {
+                const a = this.elements;
+                const b = m.elements;
+                const result = new Float32Array(16);
+                
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        let sum = 0;
+                        for (let k = 0; k < 4; k++) {
+                            sum += a[i * 4 + k] * b[k * 4 + j];
+                        }
+                        result[i * 4 + j] = sum;
+                    }
+                }
+                this.elements = result;
+                return this;
+            }
+
+            perspective(fov, aspect, near, far) {
+                const f = 1.0 / Math.tan(fov / 2);
+                const m = this.elements;
+                m[0] = f / aspect; m[1] = 0; m[2] = 0; m[3] = 0;
+                m[4] = 0; m[5] = f; m[6] = 0; m[7] = 0;
+                m[8] = 0; m[9] = 0; m[10] = (far + near) / (near - far); m[11] = -1;
+                m[12] = 0; m[13] = 0; m[14] = (2 * far * near) / (near - far); m[15] = 0;
+                return this;
+            }
+
+            lookAt(eye, target, up) {
+                const zAxis = eye.subtract(target).normalize();
+                const xAxis = up.cross(zAxis).normalize();
+                const yAxis = zAxis.cross(xAxis);
+                
+                const m = this.elements;
+                m[0] = xAxis.x; m[1] = yAxis.x; m[2] = zAxis.x; m[3] = 0;
+                m[4] = xAxis.y; m[5] = yAxis.y; m[6] = zAxis.y; m[7] = 0;
+                m[8] = xAxis.z; m[9] = yAxis.z; m[10] = zAxis.z; m[11] = 0;
+                m[12] = -xAxis.dot(eye); m[13] = -yAxis.dot(eye); m[14] = -zAxis.dot(eye); m[15] = 1;
+                return this;
+            }
+
+            translate(x, y, z) {
+                const m = this.elements;
+                m[12] += m[0] * x + m[4] * y + m[8] * z;
+                m[13] += m[1] * x + m[5] * y + m[9] * z;
+                m[14] += m[2] * x + m[6] * y + m[10] * z;
+                m[15] += m[3] * x + m[7] * y + m[11] * z;
+                return this;
+            }
+
+            rotateX(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                const m = this.elements;
+                const temp0 = m[4];
+                const temp1 = m[5];
+                const temp2 = m[6];
+                const temp3 = m[7];
+                m[4] = temp0 * c - temp1 * s;
+                m[5] = temp0 * s + temp1 * c;
+                m[6] = temp2 * c - temp3 * s;
+                m[7] = temp2 * s + temp3 * c;
+                return this;
+            }
+
+            rotateY(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                const m = this.elements;
+                const temp0 = m[0];
+                const temp1 = m[1];
+                const temp2 = m[2];
+                const temp3 = m[3];
+                m[0] = temp0 * c + temp2 * s;
+                m[1] = temp1 * c + temp2 * s;
+                m[2] = -temp0 * s + temp2 * c;
+                m[3] = -temp1 * s + temp2 * c;
+                return this;
+            }
+
+            rotateZ(angle) {
+                const c = Math.cos(angle);
+                const s = Math.sin(angle);
+                const m = this.elements;
+                const temp0 = m[0];
+                const temp1 = m[1];
+                const temp2 = m[2];
+                const temp3 = m[3];
+                m[0] = temp0 * c - temp1 * s;
+                m[1] = temp0 * s + temp1 * c;
+                m[2] = temp2 * c - temp3 * s;
+                m[3] = temp2 * s + temp3 * c;
+                return this;
+            }
+        }
+
+        class Mesh {
+            constructor(vertices, indices, normals, colors) {
+                this.vertices = vertices;
+                this.indices = indices;
+                this.normals = normals;
+                this.colors = colors;
+                this.worldMatrix = new Matrix4();
+            }
+
+            setWorldMatrix(matrix) {
+                this.worldMatrix = matrix;
+            }
+        }
+
+        class Renderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                if (!this.gl) {
+                    throw new Error('WebGL not supported');
+                }
+                this.setupShaders();
+                this.setupBuffers();
+                this.viewportWidth = canvas.width;
+                this.viewportHeight = canvas.height;
+            }
+
+            setupShaders() {
+                const vertexShaderSource = `
+                    attribute vec3 aPosition;
+                    attribute vec3 aNormal;
+                    attribute vec3 aColor;
+                    uniform mat4 uModelViewMatrix;
+                    uniform mat4 uProjectionMatrix;
+                    varying vec3 vNormal;
+                    varying vec3 vColor;
+                    void main() {
+                        vec4 worldPosition = uModelViewMatrix * vec4(aPosition, 1.0);
+                        gl_Position = uProjectionMatrix * worldPosition;
+                        vNormal = mat3(uModelViewMatrix) * aNormal;
+                        vColor = aColor;
+                    }
+                `;
+
+                const fragmentShaderSource = `
+                    precision mediump float;
+                    varying vec3 vNormal;
+                    varying vec3 vColor;
+                    void main() {
+                        vec3 light = normalize(vec3(0.5, 1.0, 0.5));
+                        float diffuse = max(dot(vNormal, light), 0.0);
+                        vec3 color = vColor * (0.3 + 0.7 * diffuse);
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `;
+
+                const vertexShader = this.compileShader(vertexShaderSource, this.gl.VERTEX_SHADER);
+                const fragmentShader = this.compileShader(fragmentShaderSource, this.gl.FRAGMENT_SHADER);
+                
+                this.shaderProgram = this.createProgram(vertexShader, fragmentShader);
+                
+                this.gl.useProgram(this.shaderProgram);
+                this.positionAttributeLocation = this.gl.getAttribLocation(this.shaderProgram, 'aPosition');
+                this.normalAttributeLocation = this.gl.getAttribLocation(this.shaderProgram, 'aNormal');
+                this.colorAttributeLocation = this.gl.getAttribLocation(this.shaderProgram, 'aColor');
+                this.modelViewMatrixLocation = this.gl.getUniformLocation(this.shaderProgram, 'uModelViewMatrix');
+                this.projectionMatrixLocation = this.gl.getUniformLocation(this.shaderProgram, 'uProjectionMatrix');
+            }
+
+            compileShader(source, type) {
+                const shader = this.gl.createShader(type);
+                this.gl.shaderSource(shader, source);
+                this.gl.compileShader(shader);
+                if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+                    throw new Error('Shader compilation error: ' + this.gl.getShaderInfoLog(shader));
+                }
+                return shader;
+            }
+
+            createProgram(vertexShader, fragmentShader) {
+                const program = this.gl.createProgram();
+                this.gl.attachShader(program, vertexShader);
+                this.gl.attachShader(program, fragmentShader);
+                this.gl.linkProgram(program);
+                if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
+                    throw new Error('Program linking error: ' + this.gl.getProgramInfoLog(program));
+                }
+                return program;
+            }
+
+            setupBuffers() {
+                this.vertexBuffer = this.gl.createBuffer();
+                this.normalBuffer = this.gl.createBuffer();
+                this.colorBuffer = this.gl.createBuffer();
+                this.indexBuffer = this.gl.createBuffer();
+            }
+
+            setProjectionMatrix(matrix) {
+                this.projectionMatrix = matrix;
+            }
+
+            render(mesh, viewMatrix) {
+                const modelViewMatrix = new Matrix4().multiply(viewMatrix).multiply(mesh.worldMatrix);
+                
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.vertexBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(mesh.vertices), this.gl.STATIC_DRAW);
+                this.gl.enableVertexAttribArray(this.positionAttributeLocation);
+                this.gl.vertexAttribPointer(this.positionAttributeLocation, 3, this.gl.FLOAT, false, 0, 0);
+
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.normalBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(mesh.normals), this.gl.STATIC_DRAW);
+                this.gl.enableVertexAttribArray(this.normalAttributeLocation);
+                this.gl.vertexAttribPointer(this.normalAttributeLocation, 3, this.gl.FLOAT, false, 0, 0);
+
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.colorBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(mesh.colors), this.gl.STATIC_DRAW);
+                this.gl.enableVertexAttribArray(this.colorAttributeLocation);
+                this.gl.vertexAttribPointer(this.colorAttributeLocation, 3, this.gl.FLOAT, false, 0, 0);
+
+                this.gl.bindBuffer(this.gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+                this.gl.bufferData(this.gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(mesh.indices), this.gl.STATIC_DRAW);
+
+                this.gl.uniformMatrix4fv(this.projectionMatrixLocation, false, this.projectionMatrix.elements);
+                this.gl.uniformMatrix4fv(this.modelViewMatrixLocation, false, modelViewMatrix.elements);
+
+                this.gl.drawElements(this.gl.TRIANGLES, mesh.indices.length, this.gl.UNSIGNED_SHORT, 0);
+            }
+        }
+
+        // City generation
+        class City {
+            constructor() {
+                this.buildings = [];
+                this.generate();
+            }
+
+            generate() {
+                const size = 100;
+                const buildingCount = 200;
+                
+                for (let i = 0; i < buildingCount; i++) {
+                    const x = (Math.random() - 0.5) * size;
+                    const z = (Math.random() - 0.5) * size;
+                    const width = 2 + Math.random() * 3;
+                    const depth = 2 + Math.random() * 3;
+                    const height = 5 + Math.random() * 20;
+                    
+                    // Avoid placing buildings too close to center
+                    if (Math.abs(x) < 10 && Math.abs(z) < 10) continue;
+                    
+                    this.buildings.push({
+                        x, z, width, depth, height
+                    });
+                }
+            }
+
+            createBuildingMesh(building) {
+                const vertices = [];
+                const normals = [];
+                const colors = [];
+                const indices = [];
+                
+                const {x, z, width, depth, height} = building;
+                const halfWidth = width / 2;
+                const halfDepth = depth / 2;
+                
+                // Create vertices for a cube
+                const positions = [
+                    // Bottom face
+                    x - halfWidth, 0, z - halfDepth,
+                    x + halfWidth, 0, z - halfDepth,
+                    x + halfWidth, 0, z + halfDepth,
+                    x - halfWidth, 0, z + halfDepth,
+                    // Top face
+                    x - halfWidth, height, z - halfDepth,
+                    x + halfWidth, height, z - halfDepth,
+                    x + halfWidth, height, z + halfDepth,
+                    x - halfWidth, height, z + halfDepth
+                ];
+                
+                const normal = [0, 1, 0];
+                const color = [0.3 + Math.random() * 0.3, 0.3 + Math.random() * 0.3, 0.3 + Math.random() * 0.3];
+                
+                for (let i = 0; i < 8; i++) {
+                    vertices.push(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+                    normals.push(...normal);
+                    colors.push(...color);
+                }
+                
+                // Create indices for two triangles per face
+                const faces = [
+                    // Bottom face
+                    0, 1, 2, 0, 2, 3,
+                    // Top face
+                    4, 6, 5, 4, 7, 6,
+                    // Front face
+                    3, 2, 6, 3, 6, 7,
+                    // Back face
+                    0, 4, 5, 0, 5, 1,
+                    // Left face
+                    0, 3, 7, 0, 7, 4,
+                    // Right face
+                    1, 5, 6, 1, 6, 2
+                ];
+                
+                for (let i = 0; i < faces.length; i++) {
+                    indices.push(faces[i]);
+                }
+                
+                return new Mesh(vertices, indices, normals, colors);
+            }
+        }
+
+        // Main application
+        class FlightSimulator {
+            constructor() {
+                this.canvas = document.createElement('canvas');
+                document.body.appendChild(this.canvas);
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                
+                this.renderer = new Renderer(this.canvas);
+                this.city = new City();
+                this.camera = {
+                    position: new Vector3(0, 10, 0),
+                    rotation: new Vector3(0, 0, 0)
+                };
+                this.velocity = new Vector3(0, 0, 0);
+                this.keys = {};
+                this.mouse = {x: 0, y: 0, locked: false};
+                
+                this.setupEventListeners();
+                this.setupProjectionMatrix();
+                this.setupScene();
+                this.animate();
+            }
+
+            setupEventListeners() {
+                window.addEventListener('keydown', (e) => {
+                    this.keys[e.key.toLowerCase()] = true;
+                });
+                
+                window.addEventListener('keyup', (e) => {
+                    this.keys[e.key.toLowerCase()] = false;
+                });
+                
+                window.addEventListener('mousemove', (e) => {
+                    if (this.mouse.locked) {
+                        this.camera.rotation.y -= e.movementX * 0.005;
+                        this.camera.rotation.x -= e.movementY * 0.005;
+                    }
+                });
+                
+                window.addEventListener('click', () => {
+                    if (!this.mouse.locked) {
+                        this.canvas.requestPointerLock();
+                        this.mouse.locked = true;
+                    }
+                });
+                
+                window.addEventListener('pointerlockchange', () => {
+                    this.mouse.locked = document.pointerLockElement === this.canvas;
+                });
+                
+                window.addEventListener('resize', () => {
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
+                    this.setupProjectionMatrix();
+                });
+            }
+
+            setupProjectionMatrix() {
+                const projection = new Matrix4().perspective(
+                    Math.PI / 4,
+                    this.canvas.width / this.canvas.height,
+                    0.1,
+                    1000
+                );
+                this.renderer.setProjectionMatrix(projection);
+            }
+
+            setupScene() {
+                this.buildings = [];
+                for (const building of this.city.buildings) {
+                    this.buildings.push(this.city.createBuildingMesh(building));
+                }
+            }
+
+            update(deltaTime) {
+                const speed = 0.1;
+                const rotationSpeed = 0.01;
+                
+                // Handle keyboard input
+                if (this.keys['w']) this.velocity.z -= speed;
+                if (this.keys['s']) this.velocity.z += speed;
+                if (this.keys['a']) this.velocity.x -= speed;
+                if (this.keys['d']) this.velocity.x += speed;
+                if (this.keys['q']) this.camera.rotation.y -= rotationSpeed;
+                if (this.keys['e']) this.camera.rotation.y += rotationSpeed;
+                if (this.keys['r']) this.velocity.y += speed;
+                if (this.keys['f']) this.velocity.y -= speed;
+                
+                // Apply velocity to position
+                this.camera.position = this.camera.position.add(this.velocity.multiply(deltaTime));
+                
+                // Apply damping
+                this.velocity = this.velocity.multiply(0.9);
+                
+                // Limit camera position
+                this.camera.position.x = Math.max(-50, Math.min(50, this.camera.position.x));
+                this.camera.position.z = Math.max(-50, Math.min(50, this.camera.position.z));
+                this.camera.position.y = Math.max(1, Math.min(100, this.camera.position.y));
+                
+                // Update camera matrix
+                const viewMatrix = new Matrix4().lookAt(
+                    this.camera.position,
+                    this.camera.position.add(
+                        new Vector3(
+                            Math.sin(this.camera.rotation.y),
+                            Math.sin(this.camera.rotation.x),
+                            Math.cos(this.camera.rotation.y)
+                        )
+                    ),
+                    new Vector3(0, 1, 0)
+                );
+                
+                // Render buildings
+                for (const building of this.buildings) {
+                    building.setWorldMatrix(new Matrix4().translate(
+                        building.x,
+                        building.y,
+                        building.z
+                    ));
+                }
+            }
+
+            render() {
+                this.renderer.gl.clearColor(0.1, 0.2, 0.4, 1.0);
+                this.renderer.gl.clear(this.renderer.gl.COLOR_BUFFER_BIT | this.renderer.gl.DEPTH_BUFFER_BIT);
+                this.renderer.gl.enable(this.renderer.gl.DEPTH_TEST);
+                
+                // Render buildings
+                for (const building of this.buildings) {
+                    this.renderer.render(building, new Matrix4());
+                }
+            }
+
+            animate() {
+                const now = performance.now();
+                const deltaTime = Math.min(0.1, (now - this.lastTime) / 1000) || 0.016;
+                this.lastTime = now;
+                
+                this.update(deltaTime);
+                this.render();
+                
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        // Start the simulator
+        window.addEventListener('load', () => {
+            new FlightSimulator();
+        });
+    </script>
+</body>
+</html>

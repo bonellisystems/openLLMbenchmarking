@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tiny Roguelike</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            font-family: monospace;
+            text-align: center;
+            margin: 0;
+            padding: 10px;
+        }
+        #game {
+            display: inline-block;
+            border: 1px solid #0f0;
+            background-color: #000;
+            padding: 10px;
+            margin: 10px;
+        }
+        #info {
+            margin: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">Use WASD or arrow keys to move. Find the stairs (>) to descend.</div>
+    <div id="game"></div>
+    <div id="status">HP: 10</div>
+
+    <script>
+        // Game constants
+        const WIDTH = 40;
+        const HEIGHT = 20;
+        const WALL = '#';
+        const FLOOR = '.';
+        const STAIRS = '>';
+        const PLAYER = '@';
+        const ENEMY = 'E';
+        const ITEM = '$';
+
+        // Game state
+        let dungeon = [];
+        let player = {x: 0, y: 0, hp: 10};
+        let stairs = {x: 0, y: 0};
+        let enemies = [];
+        let items = [];
+        let gameOver = false;
+
+        // Generate dungeon
+        function generateDungeon() {
+            dungeon = [];
+            for (let y = 0; y < HEIGHT; y++) {
+                dungeon[y] = [];
+                for (let x = 0; x < WIDTH; x++) {
+                    dungeon[y][x] = WALL;
+                }
+            }
+
+            // Create rooms
+            for (let i = 0; i < 8; i++) {
+                const w = Math.floor(Math.random() * 8) + 4;
+                const h = Math.floor(Math.random() * 6) + 3;
+                const x = Math.floor(Math.random() * (WIDTH - w - 2)) + 1;
+                const y = Math.floor(Math.random() * (HEIGHT - h - 2)) + 1;
+
+                for (let ry = y; ry < y + h; ry++) {
+                    for (let rx = x; rx < x + w; rx++) {
+                        dungeon[ry][rx] = FLOOR;
+                    }
+                }
+            }
+
+            // Connect rooms with corridors
+            for (let i = 0; i < HEIGHT - 2; i++) {
+                for (let j = 0; j < WIDTH - 2; j++) {
+                    if (dungeon[i][j] === FLOOR && dungeon[i][j+1] === WALL) {
+                        for (let k = j; k < WIDTH; k++) {
+                            if (dungeon[i][k] === FLOOR) break;
+                            dungeon[i][k] = FLOOR;
+                        }
+                    }
+                }
+            }
+
+            // Place player
+            for (let y = 1; y < HEIGHT - 1; y++) {
+                for (let x = 1; x < WIDTH - 1; x++) {
+                    if (dungeon[y][x] === FLOOR) {
+                        player.x = x;
+                        player.y = y;
+                        break;
+                    }
+                }
+            }
+
+            // Place stairs
+            for (let y = 1; y < HEIGHT - 1; y++) {
+                for (let x = 1; x < WIDTH - 1; x++) {
+                    if (dungeon[y][x] === FLOOR && (x !== player.x || y !== player.y)) {
+                        stairs.x = x;
+                        stairs.y = y;
+                        break;
+                    }
+                }
+            }
+
+            // Place enemies
+            enemies = [];
+            for (let i = 0; i < 5; i++) {
+                const enemy = {x: 0, y: 0, hp: 3};
+                for (let attempts = 0; attempts < 100; attempts++) {
+                    enemy.x = Math.floor(Math.random() * (WIDTH - 2)) + 1;
+                    enemy.y = Math.floor(Math.random() * (HEIGHT - 2)) + 1;
+                    if (dungeon[enemy.y][enemy.x] === FLOOR && 
+                        (enemy.x !== player.x || enemy.y !== player.y) &&
+                        (enemy.x !== stairs.x || enemy.y !== stairs.y)) {
+                        enemies.push(enemy);
+                        break;
+                    }
+                }
+            }
+
+            // Place items
+            items = [];
+            for (let i = 0; i < 3; i++) {
+                const item = {x: 0, y: 0};
+                for (let attempts = 0; attempts < 100; attempts++) {
+                    item.x = Math.floor(Math.random() * (WIDTH - 2)) + 1;
+                    item.y = Math.floor(Math.random() * (HEIGHT - 2)) + 1;
+                    if (dungeon[item.y][item.x] === FLOOR && 
+                        (item.x !== player.x || item.y !== player.y) &&
+                        (item.x !== stairs.x || item.y !== stairs.y)) {
+                        items.push(item);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Render game
+        function render() {
+            let output = '';
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    if (x === player.x && y === player.y) {
+                        output += PLAYER;
+                    } else if (x === stairs.x && y === stairs.y) {
+                        output += STAIRS;
+                    } else {
+                        let char = dungeon[y][x];
+                        for (const enemy of enemies) {
+                            if (enemy.x === x && enemy.y === y) {
+                                char = ENEMY;
+                                break;
+                            }
+                        }
+                        for (const item of items) {
+                            if (item.x === x && item.y === y) {
+                                char = ITEM;
+                                break;
+                            }
+                        }
+                        output += char;
+                    }
+                }
+                output += '\n';
+            }
+            document.getElementById('game').textContent = output;
+            document.getElementById('status').textContent = `HP: ${player.hp}`;
+        }
+
+        // Move player
+        function movePlayer(dx, dy) {
+            if (gameOver) return;
+            
+            const newX = player.x + dx;
+            const newY = player.y + dy;
+            
+            if (newX < 0 || newX >= WIDTH || newY < 0 || newY >= HEIGHT) return;
+            if (dungeon[newY][newX] === WALL) return;
+            
+            // Check for enemy collision
+            for (let i = 0; i < enemies.length; i++) {
+                const enemy = enemies[i];
+                if (enemy.x === newX && enemy.y === newY) {
+                    player.hp -= 1;
+                    if (player.hp <= 0) {
+                        gameOver = true;
+                        document.getElementById('game').textContent += '\nGAME OVER';
+                        return;
+                    }
+                    // Remove enemy
+                    enemies.splice(i, 1);
+                    break;
+                }
+            }
+            
+            // Check for item pickup
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.x === newX && item.y === newY) {
+                    player.hp += 2;
+                    items.splice(i, 1);
+                    break;
+                }
+            }
+            
+            // Check for stairs
+            if (newX === stairs.x && newY === stairs.y) {
+                generateDungeon();
+            }
+            
+            player.x = newX;
+            player.y = newY;
+            render();
+        }
+
+        // Initialize game
+        generateDungeon();
+        render();
+
+        // Handle keyboard input
+        document.addEventListener('keydown', (e) => {
+            switch (e.key) {
+                case 'ArrowUp':
+                case 'w':
+                case 'W':
+                    movePlayer(0, -1);
+                    break;
+                case 'ArrowDown':
+                case 's':
+                case 'S':
+                    movePlayer(0, 1);
+                    break;
+                case 'ArrowLeft':
+                case 'a':
+                case 'A':
+                    movePlayer(-1, 0);
+                    break;
+                case 'ArrowRight':
+                case 'd':
+                case 'D':
+                    movePlayer(1, 0);
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>

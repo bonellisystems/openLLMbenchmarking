@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump Clone</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background-color: #222;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        font-family: 'Courier New', Courier, monospace;
+    }
+    canvas {
+        border: 2px solid #555;
+        background: linear-gradient(to bottom, #87CEEB, #E0F7FA);
+        display: block;
+        image-rendering: pixelated;
+    }
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="400" height="600"></canvas>
+
+<script>
+(function() {
+    'use strict';
+
+    // --- Configuration ---
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+    const CENTER_X = W / 2;
+    const CENTER_Y = H / 2;
+
+    const GRAVITY = 0.4;
+    const JUMP_FORCE = -10;
+    const MOVE_SPEED = 5;
+    const FRICTION = 0.85;
+    const PLATFORM_MIN_W = 40;
+    const PLATFORM_MAX_W = 100;
+    const PLATFORM_MIN_GAP = 80;
+    const PLATFORM_MAX_GAP = 160;
+
+    // --- State ---
+    let platforms = [];
+    let score = 0;
+    let highScore = 0;
+    let gameOver = false;
+    let keys = {};
+
+    // --- Player ---
+    const player = {
+        x: CENTER_X - 20,
+        y: CENTER_Y - 20,
+        w: 20,
+        h: 20,
+        vx: 0,
+        vy: 0,
+        grounded: false
+    };
+
+    // --- Input Handling ---
+    document.addEventListener('keydown', function(e) {
+        keys[e.code] = true;
+        // Prevent scrolling with arrows/space
+        if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].indexOf(e.code) > -1) {
+            e.preventDefault();
+        }
+    });
+    document.addEventListener('keyup', function(e) {
+        keys[e.code] = false;
+    });
+
+    // --- Platform Generation ---
+    function initPlatforms() {
+        platforms = [];
+        // Start platform
+        platforms.push({
+            x: CENTER_X - 40,
+            y: CENTER_Y + 20,
+            w: 80,
+            h: 10
+        });
+        // Fill initial screen
+        for (let i = 0; i < 5; i++) {
+            addPlatform();
+        }
+    }
+
+    function addPlatform() {
+        const last = platforms[platforms.length - 1];
+        const gap = PLATFORM_MIN_GAP + Math.random() * (PLATFORM_MAX_GAP - PLATFORM_MIN_GAP);
+        const y = last.y - gap;
+        const w = PLATFORM_MIN_W + Math.random() * (PLATFORM_MAX_W - PLATFORM_MIN_W);
+        const x = Math.random() * (W - w);
+        platforms.push({ x: x, y: y, w: w, h: 10 });
+    }
+
+    function removePlatforms() {
+        platforms = platforms.filter(function(p) {
+            return p.y > -20;
+        });
+    }
+
+    // --- Drawing ---
+    function drawPlayer() {
+        const x = player.x;
+        const y = player.y;
+        const s = player.w;
+
+        // Body
+        ctx.fillStyle = '#FFD700'; // Gold
+        ctx.fillRect(x, y + 5, s, s - 5);
+
+        // Head
+        ctx.beginPath();
+        ctx.arc(x + s/2, y + 2, 8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Eyes
+        ctx.fillStyle = '#000';
+        ctx.fillRect(x + s/2 - 3, y, 2, 2);
+        ctx.fillRect(x + s/2 + 1, y, 2, 2);
+
+        // Legs (animated)
+        ctx.strokeStyle = '#FFD700';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x + 5, y + s);
+        ctx.lineTo(x + 5 + Math.sin(Date.now() / 100) * 5, y + s + 8);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x + s - 5, y + s);
+        ctx.lineTo(x + s - 5 - Math.sin(Date.now() / 100) * 5, y + s + 8);
+        ctx.stroke();
+
+        // Arms
+        ctx.beginPath();
+        ctx.moveTo(x + 5, y + 5);
+        ctx.lineTo(x - 2, y + 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x + s - 5, y + 5);
+        ctx.lineTo(x + s + 2, y + 2);
+        ctx.stroke();
+    }
+
+    function drawPlatforms() {
+        platforms.forEach(function(p) {
+            // Grass top
+            ctx.fillStyle = '#4CAF50';
+            ctx.fillRect(p.x, p.y, p.w, 4);
+            // Dirt body
+            ctx.fillStyle = '#795548';
+            ctx.fillRect(p.x, p.y + 4, p.w, p.h - 4);
+        });
+    }
+
+    function drawScore() {
+        ctx.fillStyle = '#333';
+        ctx.font = 'bold 20px Courier New';
+        ctx.textAlign = 'left';
+        ctx.fillText("Score: " + score, 10, 25);
+        ctx.fillText("Best: " + highScore, 10, 50);
+    }
+
+    function drawGameOver() {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = '#FFF';
+        ctx.font = 'bold 30px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText("GAME OVER", W / 2, H / 2 - 20);
+        ctx.font = '16px Courier New';
+        ctx.fillText("Press Arrow Keys to Restart", W / 2, H / 2 + 20);
+    }
+
+    // --- Game Logic ---
+    function update() {
+        if (gameOver) return;
+
+        // Horizontal Movement
+        if (keys['ArrowLeft'] || keys['KeyA']) {
+            player.vx = -MOVE_SPEED;
+        } else if (keys['ArrowRight'] || keys['KeyD']) {
+            player.vx = MOVE_SPEED;
+        } else {
+            player.vx *= FRICTION;
+        }
+
+        // Gravity
+        player.vy += GRAVITY;
+        player.y += player.vy;
+        player.x += player.vx;
+
+        // Screen Wrapping
+        if (player.x + player.w < 0) {
+            player.x = W;
+        } else if (player.x > W) {
+            player.x = -player.w;
+        }
+
+        // Collision Detection
+        player.grounded = false;
+        platforms.forEach(function(p) {
+            // AABB Collision
+            if (player.x < p.x + p.w &&
+                player.x + player.w > p.x &&
+                player.y + player.h > p.y &&
+                player.y + player.h < p.y + p.h + player.vy + 2) {
+                
+                // Only jump if falling
+                if (player.vy >= 0) {
+                    player.vy = JUMP_FORCE;
+                    player.grounded = true;
+                }
+            }
+        });
+
+        // Scrolling Logic
+        if (player.y < CENTER_Y) {
+            const scrollAmount = CENTER_Y - player.y;
+            player.y = CENTER_Y;
+
+            platforms.forEach(function(p) {
+                p.y += scrollAmount;
+            });
+
+            score += Math.floor(scrollAmount);
+            if (score > highScore) highScore = score;
+        }
+
+        // Platform Management
+        removePlatforms();
+        while (platforms.length < 6) {
+            addPlatform();
+        }
+
+        // Game Over
+        if (player.y > H) {
+            gameOver = true;
+        }
+    }
+
+    function loop() {
+        update();
+        ctx.clearRect(0, 0, W, H);
+        drawPlatforms();
+        drawPlayer();
+        drawScore();
+        if (gameOver) drawGameOver();
+        requestAnimationFrame(loop);
+    }
+
+    // --- Start ---
+    initPlatforms();
+    loop();
+
+})();
+</script>
+</body>
+</html>

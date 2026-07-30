@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Asteroids</title>
+<style>
+  body { margin: 0; overflow: hidden; }
+  canvas { background: black; display: block; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const GAME_STATE = { TITLE: 0, PLAYING: 1, GAME_OVER: 2 };
+let gameState = GAME_STATE.TITLE;
+
+const KEYS = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, Space: false };
+window.addEventListener('keydown', e => { if (KEYS.hasOwnProperty(e.code)) KEYS[e.code] = true; });
+window.addEventListener('keyup', e => { if (KEYS.hasOwnProperty(e.code)) KEKS[e.code] = false; });
+
+const PLAYER_SPEED = 5;
+const ASTEROID_SPEED = 2;
+const BULLET_SPEED = 10;
+
+class Vector {
+  constructor(x, y) { this.x = x; this.y = y; }
+  add(v) { return new Vector(this.x + v.x, this.y + v.y); }
+  sub(v) { return new Vector(this.x - v.x, this.y - v.y); }
+  mul(s) { return new Vector(this.x * s, this.y * s); }
+  mag() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+  norm() { const m = this.mag(); return new Vector(this.x / m, this.y / m); }
+}
+
+class GameObject {
+  constructor(pos, vel) { this.pos = pos; this.vel = vel; }
+  update(dt) { this.pos = this.pos.add(this.vel.mul(dt)); }
+  draw() { }
+}
+
+class Player extends GameObject {
+  constructor(pos) { super(pos, new Vector(0, 0)); this.angle = 0; this.thrust = false; }
+  update(dt) {
+    if (KEYS.ArrowUp) this.thrust = true;
+    if (KEYS.ArrowDown) this.thrust = false;
+    if (this.thrust) {
+      const thrust = new Vector(Math.cos(this.angle), Math.sin(this.angle)).mul(PLAYER_SPEED);
+      this.vel = this.vel.add(thrust);
+    }
+    this.vel = this.vel.mul(0.98); // friction
+    super.update(dt);
+    if (KEYS.ArrowLeft) this.angle -= 0.05;
+    if (KEYS.ArrowRight) this.angle += 0.05;
+    if (KEYS.Space) this.shoot();
+  }
+  shoot() {
+    const bulletDir = new Vector(Math.cos(this.angle), Math.sin(this.angle));
+    bullets.push(new Bullet(this.pos.add(bulletDir.mul(20)), bulletDir));
+  }
+  draw() {
+    ctx.save();
+    ctx.translate(this.pos.x, this.pos.y);
+    ctx.rotate(this.angle);
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.lineTo(-5, 10);
+    ctx.lineTo(5, 10);
+    ctx.closePath();
+    ctx.fillStyle = 'white';
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+class Bullet extends GameObject {
+  constructor(pos, vel) { super(pos, vel.mul(BULLET_SPEED)); }
+  update(dt) { super.update(dt); }
+  draw() {
+    ctx.beginPath();
+    ctx.arc(this.pos.x, this.pos.y, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'cyan';
+    ctx.fill();
+  }
+}
+
+class Asteroid extends GameObject {
+  constructor(pos, vel, size) { super(pos, vel); this.size = size; this.angle = Math.random() * Math.PI * 2; this.speed = ASTEROID_SPEED + size * 0.5; }
+  update(dt) {
+    this.angle += (Math.random() - 0.5) * 0.05;
+    this.vel = new Vector(Math.cos(this.angle), Math.sin(this.angle)).mul(this.speed);
+    super.update(dt);
+    this.wrapAround();
+  }
+  draw() {
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+      const radius = this.size + Math.random() * 4 - 2;
+      const angle = (Math.PI * 2 * i) / 8 + this.angle;
+      const x = this.pos.x + Math.cos(angle) * radius;
+      const y = this.pos.y + Math.sin(angle) * radius;
+      ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'gray';
+    ctx.fill();
+  }
+  wrapAround() {
+    if (this.pos.x < 0) this.pos.x += canvas.width;
+    if (this.pos.x > canvas.width) this.pos.x -= canvas.width;
+    if (this.pos.y < 0) this.pos.y += canvas.height;
+    if (this.pos.y > canvas.height) this.pos.y -= canvas.height;
+  }
+}
+
+let player;
+let asteroids = [];
+let bullets = [];
+
+function spawnAsteroids(count, size) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = new Vector(Math.cos(angle), Math.sin(angle)).norm().mul(ASTEROID_SPEED);
+    const pos = new Vector(Math.random() * canvas.width, Math.random() * canvas.height);
+    asteroids.push(new Asteroid(pos, speed, size));
+  }
+}
+
+function checkCollisions() {
+  bullets.forEach((bullet, i) => {
+    const hitAsteroid = asteroids.find(a => Math.hypot(bullet.pos.x - a.pos.x, bullet.pos.y - a.pos.y) < a.size + 5);
+    if (hitAsteroid) {
+      bullets.splice(i, 1);
+      asteroids.splice(asteroids.indexOf(hitAsteroid), 1);
+      if (hitAsteroid.size > 1) {
+        const new_size = hitAsteroid.size * 0.5;
+        spawnAsteroids(2, new_size);
+      }
+    } else if (bullet.pos.x < 0 || bullet.pos.x > canvas.width || bullet.pos.y < 0 || bullet.pos.y > canvas.height) {
+      bullets.splice(i, 1);
+    }
+  });
+
+  const hitAsteroid = asteroids.find(a => Math.hypot(a.pos.x - player.pos.x, a.pos.y - player.pos.y) < a.size + 20);
+  if (hitAsteroid) {
+    gameState = GAME_STATE.GAME_OVER;
+  }
+}
+
+function gameLoop(dt) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (gameState === GAME_STATE.TITLE) {
+    ctx.fillStyle = 'white';
+    ctx.font = '48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Asteroids', canvas.width / 2, canvas.height / 2);
+    ctx.font = '24px sans-serif';
+    ctx.fillText('Press any arrow key to start', canvas.width / 2, canvas.height / 2 + 60);
+    if (Object.values(KEYS).some(k => k)) {
+      gameState = GAME_STATE.PLAYING;
+      player = new Player(new Vector(canvas.width / 2, canvas.height / 2));
+      spawnAsteroids(5, 20);
+    }
+  } else if (gameState === GAME_STATE.PLAYING) {
+    player.update(dt);
+    asteroids.forEach(a => a.update(dt));
+    bullets.forEach(b => b.update(dt));
+    checkCollisions();
+
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    player.draw();
+    asteroids.forEach(a => a.draw());
+    bullets.forEach(b => b.draw());
+
+    if (Math.random() < 0.01) {
+      spawnAsteroids(1, 20);
+    }
+  } else if (gameState === GAME_STATE.GAME_OVER) {
+    ctx.fillStyle = 'white';
+    ctx.font = '48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2);
+    ctx.font = '24px sans-serif';
+    ctx.fillText('Press any arrow key to restart', canvas.width / 2, canvas.height / 2 + 60);
+    if (Object.values(KEYS).some(k => k)) {
+      gameState = GAME_STATE.TITLE;
+      bullets = [];
+      asteroids = [];
+    }
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>

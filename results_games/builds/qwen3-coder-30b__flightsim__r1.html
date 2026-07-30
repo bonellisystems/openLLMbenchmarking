@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>3D Flight Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 14px;
+            text-shadow: 0 0 5px black;
+            pointer-events: none;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            font-size: 12px;
+            text-shadow: 0 0 5px black;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">3D Flight Simulator - Fly over a procedurally generated city</div>
+    <div id="controls">WASD: Move | Q/E: Rotate | R/F: Up/Down | Mouse: Look around</div>
+    <script>
+        // Simple 3D engine implementation
+        class Vector3 {
+            constructor(x = 0, y = 0, z = 0) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
+
+            add(v) {
+                return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
+            }
+
+            subtract(v) {
+                return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+            }
+
+            multiply(scalar) {
+                return new Vector3(this.x * scalar, this.y * scalar, this.z * scalar);
+            }
+
+            normalize() {
+                const length = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+                if (length > 0) {
+                    return new Vector3(this.x / length, this.y / length, this.z / length);
+                }
+                return new Vector3(0, 0, 0);
+            }
+
+            dot(v) {
+                return this.x * v.x + this.y * v.y + this.z * v.z;
+            }
+
+            cross(v) {
+                return new Vector3(
+                    this.y * v.z - this.z * v.y,
+                    this.z * v.x - this.x * v.z,
+                    this.x * v.y - this.y * v.x
+                );
+            }
+        }
+
+        class Matrix4 {
+            constructor() {
+                this.elements = new Float32Array(16);
+                this.identity();
+            }
+
+            identity() {
+                const m = this.elements;
+                m[0] = 1; m[1] = 0; m[2] = 0; m[3] = 0;
+                m[4] = 0; m[5] = 1; m[6] = 0; m[7] = 0;
+                m[8] = 0; m[9] = 0; m[10] = 1; m[11] = 0;
+                m[12] = 0; m[13] = 0; m[14] = 0; m[15] = 1;
+            }
+
+            lookAt(eye, target, up) {
+                const zAxis = eye.subtract(target).normalize();
+                const xAxis = up.cross(zAxis).normalize();
+                const yAxis = zAxis.cross(xAxis);
+
+                const m = this.elements;
+                m[0] = xAxis.x; m[1] = yAxis.x; m[2] = zAxis.x; m[3] = 0;
+                m[4] = xAxis.y; m[5] = yAxis.y; m[6] = zAxis.y; m[7] = 0;
+                m[8] = xAxis.z; m[9] = yAxis.z; m[10] = zAxis.z; m[11] = 0;
+                m[12] = -xAxis.dot(eye); m[13] = -yAxis.dot(eye); m[14] = -zAxis.dot(eye); m[15] = 1;
+            }
+
+            perspective(fov, aspect, near, far) {
+                const f = 1.0 / Math.tan(fov / 2);
+                const m = this.elements;
+                m[0] = f / aspect; m[1] = 0; m[2] = 0; m[3] = 0;
+                m[4] = 0; m[5] = f; m[6] = 0; m[7] = 0;
+                m[8] = 0; m[9] = 0; m[10] = (far + near) / (near - far); m[11] = -1;
+                m[12] = 0; m[13] = 0; m[14] = (2 * far * near) / (near - far); m[15] = 0;
+            }
+
+            multiply(m1, m2) {
+                const a = m1.elements;
+                const b = m2.elements;
+                const r = this.elements;
+
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        let sum = 0;
+                        for (let k = 0; k < 4; k++) {
+                            sum += a[i * 4 + k] * b[k * 4 + j];
+                        }
+                        r[i * 4 + j] = sum;
+                    }
+                }
+            }
+
+            transformVector(v) {
+                const m = this.elements;
+                const x = v.x, y = v.y, z = v.z;
+                return new Vector3(
+                    x * m[0] + y * m[4] + z * m[8] + m[12],
+                    x * m[1] + y * m[5] + z * m[9] + m[13],
+                    x * m[2] + y * m[6] + z * m[10] + m[14]
+                );
+            }
+        }
+
+        class WebGLRenderer {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                if (!this.gl) {
+                    throw new Error('WebGL not supported');
+                }
+
+                this.program = this.createProgram();
+                this.positionAttributeLocation = this.gl.getAttribLocation(this.program, 'a_position');
+                this.colorAttributeLocation = this.gl.getAttribLocation(this.program, 'a_color');
+                this.matrixUniformLocation = this.gl.getUniformLocation(this.program, 'u_matrix');
+
+                this.gl.enable(this.gl.DEPTH_TEST);
+                this.gl.enable(this.gl.CULL_FACE);
+                this.gl.cullFace(this.gl.BACK);
+            }
+
+            createProgram() {
+                const vsSource = `
+                    attribute vec3 a_position;
+                    attribute vec3 a_color;
+                    uniform mat4 u_matrix;
+                    varying vec3 v_color;
+                    void main() {
+                        gl_Position = u_matrix * vec4(a_position, 1.0);
+                        v_color = a_color;
+                    }
+                `;
+
+                const fsSource = `
+                    precision mediump float;
+                    varying vec3 v_color;
+                    void main() {
+                        gl_FragColor = vec4(v_color, 1.0);
+                    }
+                `;
+
+                const vertexShader = this.compileShader(this.gl.VERTEX_SHADER, vsSource);
+                const fragmentShader = this.compileShader(this.gl.FRAGMENT_SHADER, fsSource);
+                const program = this.gl.createProgram();
+                this.gl.attachShader(program, vertexShader);
+                this.gl.attachShader(program, fragmentShader);
+                this.gl.linkProgram(program);
+                return program;
+            }
+
+            compileShader(type, source) {
+                const shader = this.gl.createShader(type);
+                this.gl.shaderSource(shader, source);
+                this.gl.compileShader(shader);
+                return shader;
+            }
+
+            setSize(width, height) {
+                this.canvas.width = width;
+                this.canvas.height = height;
+                this.gl.viewport(0, 0, width, height);
+            }
+
+            clear() {
+                this.gl.clearColor(0.1, 0.2, 0.4, 1.0);
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
+            }
+
+            drawArrays(mode, first, count, matrix, vertices, colors) {
+                this.gl.useProgram(this.program);
+                this.gl.uniformMatrix4fv(this.matrixUniformLocation, false, matrix.elements);
+
+                const positionBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, positionBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(vertices), this.gl.STATIC_DRAW);
+                this.gl.enableVertexAttribArray(this.positionAttributeLocation);
+                this.gl.vertexAttribPointer(this.positionAttributeLocation, 3, this.gl.FLOAT, false, 0, 0);
+
+                const colorBuffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, colorBuffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(colors), this.gl.STATIC_DRAW);
+                this.gl.enableVertexAttribArray(this.colorAttributeLocation);
+                this.gl.vertexAttribPointer(this.colorAttributeLocation, 3, this.gl.FLOAT, false, 0, 0);
+
+                this.gl.drawArrays(mode, first, count);
+            }
+        }
+
+        class Scene {
+            constructor() {
+                this.objects = [];
+            }
+
+            addObject(object) {
+                this.objects.push(object);
+            }
+
+            render(renderer, camera) {
+                for (const obj of this.objects) {
+                    obj.render(renderer, camera);
+                }
+            }
+        }
+
+        class Object3D {
+            constructor() {
+                this.position = new Vector3();
+                this.rotation = new Vector3();
+                this.scale = new Vector3(1, 1, 1);
+            }
+
+            render(renderer, camera) {
+                // Override in subclasses
+            }
+        }
+
+        class Cube extends Object3D {
+            constructor(width = 1, height = 1, depth = 1, color = [1, 1, 1]) {
+                super();
+                this.width = width;
+                this.height = height;
+                this.depth = depth;
+                this.color = color;
+                this.vertices = this.generateVertices();
+                this.colors = this.generateColors();
+            }
+
+            generateVertices() {
+                const w = this.width / 2;
+                const h = this.height / 2;
+                const d = this.depth / 2;
+
+                return [
+                    // Front face
+                    -w, -h,  d,  w, -h,  d,  w,  h,  d, -w,  h,  d,
+                    // Back face
+                    -w, -h, -d, -w,  h, -d,  w,  h, -d,  w, -h, -d,
+                    // Top face
+                    -w,  h, -d, -w,  h,  d,  w,  h,  d,  w,  h, -d,
+                    // Bottom face
+                    -w, -h, -d,  w, -h, -d,  w, -h,  d, -w, -h,  d,
+                    // Right face
+                     w, -h, -d,  w,  h, -d,  w,  h,  d,  w, -h,  d,
+                    // Left face
+                    -w, -h, -d, -w, -h,  d, -w,  h,  d, -w,  h, -d
+                ];
+            }
+
+            generateColors() {
+                const color = this.color;
+                const colors = [];
+                for (let i = 0; i < 36; i++) {
+                    colors.push(color[0], color[1], color[2]);
+                }
+                return colors;
+            }
+
+            render(renderer, camera) {
+                const matrix = new Matrix4();
+                matrix.identity();
+                matrix.elements[12] = this.position.x;
+                matrix.elements[13] = this.position.y;
+                matrix.elements[14] = this.position.z;
+
+                renderer.drawArrays(renderer.gl.TRIANGLE_FAN, 0, 4, matrix, this.vertices, this.colors);
+                renderer.drawArrays(renderer.gl.TRIANGLE_FAN, 4, 4, matrix, this.vertices, this.colors);
+                renderer.drawArrays(renderer.gl.TRIANGLE_FAN, 8, 4, matrix, this.vertices, this.colors);
+                renderer.drawArrays(renderer.gl.TRIANGLE_FAN, 12, 4, matrix, this.vertices, this.colors);
+                renderer.drawArrays(renderer.gl.TRIANGLE_FAN, 16, 4, matrix, this.vertices, this.colors);
+                renderer.drawArrays(renderer.gl.TRIANGLE_FAN, 20, 4, matrix, this.vertices, this.colors);
+            }
+        }
+
+        class Camera {
+            constructor() {
+                this.position = new Vector3(0, 0, 5);
+                this.target = new Vector3(0, 0, 0);
+                this.up = new Vector3(0, 1, 0);
+                this.matrix = new Matrix4();
+            }
+
+            lookAt(target) {
+                this.target = target;
+                this.matrix.lookAt(this.position, target, this.up);
+            }
+
+            update() {
+                this.matrix.lookAt(this.position, this.target, this.up);
+            }
+        }
+
+        class CityGenerator {
+            constructor() {
+                this.buildings = [];
+                this.generate();
+            }
+
+            generate() {
+                const size = 20;
+                const spacing = 2.5;
+                const rows = Math.floor(size / spacing);
+                const cols = Math.floor(size / spacing);
+
+                for (let i = 0; i < rows; i++) {
+                    for (let j = 0; j < cols; j++) {
+                        if (Math.random() > 0.3) {
+                            const height = 1 + Math.random() * 3;
+                            const width = 0.8 + Math.random() * 0.4;
+                            const depth = 0.8 + Math.random() * 0.4;
+                            const x = (i - rows/2) * spacing;
+                            const z = (j - cols/2) * spacing;
+                            const y = height / 2;
+                            const color = [
+                                0.3 + Math.random() * 0.3,
+                                0.3 + Math.random() * 0.3,
+                                0.3 + Math.random() * 0.3
+                            ];
+                            this.buildings.push(new Cube(width, height, depth, color));
+                            this.buildings[this.buildings.length - 1].position = new Vector3(x, y, z);
+                        }
+                    }
+                }
+            }
+
+            getBuildings() {
+                return this.buildings;
+            }
+        }
+
+        // Main simulation
+        const canvas = document.createElement('canvas');
+        document.body.appendChild(canvas);
+
+        const renderer = new WebGLRenderer(canvas);
+        const scene = new Scene();
+        const camera = new Camera();
+        const city = new CityGenerator();
+
+        // Add buildings to scene
+        for (const building of city.getBuildings()) {
+            scene.addObject(building);
+        }
+
+        // Plane object
+        const plane = new Cube(0.5, 0.1, 1.5, [1, 0, 0]);
+        plane.position = new Vector3(0, 2, 0);
+        scene.addObject(plane);
+
+        // Input handling
+        const keys = {};
+        const mouse = { x: 0, y: 0, down: false };
+
+        window.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+        window.addEventListener('mousemove', (e) => {
+            mouse.x = e.movementX;
+            mouse.y = e.movementY;
+        });
+        window.addEventListener('mousedown', () => mouse.down = true);
+        window.addEventListener('mouseup', () => mouse.down = false);
+
+        // Animation loop
+        let time = 0;
+        function animate() {
+            time += 0.02;
+
+            // Plane movement
+            const speed = 0.1;
+            const rotSpeed = 0.02;
+
+            if (keys['w']) {
+                plane.position.x += Math.sin(plane.rotation.y) * speed;
+                plane.position.z += Math.cos(plane.rotation.y) * speed;
+            }
+            if (keys['s']) {
+                plane.position.x -= Math.sin(plane.rotation.y) * speed;
+                plane.position.z -= Math.cos(plane.rotation.y) * speed;
+            }
+            if (keys['a']) {
+                plane.rotation.y -= rotSpeed;
+            }
+            if (keys['d']) {
+                plane.rotation.y += rotSpeed;
+            }
+            if (keys['q']) {
+                plane.rotation.z += rotSpeed;
+            }
+            if (keys['e']) {
+                plane.rotation.z -= rotSpeed;
+            }
+            if (keys['r']) {
+                plane.position.y += speed;
+            }
+            if (keys['f']) {
+                plane.position.y -= speed;
+            }
+
+            // Mouse look
+            if (mouse.down) {
+                plane.rotation.y -= mouse.x * 0.01;
+                plane.rotation.x -= mouse.y * 0.01;
+            }
+
+            // Update camera to follow plane
+            camera.position = plane.position.clone().add(new Vector3(0, 1, -3));
+            camera.lookAt(plane.position);
+
+            // Clear and render
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.clear();
+            scene.render(renderer, camera);
+
+            requestAnimationFrame(animate);
+        }
+
+        // Start animation
+        animate();
+    </script>
+</body>
+</html>
