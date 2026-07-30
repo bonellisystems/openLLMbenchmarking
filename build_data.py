@@ -179,6 +179,24 @@ GAMES_PLANNED = [
 # Known gaps - what the numbers on this page do NOT cover.
 # ---------------------------------------------------------------------------
 GAPS = [
+    {"sev": "med", "title": "bonsai-ternary-27b B10/B11 cannot run on the standard image - not a model failure",
+     "detail": "Its Q2_0 is a prism-ml custom quantization and only the prism llama.cpp fork has "
+               "the kernels for it. On the official ggml image the server exits before serving: "
+               "\"failed to load model ... Ternary-Bonsai-27B-Q2_0.gguf\". The 2026-07-30 run "
+               "confirmed this - it fetched, failed to serve in 14 minutes, and moved on. Those "
+               "two cells are therefore blank for a TOOLING reason, and must never be read as the "
+               "ternary exhibit scoring badly on security or tool use, which is exactly the "
+               "misreading that model is in the roster to test for.",
+     "fix": "Build the prism fork on-box (~25 min, ~$0.50) and serve bonsai from it, or run those "
+            "two batteries against the Windows prism binary locally."},
+    {"sev": "high", "title": "qwen3-235b is held out by choice - its 4 cells are real gaps, not results",
+     "detail": "Excluded on 2026-07-30 pending a dedicated large-model pass. At 134GB it does not "
+               "fit the 96GB card, so --cpu-moe streams its experts over PCIe and every row costs "
+               "roughly 8x: B8-B11 priced at ~11.3h / ~$13.54, which was 46% of the remaining "
+               "budget for 14% of the remaining cells. The exclusion is recorded in "
+               "scripts/build_run_manifest.py EXCLUDED and is one dict entry to reverse.",
+     "fix": "Fund a large-model session, ideally on a card that fits 134GB so --cpu-moe is not "
+            "needed, and delete the EXCLUDED entry."},
     {"sev": "high", "title": "B4 has only ever run 7 of its 8 tasks - the classic single-needle probe is missing",
      "detail": "b4.single-needle-01 has ZERO rows for all 16 roster models; the other seven B4 "
                "tasks have 49 each. build_document() sizes the filler with a 4-chars-per-token "
