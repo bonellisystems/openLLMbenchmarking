@@ -36,6 +36,19 @@ from llmtest.store import Store  # noqa: E402
 # (battery, model_id, task_id, run_n, condition) identifies one B9/B10/B11 row.
 KEY = ("battery", "model_id", "task_id", "run_n", "condition")
 
+# (model_id, battery) pairs whose rows from this run must NOT enter the store, with the
+# reason. These are rows the run produced successfully but which DESCRIBE A SERVING
+# CONFIG THAT DID NOT RUN, so they are worse than missing rows - they would silently
+# populate a cell with a mislabelled measurement.
+QUARANTINE = {
+    ("abl-opus-35b-a3b", 4):
+        "generated before the --parallel fix: p8_gen_serving omitted --parallel when it "
+        "was 1, llama.cpp build 10156 defaults to 4 slots, and `-c` is the TOTAL KV "
+        "budget - so every arm ran at ctx/4 while its condition string named the full "
+        "ctx (the 64k arm gave each slot 16384, hence the HTTP 400 'request (20716 "
+        "tokens) exceeds the available context size (16384)'). Re-run B4 for this model.",
+}
+
 CUSTOM = [
     ("games", "rows-games.jsonl", "results_games"),
     ("security", "rows-security.jsonl", "results_security"),
@@ -106,9 +119,13 @@ def main() -> int:
     # dedupes by row_id, so a shard matched twice costs nothing.
     store = Store(ROOT / "results")
     suite_seen = suite_new = suite_bad = 0
+    quarantined = 0
     for shard in sorted(src.rglob("rows-suite-*.jsonl")):
         for r in read_jsonl(shard):
             suite_seen += 1
+            if (r.get("model_id"), r.get("battery")) in QUARANTINE:
+                quarantined += 1
+                continue
             if dry:
                 continue
             try:
@@ -120,6 +137,10 @@ def main() -> int:
                     print(f"  REJECTED {r.get('row_id', '?')[:16]}: {e}")
     print(f"  suite B1-B7 : {suite_seen} read, {suite_new} new"
           + (f", {suite_bad} REJECTED BY SCHEMA" if suite_bad else ""))
+    if quarantined:
+        print(f"  QUARANTINED : {quarantined} rows held back:")
+        for (mid, bat), why in QUARANTINE.items():
+            print(f"    {mid} B{bat} - {why}")
 
     # --- per-battery custom shards --------------------------------------------------
     for sub, shard, dest in CUSTOM:
