@@ -36,18 +36,17 @@ from llmtest.store import Store  # noqa: E402
 # (battery, model_id, task_id, run_n, condition) identifies one B9/B10/B11 row.
 KEY = ("battery", "model_id", "task_id", "run_n", "condition")
 
-# (model_id, battery) pairs whose rows from this run must NOT enter the store, with the
-# reason. These are rows the run produced successfully but which DESCRIBE A SERVING
-# CONFIG THAT DID NOT RUN, so they are worse than missing rows - they would silently
-# populate a cell with a mislabelled measurement.
-QUARANTINE = {
-    ("abl-opus-35b-a3b", 4):
-        "generated before the --parallel fix: p8_gen_serving omitted --parallel when it "
-        "was 1, llama.cpp build 10156 defaults to 4 slots, and `-c` is the TOTAL KV "
-        "budget - so every arm ran at ctx/4 while its condition string named the full "
-        "ctx (the 64k arm gave each slot 16384, hence the HTTP 400 'request (20716 "
-        "tokens) exceeds the available context size (16384)'). Re-run B4 for this model.",
-}
+# (model_id, battery) pairs whose rows must NOT enter the store, with the reason. For
+# rows that were produced successfully but describe a serving config that did not run -
+# worse than a missing row, because they populate a cell with a mislabelled measurement.
+#
+# Currently empty. abl-opus-35b-a3b B4 was quarantined here on a WRONG diagnosis: I read
+# a "request (20716 tokens) exceeds the available context size (16384 tokens)" error as
+# proof that `-c` was being split across 4 slots. The server log says otherwise -
+# n_ctx_slot was 16384/65536/131072/262144 for the four arms with kv_unified='true', i.e.
+# every arm got exactly the context its row is labelled with. The 16384 in that message
+# was the 16k arm's own budget, not a quartered 64k. Those rows are valid.
+QUARANTINE: dict[tuple[str, int], str] = {}
 
 CUSTOM = [
     ("games", "rows-games.jsonl", "results_games"),
