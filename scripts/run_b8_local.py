@@ -220,8 +220,12 @@ def main(argv=None) -> int:
     # it survives as excluded provenance (p8_report drops it from the k/N
     # denominator -- see _b8_group_stats' eligibility rule).
     MAX_B8_ATTEMPTS = 3
+    # ~8 items x 3 attempts is a decisive sample: if none of them reached the model, the
+    # problem is the harness/serving path, not this particular task.
+    ABORT_AFTER_CONSECUTIVE_INFRA = 8
 
     failures = 0
+    infra_rows = eligible_rows = consecutive_infra = 0
     for i, item in enumerate(items, 1):
         rows = None
         for attempt in range(1, MAX_B8_ATTEMPTS + 1):
@@ -252,8 +256,31 @@ def main(argv=None) -> int:
                   f"terminal_status={m['terminal_status']} steps={m['steps']} "
                   f"tokens_prompt={m['tokens_prompt']} tokens_completion={m['tokens_completion']} "
                   f"appended={appended} row_id={row['row_id'][:12]} ({dt:.1f}s)")
+            if m["terminal_status"] == "infra-error":
+                infra_rows += 1
+                consecutive_infra += 1
+            else:
+                eligible_rows += 1
+                consecutive_infra = 0
 
-    print(f"run_b8_local: done, {failures} EXEC-ERROR(s) out of {len(items)} planned")
+        # STOP WHEN THE HARNESS PLAINLY CANNOT TALK TO THIS MODEL. An infra-error is a
+        # serving/harness failure, so it is excluded from the completion denominator -
+        # which means a run where EVERY item infra-errors yields zero eligible rows and
+        # measures nothing. llama-4-scout did exactly that: 115 of 115 infra-error, each
+        # retried 3x, about an hour of a rented GPU for no usable data, and the step still
+        # recorded "ok" because only EXEC-ERRORs were counted as failure.
+        if consecutive_infra >= ABORT_AFTER_CONSECUTIVE_INFRA and eligible_rows == 0:
+            print(f"  ABORTING: first {consecutive_infra} runs all infra-error and nothing "
+                  f"eligible yet - the harness cannot drive this model, and finishing the "
+                  f"remaining {len(items) - i} items would only burn GPU time.")
+            break
+
+    print(f"run_b8_local: done, {failures} EXEC-ERROR(s), {infra_rows} infra-error, "
+          f"{eligible_rows} eligible of {len(items)} planned")
+    if eligible_rows == 0:
+        print("run_b8_local: NO ELIGIBLE ROWS - this is a harness/serving failure, not a "
+              "model result. Exiting non-zero so the cell is not recorded as done.")
+        return 1
     return 1 if failures else 0
 
 
