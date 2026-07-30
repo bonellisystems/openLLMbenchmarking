@@ -96,6 +96,12 @@ def main():
                          "118B model can legitimately take this long per row.")
     ap.add_argument("--floor", type=float, default=1.50)
     ap.add_argument("--no-destroy", action="store_true")
+    ap.add_argument("--once", action="store_true",
+                    help="pull results, print one status line, exit. The long-running "
+                         "watcher keeps getting reaped by the host, and a killed watcher "
+                         "stops pulling - so a short command that always completes is the "
+                         "reliable way to keep results safe. Teardown is handled "
+                         "separately by deploy/shutdown_guard.sh on the box.")
     args = ap.parse_args()
 
     cid = int((ROOT / "plan" / "INSTANCE").read_text(encoding="utf-8").strip())
@@ -103,6 +109,27 @@ def main():
     v = api()
     log = DEST / "watch.log"
     DEST.mkdir(parents=True, exist_ok=True)
+
+    if args.once:
+        ok = pull(host, port)
+        stage = sshx(host, port,
+                     "test -f /root/run_all_done && echo done || "
+                     "(test -f /root/dl_done && echo running || echo setup)").stdout.strip()
+        done_models = sshx(host, port,
+                           "wc -l < /root/models_done 2>/dev/null || echo 0").stdout.strip()
+        steps = sshx(host, port, "cat /root/steps 2>/dev/null | tr '\\n' ';'").stdout.strip()
+        fails = sshx(host, port, "cat /root/failures 2>/dev/null | tr '\\n' ';'").stdout.strip()
+        try:
+            bal = round(v.show_user().get("credit", 0), 2)
+        except Exception:
+            bal = None
+        print(f"pull={'ok' if ok else 'FAILED'} stage={stage} models_done={done_models} "
+              f"rows={rows_local()} bal={bal}")
+        if steps:
+            print("steps:", steps)
+        if fails:
+            print("FAILURES:", fails)
+        return 0
 
     last, stalls, miss, reason = -1, 0, 0, "TIMEOUT"
     for i in range(1, 400):
