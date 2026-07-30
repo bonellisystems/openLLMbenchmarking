@@ -133,11 +133,26 @@ def main():
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--go", action="store_true")
     ap.add_argument("--est-hours", type=float, default=22.0)
+    # Parameterised rather than duplicated: every rule in this file was learned the hard
+    # way (card gate, 0700 on /root/.ssh, separate ssh -p / scp -P, destroy-on-complete),
+    # and a second copy for a one-off run would drift away from all of them.
+    ap.add_argument("--plan-dir", default="plan",
+                    help="directory holding setup.sh / run_all.sh / manifest.json")
+    ap.add_argument("--image", default="ghcr.io/ggml-org/llama.cpp:server-cuda",
+                    help="container image. The default is a RUNTIME image with no nvcc; "
+                         "a run that compiles anything needs a -devel image.")
+    ap.add_argument("--label", default="close-all-gaps")
+    ap.add_argument("--min-disk", type=int, default=None)
     args = ap.parse_args()
 
-    man = json.loads((ROOT / "plan" / "manifest.json").read_text(encoding="utf-8"))
-    for f in ("download.sh", "run_all.sh", "setup.sh"):
-        p = ROOT / "plan" / f
+    global MIN_DISK_GB
+    if args.min_disk:
+        MIN_DISK_GB = args.min_disk
+    plan_dir = ROOT / args.plan_dir
+
+    man = json.loads((plan_dir / "manifest.json").read_text(encoding="utf-8"))
+    for f in ("run_all.sh", "setup.sh"):
+        p = plan_dir / f
         if not p.exists():
             print(f"missing plan/{f} - run scripts/emit_run_plan.py first")
             return 2
@@ -178,12 +193,12 @@ def main():
         print("refusing to start: estimate exceeds credit")
         return 2
 
-    inst = v.create_instance(id=pick["id"], image="ghcr.io/ggml-org/llama.cpp:server-cuda",
-                             disk=MIN_DISK_GB, label="close-all-gaps",
+    inst = v.create_instance(id=pick["id"], image=args.image,
+                             disk=MIN_DISK_GB, label=args.label,
                              onstart_cmd=onstart(PUBKEY.read_text().strip()), runtype="ssh")
     cid = inst.get("new_contract")
     print(f"created   : {cid}  (success={inst.get('success')})")
-    (ROOT / "plan" / "INSTANCE").write_text(str(cid), encoding="utf-8")
+    (plan_dir / "INSTANCE").write_text(str(cid), encoding="utf-8")
 
     host = port = None
     for _ in range(80):
@@ -196,7 +211,7 @@ def main():
         print("box never came up - destroying")
         v.destroy_instance(id=cid)
         return 1
-    (ROOT / "plan" / "ENDPOINT").write_text(f"{host} {port}", encoding="utf-8")
+    (plan_dir / "ENDPOINT").write_text(f"{host} {port}", encoding="utf-8")
 
     # onstart installs sshd via apt, which can take 10-20 minutes on a slow host.
     # SILENCE IS "NOT READY YET", NOT "WRONG CARD" - conflating the two destroyed a
@@ -227,7 +242,7 @@ def main():
     # Verify each step. The tar used to run with check=False, so a failed archive
     # scp'd nothing and the run started against an empty box - which looks identical
     # to a model that would not load.
-    tgz = ROOT / "plan" / "repo.tgz"
+    tgz = plan_dir / "repo.tgz"
     tgz.unlink(missing_ok=True)
     t = subprocess.run(["tar", "czf", str(tgz), "-C", str(ROOT.parent),
                         "--exclude=.git", "--exclude=artifacts", "--exclude=results_*",
@@ -247,11 +262,11 @@ def main():
     if "REPO_OK" not in r.stdout:
         print("repo did not unpack on the box; instance left running:", r.stdout, r.stderr[:300])
         return 1
-    for f in ("setup.sh", "download.sh", "run_all.sh"):
-        scp_to(host, port, ROOT / "plan" / f, f"/root/{f}")
+    for f in ("setup.sh", "run_all.sh"):
+        scp_to(host, port, plan_dir / f, f"/root/{f}")
     # setup.sh repoints registry local_path from this manifest (the p8 drivers resolve
     # the GGUF through local_path, which still holds the Windows authoring paths).
-    scp_to(host, port, ROOT / "plan" / "manifest.json", "/root/plan_manifest.json")
+    scp_to(host, port, plan_dir / "manifest.json", "/root/plan_manifest.json")
     # A CR in these would break bash on the box; assert none survived the trip.
     r = sshx(host, port, "chmod +x /root/*.sh; "
                          "grep -l $'\\r' /root/setup.sh /root/download.sh /root/run_all.sh "
