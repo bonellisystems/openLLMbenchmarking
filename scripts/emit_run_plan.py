@@ -412,9 +412,23 @@ def main():
                          "B1 is 360 rows per model and its score does not exist until a "
                          "separate judging pass runs, so on a tight budget those hours "
                          "buy nothing usable while cheap B10/B11 cells go unclosed.")
+    ap.add_argument("--skip-models", default="",
+                    help="comma-separated models to leave out of THIS run because they "
+                         "are handled by a different plan - not because they are unwanted. "
+                         "bonsai-ternary-27b belongs here whenever the standard image is "
+                         "in use: its Q2_0 needs the prism fork, so including it only "
+                         "buys a fetch and a 13-minute serve timeout.")
     args = ap.parse_args()
 
     man = json.loads((ROOT / args.manifest).read_text(encoding="utf-8"))
+    skip_models = {s.strip() for s in args.skip_models.split(",") if s.strip()}
+    if skip_models:
+        before = len(man["models"])
+        dropped = sum(len(m["batteries"]) for m in man["models"] if m["id"] in skip_models)
+        man["models"] = [m for m in man["models"] if m["id"] not in skip_models]
+        man["totals"]["missing_cells"] -= dropped
+        print(f"skipping models {','.join(sorted(skip_models))}: "
+              f"{before - len(man['models'])} model(s), {dropped} cells handled elsewhere\n")
     skip = {s.strip().upper() for s in args.skip.split(",") if s.strip()}
     if skip:
         dropped = 0
