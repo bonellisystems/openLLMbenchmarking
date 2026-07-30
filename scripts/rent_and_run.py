@@ -267,6 +267,21 @@ def main():
     # setup.sh repoints registry local_path from this manifest (the p8 drivers resolve
     # the GGUF through local_path, which still holds the Windows authoring paths).
     scp_to(host, port, plan_dir / "manifest.json", "/root/plan_manifest.json")
+
+    # SEED WHAT IS ALREADY COLLECTED. run_games/run_security/run_tools_agent resume from
+    # their OWN --out shard, which is empty on a fresh box - so a model with a partially
+    # collected battery has every already-recorded row generated again. B9 is where this
+    # bites: four models were part-way (llama-4-scout had 5 of 24), and without seeding
+    # the box pays for all 24. The shards are tiny (a few hundred lines) and the runners
+    # key on (model_id, task_id, run_n), so seeding is exact.
+    sshx(host, port, "mkdir -p /root/out/games /root/out/security /root/out/tools")
+    for sub, shard in (("games", "rows-games.jsonl"),
+                       ("security", "rows-security.jsonl"),
+                       ("tools", "rows-tools.jsonl")):
+        local = ROOT / f"results_{sub}" / shard
+        if local.exists():
+            scp_to(host, port, local, f"/root/out/{sub}/{shard}")
+            print(f"  seeded {sub}: {sum(1 for _ in local.open(encoding='utf-8'))} rows")
     # A CR in these would break bash on the box; assert none survived the trip.
     r = sshx(host, port, "chmod +x /root/*.sh; "
                          "grep -l $'\\r' /root/setup.sh /root/download.sh /root/run_all.sh "

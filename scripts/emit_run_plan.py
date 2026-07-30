@@ -236,7 +236,7 @@ run_step(){ # $1 model  $2 battery  $3.. command
 # take --gpu0/--gpu1 because P8 had two cards - this box has one, so gpu1 is empty and
 # that worker thread exits immediately.
 run_serving(){ # $1 model  $2 battery-number
-  run_step "$1" "B$2" python3 scratchpad/p8_gen_serving.py --battery "$2" \\
+  run_step "$1" "B$2" python3 -u scratchpad/p8_gen_serving.py --battery "$2" \\
     --gpu0 "$1" --gpu1 ""
 }
 
@@ -357,22 +357,22 @@ def steps_for(mid: str, bats: list[str]) -> tuple[str, str]:
         if kind in ("bigmodel", "serving", "b5"):
             continue
         if kind == "games":
-            a.append(f'    run_step "{mid}" B9 python3 scripts/run_games.py {ENDPOINT} '
+            a.append(f'    run_step "{mid}" B9 python3 -u scripts/run_games.py {ENDPOINT} '
                      f'--model "{mid}" --reps 3 --out $OUT/games --chrome ""')
         elif kind == "security":
-            a.append(f'    run_step "{mid}" B10 python3 scripts/run_security.py {ENDPOINT} '
+            a.append(f'    run_step "{mid}" B10 python3 -u scripts/run_security.py {ENDPOINT} '
                      f'--model "{mid}" --reps 3 --out $OUT/security')
         elif kind == "tools":
             a.append(f'    mkdir -p /root/agentws; '
-                     f'run_step "{mid}" B11 python3 scripts/run_tools_agent.py {ENDPOINT} '
+                     f'run_step "{mid}" B11 python3 -u scripts/run_tools_agent.py {ENDPOINT} '
                      f'--model "{mid}" --reps 3 --workspace /root/agentws --out $OUT/tools')
         elif kind == "b8":
-            a.append(f'    run_step "{mid}" B8 python3 scripts/run_b8_local.py {ENDPOINT} '
+            a.append(f'    run_step "{mid}" B8 python3 -u scripts/run_b8_local.py {ENDPOINT} '
                      f'--model "{mid}" --results-dir $OUT/b8_{mid}')
 
     bigm = [DRIVER[x][1] for x in bats if DRIVER[x][0] == "bigmodel"]
     if bigm:
-        a.append(f'    run_step "{mid}" B{"+B".join(bigm)} python3 scripts/bigmodel_gen.py '
+        a.append(f'    run_step "{mid}" B{"+B".join(bigm)} python3 -u scripts/bigmodel_gen.py '
                  f'--model "{mid}" --batteries {",".join(bigm)} {ENDPOINT} '
                  f'--results-dir $OUT/suite')
 
@@ -394,7 +394,7 @@ def steps_for(mid: str, bats: list[str]) -> tuple[str, str]:
         if kind == "serving":
             body = f'{indent}run_serving "{mid}" {arg}'
         else:  # b5
-            body = (f'{indent}run_step "{mid}" B5 python3 scratchpad/p8_gen_b5.py '
+            body = (f'{indent}run_step "{mid}" B5 python3 -u scratchpad/p8_gen_b5.py '
                     f'--gpu0 "{mid}" --gpu1 ""')
         b_lines.append(guard_open + body + guard_close)
 
