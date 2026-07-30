@@ -538,7 +538,15 @@ def _load(path):
 
 
 def compute_b9(matrix):
-    """Games: share of builds that run clean when driven in a real browser."""
+    """Games: share of builds that run clean when driven in a real browser.
+
+    A PARTIAL RUN IS NOT A TESTED CELL. B9 appends a row per (game, rep) as it goes, so
+    a run that dies half way leaves rows behind and the cell looked identical to a
+    finished one - `tested: True` was set on ANY rows at all. That is how llama-4-scout
+    showed a green B9 built from 5 of its 24 rows, covering 2 of 8 games, after its run
+    hung and the box was torn down. The expected count is derived from the data itself
+    (distinct tasks x max reps) so it cannot go stale when games are added.
+    """
     rows = _load("results_games/rows-games.jsonl")
     tally = collections.defaultdict(lambda: [0, 0])
     per_game = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
@@ -550,15 +558,22 @@ def compute_b9(matrix):
         g = r.get("task_id", "").split(".")[-1]
         per_game[m][g][1] += 1
         per_game[m][g][0] += ok
+    expected = len({r["task_id"] for r in rows}) * max((r.get("run_n") or 1) for r in rows) \
+        if rows else 0
     for m, kn in tally.items():
         k, n = kn
-        if m in matrix and n:
-            matrix[m]["B9"] = {"tested": True, "n": n, "score": round(100 * k / n),
-                               "display": "%d%%" % round(100 * k / n), "k": k,
-                               "ci": wilson(k, n),
-                               "sub": [{"name": g, "score": round(100 * v[0] / v[1]),
-                                        "display": "%d/%d" % (v[0], v[1])}
-                                       for g, v in sorted(per_game[m].items())]}
+        if m not in matrix or not n:
+            continue
+        complete = n >= expected
+        matrix[m]["B9"] = {"tested": complete, "n": n, "expected": expected,
+                           "partial": not complete,
+                           "score": round(100 * k / n), "k": k,
+                           "display": ("%d%%" % round(100 * k / n)) if complete
+                                      else "%d%% (%d/%d rows)" % (round(100 * k / n), n, expected),
+                           "ci": wilson(k, n),
+                           "sub": [{"name": g, "score": round(100 * v[0] / v[1]),
+                                    "display": "%d/%d" % (v[0], v[1])}
+                                   for g, v in sorted(per_game[m].items())]}
 
 
 def compute_b10(matrix):
