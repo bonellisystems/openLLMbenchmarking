@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Mini Roguelike</title>
+<style>
+  body {margin:0;background:#000;color:#fff;font-family:monospace;overflow:hidden;}
+  #screen {white-space:pre;line-height:1;user-select:none;}
+  #msg {position:absolute;bottom:0;left:0;width:100%;background:#000;color:#0f0;padding:4px;font-size:14px;}
+</style>
+</head>
+<body tabindex="0">
+<pre id="screen"></pre>
+<div id="msg"></div>
+<script>
+(() => {
+  const WIDTH = 40, HEIGHT = 20;
+  const TILE_WALL = '#', TILE_FLOOR = '.', TILE_PLAYER = '@', TILE_MONSTER = 'M', TILE_EXIT = '>';
+  const map = [];
+  const monsters = [];
+  let player = {x:0,y:0};
+  let exitPos = {x:0,y:0};
+  const msgEl = document.getElementById('msg');
+
+  function initMap() {
+    for(let y=0;y<HEIGHT;y++) map[y]=Array(WIDTH).fill(TILE_WALL);
+    const rooms = [];
+    const roomCount = 5 + Math.floor(Math.random()*5);
+    for(let i=0;i<roomCount;i++) {
+      const w = 4 + Math.floor(Math.random()*6);
+      const h = 3 + Math.floor(Math.random()*4);
+      const x = 1 + Math.floor(Math.random()*(WIDTH-w-2));
+      const y = 1 + Math.floor(Math.random()*(HEIGHT-h-2));
+      for(let yy=y; yy<y+h; yy++) for(let xx=x; xx<x+w; xx++) map[yy][xx]=TILE_FLOOR;
+      const cx = Math.floor(x + w/2), cy = Math.floor(y + h/2);
+      rooms.push({x,y,w,h,cx,cy});
+    }
+    // connect rooms
+    for(let i=1;i<rooms.length;i++) {
+      const a = rooms[i-1], b = rooms[i];
+      carveCorridor(a.cx,a.cy,b.cx,b.cy);
+    }
+    // place exit in last room
+    const last = rooms[rooms.length-1];
+    exitPos.x = last.cx; exitPos.y = last.cy;
+    map[exitPos.y][exitPos.x]=TILE_EXIT;
+    // place player in first room
+    const first = rooms[0];
+    player.x = first.cx; player.y = first.cy;
+    // place monsters
+    const monsterCount = 5 + Math.floor(Math.random()*5);
+    let placed=0;
+    while(placed<monsterCount) {
+      const mx = 1+Math.floor(Math.random()*(WIDTH-2));
+      const my = 1+Math.floor(Math.random()*(HEIGHT-2));
+      if(map[my][mx]===TILE_FLOOR && !(mx===player.x && my===player.y) && !(mx===exitPos.x && my===exitPos.y)) {
+        monsters.push({x:mx,y:my});
+        placed++;
+      }
+    }
+  }
+
+  function carveCorridor(x1,y1,x2,y2) {
+    let x=x1, y=y1;
+    while(x!==x2) {
+      map[y][x]=TILE_FLOOR;
+      x+= x<x2?1:-1;
+    }
+    while(y!==y2) {
+      map[y][x]=TILE_FLOOR;
+      y+= y<y2?1:-1;
+    }
+  }
+
+  function render() {
+    const lines=[];
+    for(let y=0;y<HEIGHT;y++) {
+      let line='';
+      for(let x=0;x<WIDTH;x++) {
+        if(x===player.x && y===player.y) line+=TILE_PLAYER;
+        else {
+          const mon = monsters.find(m=>m.x===x && m.y===y);
+          if(mon) line+=TILE_MONSTER;
+          else line+=map[y][x];
+        }
+      }
+      lines.push(line);
+    }
+    document.getElementById('screen').textContent = lines.join('\n');
+  }
+
+  function movePlayer(dx,dy) {
+    const nx=player.x+dx, ny=player.y+dy;
+    if(nx<0||ny<0||nx>=WIDTH||ny>=HEIGHT) return;
+    const dest=map[ny][nx];
+    if(dest===TILE_WALL) return;
+    const monIdx=monsters.findIndex(m=>m.x===nx && m.y===ny);
+    if(monIdx>=0) {
+      monsters.splice(monIdx,1);
+      showMessage('You slay a monster!');
+    } else {
+      player.x=nx; player.y=ny;
+    }
+    if(nx===exitPos.x && ny===exitPos.y) {
+      showMessage('You escaped! Refresh to play again.');
+      document.removeEventListener('keydown',keyHandler);
+    }
+    moveMonsters();
+    render();
+  }
+
+  function moveMonsters() {
+    for(const m of monsters) {
+      const dirs=[[0,1],[0,-1],[1,0],[-1,0]];
+      const shuffled=dirs.sort(()=>Math.random()-0.5);
+      for(const [dx,dy] of shuffled) {
+        const nx=m.x+dx, ny=m.y+dy;
+        if(nx<0||ny<0||nx>=WIDTH||ny>=HEIGHT) continue;
+        if(map[ny][nx]===TILE_WALL) continue;
+        if(nx===player.x && ny===player.y) {
+          showMessage('A monster got you! Refresh to try again.');
+          document.removeEventListener('keydown',keyHandler);
+          return;
+        }
+        const occupied=monsters.some(o=>o!==m && o.x===nx && o.y===ny);
+        if(!occupied) { m.x=nx; m.y=ny; break; }
+      }
+    }
+  }
+
+  function showMessage(txt) {
+    msgEl.textContent = txt;
+  }
+
+  function keyHandler(e) {
+    const key=e.key;
+    if(['ArrowUp','w','W'].includes(key)) { movePlayer(0,-1); e.preventDefault();}
+    else if(['ArrowDown','s','S'].includes(key)) { movePlayer(0,1); e.preventDefault();}
+    else if(['ArrowLeft','a','A'].includes(key)) { movePlayer(-1,0); e.preventDefault();}
+    else if(['ArrowRight','d','D'].includes(key)) { movePlayer(1,0); e.preventDefault();}
+  }
+
+  // init
+  initMap();
+  render();
+  document.addEventListener('keydown',keyHandler);
+  // focus body to receive keys
+  window.onload=()=>{ document.body.focus(); };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tetris</title>
+<style>
+  body{margin:0;background:#111;color:#fff;font-family:sans-serif;overflow:hidden;display:flex;justify-content:center;align-items:center;height:100vh;}
+  canvas{background:#000;display:block;}
+  #overlay{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:rgba(0,0,0,0.7);font-size:2em;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="game" width="300" height="600"></canvas>
+<div id="overlay"></div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const COLS = 10, ROWS = 20, BLOCK = 30;
+  const colors = {
+    I: '#00f0f0',
+    J: '#0000f0',
+    L: '#f0a000',
+    O: '#f0f000',
+    S: '#00f000',
+    T: '#a000f0',
+    Z: '#f00000'
+  };
+  const shapes = {
+    I: [
+      [0,0,0,0],
+      [1,1,1,1],
+      [0,0,0,0],
+      [0,0,0,0]
+    ],
+    J: [
+      [1,0,0],
+      [1,1,1],
+      [0,0,0]
+    ],
+    L: [
+      [0,0,1],
+      [1,1,1],
+      [0,0,0]
+    ],
+    O: [
+      [1,1],
+      [1,1]
+    ],
+    S: [
+      [0,1,1],
+      [1,1,0],
+      [0,0,0]
+    ],
+    T: [
+      [0,1,0],
+      [1,1,1],
+      [0,0,0]
+    ],
+    Z: [
+      [1,1,0],
+      [0,1,1],
+      [0,0,0]
+    ]
+  };
+  const board = Array.from({length: ROWS}, () => Array(COLS).fill(0));
+  let current = null;
+  let dropCounter = 0;
+  let dropInterval = 1000;
+  let lastTime = 0;
+  let gameOver = false;
+  let score = 0;
+  const overlay = document.getElementById('overlay');
+
+  function createPiece(type){
+    const shape = shapes[type];
+    const matrix = shape.map(row=>row.slice());
+    return {
+      matrix,
+      type,
+      x: Math.floor(COLS/2) - Math.ceil(matrix[0].length/2),
+      y: 0,
+      color: colors[type]
+    };
+  }
+
+  function rotate(matrix){
+    const N = matrix.length;
+    const result = Array.from({length:N},()=>Array(N).fill(0));
+    for(let y=0;y<N;y++){
+      for(let x=0;x<N;x++){
+        result[x][N-1-y]=matrix[y][x];
+      }
+    }
+    // trim empty rows/cols
+    while(result[0].every(v=>v===0)) result.shift();
+    while(result[result.length-1].every(v=>v===0)) result.pop();
+    while(result.every(row=>row[0]===0)) result.forEach(row=>row.shift());
+    while(result.every(row=>row[row.length-1]===0)) result.forEach(row=>row.pop());
+    return result;
+  }
+
+  function collide(board, piece){
+    const m = piece.matrix;
+    for(let y=0;y<m.length;y++){
+      for(let x=0;x<m[y].length;x++){
+        if(m[y][x]){
+          const bx = x + piece.x;
+          const by = y + piece.y;
+          if(bx<0||bx>=COLS||by>=ROWS||by<0) return true;
+          if(board[by][bx]) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function merge(board, piece){
+    const m = piece.matrix;
+    for(let y=0;y<m.length;y++){
+      for(let x=0;x<m[y].length;x++){
+        if(m[y][x]){
+          board[y+piece.y][x+piece.x]=piece.color;
+        }
+      }
+    }
+  }
+
+  function clearLines(){
+    let lines = 0;
+    outer: for(let y=ROWS-1;y>=0;y--){
+      for(let x=0;x<COLS;x++){
+        if(!board[y][x]) continue outer;
+      }
+      const row = board.splice(y,1)[0];
+      board.unshift(Array(COLS).fill(0));
+      lines++;
+      y++; // recheck same row
+    }
+    if(lines){
+      score += [0,40,100,300,1200][lines];
+      dropInterval = Math.max(100, dropInterval - lines*50);
+    }
+  }
+
+  function drawMatrix(matrix, offset, color){
+    for(let y=0;y<matrix.length;y++){
+      for(let x=0;x<matrix[y].length;x++){
+        if(matrix[y][x]){
+          ctx.fillStyle = color;
+          ctx.fillRect((x+offset.x)*BLOCK, (y+offset.y)*BLOCK, BLOCK-1, BLOCK-1);
+        }
+      }
+    }
+  }
+
+  function draw(){
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    // board
+    for(let y=0;y<ROWS;y++){
+      for(let x=0;x<COLS;x++){
+        if(board[y][x]){
+          ctx.fillStyle = board[y][x];
+          ctx.fillRect(x*BLOCK, y*BLOCK, BLOCK-1, BLOCK-1);
+        }
+      }
+    }
+    // current piece
+    if(current){
+      drawMatrix(current.matrix, {x:current.x, y:current.y}, current.color);
+    }
+    // score
+    ctx.fillStyle = '#fff';
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Score: '+score, 5, 20);
+  }
+
+  function playerDrop(){
+    current.y++;
+    if(collide(board,current)){
+      current.y--;
+      merge(board,current);
+      clearLines();
+      spawnPiece();
+    }
+    dropCounter = 0;
+  }
+
+  function playerMove(dir){
+    current.x += dir;
+    if(collide(board,current)) current.x -= dir;
+  }
+
+  function playerRotate(){
+    const old = current.matrix;
+    const rotated = rotate(old);
+    const oldX = current.x;
+    current.matrix = rotated;
+    // simple wall kick
+    if(collide(board,current)){
+      current.x = oldX - 1;
+      if(collide(board,current)){
+        current.x = oldX + 1;
+        if(collide(board,current)){
+          current.x = oldX;
+          current.matrix = old;
+        }
+      }
+    }
+  }
+
+  function hardDrop(){
+    while(!collide(board,current)){
+      current.y++;
+    }
+    current.y--;
+    merge(board,current);
+    clearLines();
+    spawnPiece();
+    dropCounter = 0;
+  }
+
+  function spawnPiece(){
+    const types = Object.keys(shapes);
+    const type = types[Math.floor(Math.random()*types.length)];
+    current = createPiece(type);
+    if(collide(board,current)){
+      gameOver = true;
+      overlay.textContent = 'Game Over';
+    }
+  }
+
+  function update(time=0){
+    const delta = time - lastTime;
+    lastTime = time;
+    dropCounter += delta;
+    if(dropCounter > dropInterval){
+      playerDrop();
+    }
+    draw();
+    if(!gameOver) requestAnimationFrame(update);
+  }
+
+  // controls
+  document.addEventListener('keydown', e=>{
+    if(gameOver) return;
+    switch(e.key){
+      case 'ArrowLeft': playerMove(-1); break;
+      case 'ArrowRight': playerMove(1); break;
+      case 'ArrowDown': playerDrop(); break;
+      case 'ArrowUp': playerRotate(); break;
+      case ' ': hardDrop(); break;
+    }
+  });
+
+  // start
+  spawnPiece();
+  update();
+})();
+</script>
+</body>
+</html>

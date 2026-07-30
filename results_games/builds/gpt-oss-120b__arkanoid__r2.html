@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Arkanoid</title>
+<style>
+  body,html{margin:0;padding:0;height:100%;background:#111;color:#fff;font-family:sans-serif;overflow:hidden;display:flex;align-items:center;justify-content:center;}
+  canvas{background:#222;display:block;}
+</style>
+</head>
+<body>
+<canvas id="game" width="480" height="640" tabindex="0"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  canvas.focus();
+
+  const WIDTH = canvas.width;
+  const HEIGHT = canvas.height;
+
+  // Game objects
+  const paddle = {
+    width: 80,
+    height: 12,
+    x: (WIDTH - 80) / 2,
+    y: HEIGHT - 30,
+    speed: 6,
+    dx: 0
+  };
+
+  const ball = {
+    radius: 6,
+    x: WIDTH / 2,
+    y: paddle.y - 6,
+    speed: 4,
+    dx: 0,
+    dy: 0,
+    launched: false
+  };
+
+  const brick = {
+    rows: 5,
+    cols: 8,
+    width: 0,
+    height: 20,
+    padding: 8,
+    offsetTop: 50,
+    offsetLeft: 8,
+    colors: ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#3498db']
+  };
+  brick.width = (WIDTH - (brick.cols + 1) * brick.padding) / brick.cols;
+
+  let bricks = [];
+  let score = 0;
+  let lives = 3;
+  let gameOver = false;
+  let win = false;
+
+  function initBricks() {
+    bricks = [];
+    for (let r = 0; r < brick.rows; r++) {
+      bricks[r] = [];
+      for (let c = 0; c < brick.cols; c++) {
+        const bX = brick.offsetLeft + c * (brick.width + brick.padding);
+        const bY = brick.offsetTop + r * (brick.height + brick.padding);
+        bricks[r][c] = { x: bX, y: bY, status: 1 };
+      }
+    }
+  }
+
+  function drawPaddle() {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(paddle.x, paddle.y, paddle.width, paddle.height);
+  }
+
+  function drawBall() {
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.closePath();
+  }
+
+  function drawBricks() {
+    for (let r = 0; r < brick.rows; r++) {
+      for (let c = 0; c < brick.cols; c++) {
+        const b = bricks[r][c];
+        if (b.status) {
+          ctx.fillStyle = brick.colors[r % brick.colors.length];
+          ctx.fillRect(b.x, b.y, brick.width, brick.height);
+        }
+      }
+    }
+  }
+
+  function drawInfo() {
+    ctx.font = '16px sans-serif';
+    ctx.fillStyle = '#fff';
+    ctx.fillText('Score: ' + score, 8, 20);
+    ctx.fillText('Lives: ' + lives, WIDTH - 80, 20);
+  }
+
+  function drawOverlay(text) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0,0,WIDTH,HEIGHT);
+    ctx.fillStyle = '#fff';
+    ctx.font = '30px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, WIDTH/2, HEIGHT/2);
+    ctx.font = '16px sans-serif';
+    ctx.fillText('Press Space to Restart', WIDTH/2, HEIGHT/2 + 30);
+  }
+
+  function movePaddle() {
+    paddle.x += paddle.dx;
+    if (paddle.x < 0) paddle.x = 0;
+    if (paddle.x + paddle.width > WIDTH) paddle.x = WIDTH - paddle.width;
+  }
+
+  function launchBall() {
+    if (!ball.launched) {
+      ball.dx = ball.speed * (Math.random() > 0.5 ? 1 : -1);
+      ball.dy = -ball.speed;
+      ball.launched = true;
+    }
+  }
+
+  function resetBall() {
+    ball.x = WIDTH / 2;
+    ball.y = paddle.y - ball.radius;
+    ball.dx = 0;
+    ball.dy = 0;
+    ball.launched = false;
+  }
+
+  function collisionDetection() {
+    // Walls
+    if (ball.x + ball.radius > WIDTH || ball.x - ball.radius < 0) ball.dx = -ball.dx;
+    if (ball.y - ball.radius < 0) ball.dy = -ball.dy;
+
+    // Paddle
+    if (ball.y + ball.radius > paddle.y &&
+        ball.x > paddle.x &&
+        ball.x < paddle.x + paddle.width) {
+      // reflect with angle based on hit position
+      const hitPos = (ball.x - (paddle.x + paddle.width/2)) / (paddle.width/2);
+      const angle = hitPos * Math.PI/3; // max 60deg
+      const speed = Math.hypot(ball.dx, ball.dy);
+      ball.dx = speed * Math.sin(angle);
+      ball.dy = -Math.abs(speed * Math.cos(angle));
+    }
+
+    // Bricks
+    for (let r = 0; r < brick.rows; r++) {
+      for (let c = 0; c < brick.cols; c++) {
+        const b = bricks[r][c];
+        if (b.status) {
+          if (ball.x > b.x && ball.x < b.x + brick.width &&
+              ball.y - ball.radius < b.y + brick.height &&
+              ball.y + ball.radius > b.y) {
+            ball.dy = -ball.dy;
+            b.status = 0;
+            score += 10;
+            if (score === brick.rows * brick.cols * 10) {
+              win = true;
+              gameOver = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  function update() {
+    if (gameOver) return;
+    movePaddle();
+    if (ball.launched) {
+      ball.x += ball.dx;
+      ball.y += ball.dy;
+      collisionDetection();
+
+      // Bottom
+      if (ball.y - ball.radius > HEIGHT) {
+        lives--;
+        if (lives === 0) {
+          gameOver = true;
+        } else {
+          resetBall();
+        }
+      }
+    } else {
+      // keep ball on paddle before launch
+      ball.x = paddle.x + paddle.width/2;
+      ball.y = paddle.y - ball.radius;
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,WIDTH,HEIGHT);
+    drawBricks();
+    drawPaddle();
+    drawBall();
+    drawInfo();
+    if (gameOver) {
+      drawOverlay(win ? 'You Win!' : 'Game Over');
+    }
+  }
+
+  function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // Input
+  const keys = {};
+  document.addEventListener('keydown', e => {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = true;
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = true;
+    if (e.code === 'Space') {
+      if (gameOver) {
+        // restart
+        score = 0;
+        lives = 3;
+        gameOver = false;
+        win = false;
+        initBricks();
+        resetBall();
+      } else {
+        launchBall();
+      }
+    }
+  });
+  document.addEventListener('keyup', e => {
+    if (e.code === 'ArrowLeft' || e.code === 'KeyA') keys.left = false;
+    if (e.code === 'ArrowRight' || e.code === 'KeyD') keys.right = false;
+  });
+
+  // Paddle movement based on keys
+  function handleInput() {
+    paddle.dx = 0;
+    if (keys.left) paddle.dx = -paddle.speed;
+    if (keys.right) paddle.dx = paddle.speed;
+    requestAnimationFrame(handleInput);
+  }
+
+  // Init
+  initBricks();
+  handleInput();
+  loop();
+})();
+</script>
+</body>
+</html>
