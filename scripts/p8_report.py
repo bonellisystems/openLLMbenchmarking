@@ -43,6 +43,9 @@ from llmtest.judging.aggregate import (  # noqa: E402
 from llmtest.judging.calibration_gate import calibration_status  # noqa: E402
 from llmtest.judging.runner import resolve_cohort_models  # noqa: E402
 from llmtest.registry import load_config  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from report_b9_b11 import build_b9_b11_section  # noqa: E402
 from llmtest.store import Store  # noqa: E402
 from llmtest.tables import _current_rubric_sha, render_scorecard  # noqa: E402
 
@@ -130,9 +133,9 @@ def load_rows(root: Path, suite_version: str, caveats: list[str]) -> list[dict]:
     return rows
 
 
-def load_baseline_maps(root: Path) -> dict[str, dict]:
+def load_baseline_maps(root: Path, judgments: list[dict] | None = None) -> dict[str, dict]:
     """{packet_id: map} restricted to the full-roster B1 baseline packets --
-    those whose letters_by_judge has the MAXIMUM letter count present on disk
+    those whose letters_by_judge has the largest JUDGED letter count present on disk
     (current roster of N models + CAL-strong + CAL-weak). Packet maps with a
     smaller letter count are partial-roster / dry-run / quota-probe packets from
     earlier waves and are out of scope for the baseline scorecard. Deriving the
@@ -145,19 +148,45 @@ def load_baseline_maps(root: Path) -> dict[str, dict]:
     count collides exactly with the B1 baseline letter count (both are
     len(cohort_models)+2), so without this exclusion axis packets get
     miscounted as B1 baseline packets once real B2 judging runs. Mirrors
-    aggregate.py's cal_fallback_count exclusion of the same dim field."""
+    aggregate.py's cal_fallback_count exclusion of the same dim field.
+
+    UNJUDGED PACKETS MUST NOT SHADOW A JUDGED BASELINE. Taking the plain maximum was
+    wrong: building packets for a larger cohort writes a new, bigger, entirely UNJUDGED
+    packet set, and max() then selects it over the fully-judged one. On this repo that
+    silently turned "360/360 judged, full 17-model scorecard" into "0/360, judging too
+    early" and erased the flagship table from REPORT.md - with no judging having changed
+    and no error raised. Measured on disk: 19 letters x 360 packets (0 judged) sitting
+    beside 18 letters x 360 packets (360 judged).
+
+    So when judgments are supplied, pick the LARGEST letter count that actually has a
+    fully-judged packet. A newly-judged bigger cohort still takes over the moment it is
+    judged. With no judgments at all, fall back to the maximum so a fresh run honestly
+    reports 0% rather than quietly presenting a stale scorecard as current.
+    """
     maps_all = {pid: m for pid, m in load_maps(root / "results" / "packets").items()
                 if not (isinstance(m.get("dim"), str) and m.get("dim").startswith("axis"))}
-    counts = [len(next(iter(m["letters_by_judge"].values())))
-              for m in maps_all.values() if m.get("letters_by_judge")]
-    if not counts:
+    by_size: dict[int, dict[str, dict]] = defaultdict(dict)
+    for pid, m in maps_all.items():
+        lbj = m.get("letters_by_judge")
+        if not lbj:
+            continue
+        sizes = {len(lm) for lm in lbj.values()}
+        if len(sizes) == 1:
+            by_size[sizes.pop()][pid] = m
+    if not by_size:
         return {}
-    target = max(counts)
-    return {
-        pid: m for pid, m in maps_all.items()
-        if m.get("letters_by_judge")
-        and all(len(lm) == target for lm in m["letters_by_judge"].values())
-    }
+
+    if judgments:
+        ok_letters: dict[tuple[str, str], set] = defaultdict(set)
+        for j in judgments:
+            if j.get("status") == "ok":
+                ok_letters[(j["packet_id"], j["judge_id"])].add(j["letter"])
+        for size in sorted(by_size, reverse=True):
+            if any(all(ok_letters.get((pid, jid), set()).issuperset(lm)
+                       for jid, lm in m["letters_by_judge"].items())
+                   for pid, m in by_size[size].items()):
+                return by_size[size]
+    return by_size[max(by_size)]
 
 
 def fully_judged_count(baseline_maps: dict[str, dict], judgments: list[dict],
@@ -1235,7 +1264,7 @@ def build_report(root: Path) -> tuple[str, str]:
 
     store = Store(root / "results")
     judgments = list(store.iter_judgments())
-    baseline_maps = load_baseline_maps(root)
+    baseline_maps = load_baseline_maps(root, judgments)
     all_maps = load_maps(root / "results" / "packets")
     judge_ids = sorted(cfg.judges.get("judges", {}))
     refscores_path = root / "grading" / "calibration" / "refscores.yaml"
@@ -1247,6 +1276,10 @@ def build_report(root: Path) -> tuple[str, str]:
     battery_section = build_battery_section(rows, cfg, judgments, all_maps, refscores)
     b5_section = build_b5_section(rows)
     b8_section = build_b8_section(root, cfg, rows)
+    # B9/B10/B11 arrived after this script was written and keep their own non-suite
+    # shards, so the loader above never saw them and the report silently omitted three
+    # whole batteries. Their section lives in its own module.
+    b9_b11_section = build_b9_b11_section(root)
     caveats_section = build_caveats_section(rows, agg, judgments, baseline_maps, caveats)
 
     header = (
@@ -1256,7 +1289,7 @@ def build_report(root: Path) -> tuple[str, str]:
         "and safe to run on partial/in-progress data._\n"
     )
     full_md = "\n".join([header, overview, b1_section, battery_section, b5_section,
-                          b8_section, caveats_section])
+                          b8_section, b9_b11_section, caveats_section])
 
     condensed = build_condensed(rows, roster, agg, baseline_maps, judgments,
                                  judge_ids, hardware_label)
