@@ -98,9 +98,15 @@ def main() -> int:
     print(f"{tag}merging {src}")
 
     # --- suite rows (B1-B7): Store.append validates AND dedupes by row_id -----------
+    # SEARCHED RECURSIVELY ON PURPOSE. The two suite drivers write to different places:
+    # bigmodel_gen is invoked with --results-dir $OUT/suite, while p8_gen_serving.py and
+    # p8_gen_b5.py build their own Store(LLMTEST_OUT) and write to /root/out directly.
+    # Globbing only out/suite/ therefore found B1/B2/B3/B6 and silently dropped every
+    # B4, B5 and B7 row - the exact batteries this run exists to produce. Store.append
+    # dedupes by row_id, so a shard matched twice costs nothing.
     store = Store(ROOT / "results")
     suite_seen = suite_new = suite_bad = 0
-    for shard in sorted((src / "suite").glob("rows-suite-*.jsonl")):
+    for shard in sorted(src.rglob("rows-suite-*.jsonl")):
         for r in read_jsonl(shard):
             suite_seen += 1
             if dry:
