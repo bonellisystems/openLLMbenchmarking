@@ -291,6 +291,19 @@ def main():
         return 1
     print("  scripts shipped, LF endings confirmed")
 
+    # The watcher destroys the instance on completion, but it runs on the operator's
+    # machine and has been killed mid-run twice. If it dies after the work finishes,
+    # nothing stops the box and it idles to the credit floor - the shape that already
+    # cost $9.65 and 96 unpulled rows. This guard powers the machine off a quarter hour
+    # after run_all_done appears, which ends GPU billing without needing the API key on
+    # the box; the instance is still destroyed from the API afterwards.
+    guard = ROOT / "deploy" / "shutdown_guard.sh"
+    if guard.exists():
+        scp_to(host, port, guard, "/root/shutdown_guard.sh")
+        sshx(host, port, "chmod +x /root/shutdown_guard.sh; "
+                         "tmux new-session -d -s shutguard 'bash /root/shutdown_guard.sh'")
+        print("  idle-cost guard armed (powers off 15 min after completion)")
+
     # tmux, not `nohup ... &` - a backgrounded job over ssh dies with the session.
     print("launching setup -> run_all in tmux ...")
     sshx(host, port,
