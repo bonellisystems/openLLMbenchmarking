@@ -22,12 +22,15 @@ _One row per (battery, source_suite) present -- a battery whose rows span more t
 | B3 | B3 Hallucination Curve (deterministic) | suite-v2.0.0 | 624 | in progress (16/20 models seen) |
 | B3 | B3 Hallucination Curve (deterministic) | suite-v2.1.0 | 156 | in progress (4/20 models seen) |
 | B4 | B4 Long Context (deterministic) | suite-v2.0.0 | 343 | in progress (16/20 models seen) |
+| B4 | B4 Long Context (deterministic) | suite-v2.1.0 | 105 | in progress (4/20 models seen) |
 | B5 | B5 Serving / Throughput (timing) | suite-v2.0.0 | 128 | in progress (16/20 models seen) |
+| B5 | B5 Serving / Throughput (timing) | suite-v2.1.0 | 32 | in progress (4/20 models seen) |
 | B6 | B6 Agentic Coding (deterministic + judged correctness not yet wired) | suite-v2.0.0 | 480 | in progress (16/20 models seen) |
 | B6 | B6 Agentic Coding (deterministic + judged correctness not yet wired) | suite-v2.1.0 | 120 | in progress (4/20 models seen) |
 | B7 | B7 Harness/Config Sensitivity Matrix (deterministic) | suite-v2.0.0 | 1280 | in progress (16/20 models seen) |
+| B7 | B7 Harness/Config Sensitivity Matrix (deterministic) | suite-v2.1.0 | 320 | in progress (4/20 models seen) |
 
-Total rows loaded: **11052** (across every source_suite shard read)
+Total rows loaded: **12063** (across every source_suite shard read)
 
 ### B1 judging progress
 
@@ -213,6 +216,21 @@ _source_suite: `suite-v2.0.0` (343 rows)_
 | qwen3.6-27b-dense | 43% | 38% | 38% |
 | qwen3.6-35b-a3b | 44% | 40% | 40% |
 
+_source_suite: `suite-v2.1.0` (105 rows)_
+
+**Retrieval accuracy by ctx-tier** (standard kv=q8)
+
+| Model | 16k | 64k | 128k | 256k |
+|---|---|---|---|---|
+| abl-gemma-4-31b | 71% | 43% | 67% | - |
+| abl-opus-35b-a3b | 100% | 100% | 100% | 95% |
+| abl-qwen3.6-27b | 38% | 43% | 24% | 57% |
+| laguna-s-2.1 | 100% | 100% | 100% | 100% |
+
+**KV-quant quality sweep** (kv_sweep_models + spot-check model)
+
+(no kv-quant-sweep rows yet)
+
 ### B6 Agentic Coding -- code det-pass by model + empty-output count
 
 _source_suite: `suite-v2.0.0` (480 rows)_
@@ -263,6 +281,18 @@ _source_suite: `suite-v2.0.0` (1280 rows)_
 
 `Agreement vs baseline` = fraction of shared content-signal checks that match the baseline cell's pass/fail (threshold 0.8). `Byte-identical` only applies to the spec=off,temp=t0 cell -- a direct empirical check of the project's own "n-gram spec-decode is lossless at temp=0" claim (CLAUDE.md).
 
+_source_suite: `suite-v2.1.0` (320 rows)_
+
+| Cell (vs baseline) | N | Content det-pass | Mean agreement | Byte-identical rate |
+|---|---|---|---|---|
+| baseline | 64 | 89% | - | - |
+| spec=off | 64 | 90% | 97% | 52% |
+| sysp=minimal | 64 | 89% | 94% | - |
+| temp=tdef | 64 | 91% | 95% | - |
+| toolfmt=prompted | 64 | 98% | 83% | - |
+
+`Agreement vs baseline` = fraction of shared content-signal checks that match the baseline cell's pass/fail (threshold 0.8). `Byte-identical` only applies to the spec=off,temp=t0 cell -- a direct empirical check of the project's own "n-gram spec-decode is lossless at temp=0" claim (CLAUDE.md).
+
 
 ## 4. B5 Serving / Throughput
 
@@ -272,6 +302,9 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 
 | Model | ngram32 t/s | off t/s | speedup |
 |---|---|---|---|
+| abl-gemma-4-31b | 59.3 | 59.5 | 1.00x |
+| abl-opus-35b-a3b | 239.2 | 239.9 | 1.00x |
+| abl-qwen3.6-27b | 71.3 | 71.4 | 1.00x |
 | agents-a1-35b | 215.2 | 215.1 | 1.00x |
 | bonsai-ternary-27b | 116.3 | 116.0 | 1.00x |
 | gemma-4-26b-a4b | 215.8 | 215.8 | 1.00x |
@@ -280,6 +313,7 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 | gpt-oss-120b | 192.9 | 192.4 | 1.00x |
 | gpt-oss-20b | 264.1 | 264.3 | 1.00x |
 | granite-4.1-30b | 66.7 | 66.8 | 1.00x |
+| laguna-s-2.1 | 144.5 | 145.2 | 1.00x |
 | llama-4-scout | 97.4 | 96.0 | 1.01x |
 | nemotron-3-nano-30b | 302.2 | 302.6 | 1.00x |
 | ornith-1.0-35b | 218.8 | 218.6 | 1.00x |
@@ -293,6 +327,9 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 
 | Model | ngram32 t/s | off t/s |
 |---|---|---|
+| abl-gemma-4-31b | 52.6 | 52.6 |
+| abl-opus-35b-a3b | 178.5 | 214.7 |
+| abl-qwen3.6-27b | 65.0 | 65.7 |
 | agents-a1-35b | 209.3 | 201.2 |
 | bonsai-ternary-27b | 101.9 | 104.4 |
 | gemma-4-26b-a4b | 193.0 | 190.5 |
@@ -301,6 +338,7 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 | gpt-oss-120b | 162.4 | 162.5 |
 | gpt-oss-20b | 226.4 | 224.6 |
 | granite-4.1-30b | 54.5 | 54.5 |
+| laguna-s-2.1 | 123.2 | 122.7 |
 | llama-4-scout | 74.6 | 74.7 |
 | nemotron-3-nano-30b | 266.0 | 281.6 |
 | ornith-1.0-35b | 199.5 | 201.4 |
@@ -314,6 +352,9 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 
 | Model | conc=2 | conc=4 | conc=8 | conc=16 |
 |---|---|---|---|---|
+| abl-gemma-4-31b | 90.6 | 114.3 | 123.3 | 476.1 |
+| abl-opus-35b-a3b | 318.6 | 406.3 | 523.1 | 562.5 |
+| abl-qwen3.6-27b | 104.4 | 134.8 | 145.2 | 401.2 |
 | agents-a1-35b | 322.9 | 475.1 | 666.1 | 691.6 |
 | bonsai-ternary-27b | 193.8 | 254.7 | 321.7 | 467.3 |
 | gemma-4-26b-a4b | 351.4 | 549.1 | 771.0 | 980.2 |
@@ -322,6 +363,7 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 | gpt-oss-120b | 243.5 | 361.6 | 559.1 | 714.0 |
 | gpt-oss-20b | 349.6 | 539.1 | 810.7 | 1116.2 |
 | granite-4.1-30b | 112.1 | 158.7 | 147.1 | 303.0 |
+| laguna-s-2.1 | 210.4 | 305.3 | 349.8 | 357.0 |
 | llama-4-scout | 130.2 | 179.8 | 209.7 | 357.0 |
 | nemotron-3-nano-30b | 414.3 | 553.2 | 722.3 | 854.2 |
 | ornith-1.0-35b | 328.1 | 480.7 | 668.9 | 713.4 |
@@ -336,26 +378,38 @@ _RTX PRO 6000 (rented) numbers -- not the local RTX 5090 canonical figures in `v
 
 Per-`(model, harness)` completion proportion as RAW k/N + a Wilson 95% confidence interval (`llmtest.harness.stats.wilson`, z=1.96) -- never a smoothed point-probability claim at small N (spec 2.8) -- plus median steps/tokens, the subagent-spawn canary (spec 2.7: `not_applicable` honored for harnesses with no delegation primitive, never a false 0%), and a first-failure-class distribution (populated from `results/b8_classifications-<suite_version>.jsonl` when `scripts/classify_b8_local.py` has been run for this suite -- see the note below the table). `infra-error` runs (HARNESS/serving-layer failures -- endpoint unreachable etc.; the model never got a fair chance) are EXCLUDED from k/N, the Wilson interval, and every per-replicate signal, never counted as model failures; the `Infra-excluded` column reports how many such runs were dropped per cell (attempted = eligible N + Infra-excluded), so the exclusion is transparent rather than silent.
 
-_source_suite: `suite-v2.1.0` (505 rows, 2 (model,harness) group(s))_
+_source_suite: `suite-v2.1.0` (1059 rows, 8 (model,harness) group(s))_
 
 | Model | Harness | Completion k/N | Infra-excluded | Wilson 95% CI | Per-replicate outcomes | Median steps | Median tokens | Subagent canary |
 |---|---|---|---|---|---|---|---|---|
+| abl-gemma-4-31b | opencode | 0/52 | 2 | [0.0%, 6.9%] | [F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F] | 2.5 | 4591.0 | 0/52 (0%) spawned |
+| abl-opus-35b-a3b | opencode | 0/113 | 0 | [0.0%, 3.3%] | [F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F] | 7.0 | 8319.0 | 0/113 (0%) spawned |
 | gemma-4-26b-a4b-mxfp4 | opencode | 176/300 | 0 | [53.0%, 64.1%] | [P, F, P, P, P, P, F, P, P, F, F, F, P, P, F, P, P, F, P, P, P, P, P, P, P, P, P, F, F, F, F, F, P, F, F, F, F, P, F, P, F, F, F, P, P, P, P, P, F, P, P, P, P, P, F, P, F, F, F, P, F, P, F, P, P, P, P, F, F, P, P, F, F, F, P, P, P, P, P, P, P, P, P, F, P, P, F, P, F, F, F, F, F, F, F, F, F, P, P, F, P, F, F, P, P, P, P, P, P, P, F, P, P, P, F, F, P, F, P, F, F, P, P, P, P, P, P, P, F, P, P, F, F, F, P, P, F, P, P, P, P, P, F, P, P, P, P, F, P, F, F, P, F, F, F, F, P, F, P, P, F, P, P, F, P, P, P, P, F, F, P, P, P, P, F, F, P, P, P, F, F, P, P, P, P, P, P, P, P, P, F, F, F, F, F, P, P, P, P, P, P, P, P, P, P, P, F, P, F, F, F, F, P, F, F, F, F, P, F, P, F, P, F, P, P, P, P, F, P, F, P, P, F, P, F, P, F, F, F, P, P, F, P, P, P, P, P, F, F, P, P, F, F, P, P, P, P, P, P, P, P, P, F, P, P, P, F, F, F, F, F, F, F, F, F, P, F, P, P, P, P, F, P, P, F, P, F, P, P, F, F, P, P, F, P, F, F, F, P, F] | 7.0 | 34297.5 | 0/300 (0%) spawned |
+| glm-4.5-air | opencode | 0/112 | 0 | [0.0%, 3.3%] | [F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F] | 6.0 | 4083.5 | 0/112 (0%) spawned |
+| gpt-oss-120b | opencode | 0/115 | 0 | [0.0%, 3.2%] | [F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F] | 10.0 | 6698.0 | 0/115 (0%) spawned |
 | gpt-oss-20b | opencode | 177/205 | 0 | [81.0%, 90.4%] | [P, P, P, P, P, P, P, P, P, P, P, P, P, P, P, F, F, P, P, F, P, P, P, P, P, P, P, P, P, P, P, P, P, F, F, P, P, P, F, P, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, F, P, F, F, P, P, P, P, P, P, P, P, P, P, P, P, P, F, P, F, P, F, P, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, P, P, F, P, F, P, P, P, P, P, P, P, P, P, P, P, F, P, P, P, P, F, P, F, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, F, P, F, P, P, P, P, P, P, P, P, P, P, P, P, P, P, F, P, P, P, F, P, P, P, P, P, P, P, F, P, P, P, F, P, P, P, P, P, P, P, P, P, F, P, P, P, P, P, P, P, P, P, P, P, P, P, P, P, P, P, P, F, P, P] | 9.0 | 13680.0 | 0/205 (0%) spawned |
+| laguna-s-2.1 | opencode | 0/43 | 2 | [0.0%, 8.2%] | [F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F, F] | 9.0 | 23956.0 | 0/43 (0%) spawned |
+| llama-4-scout | opencode | 0/0 | 115 | [0.0%, 0.0%] | [] | - | - | no data |
 
 **First-failure-class distribution (failed rows only)**
 
 | Model | Harness | class a | class b | class c | class d | class e | class unknown | (unclassified) |
 |---|---|---|---|---|---|---|---|---|
+| abl-gemma-4-31b | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 52 |
+| abl-opus-35b-a3b | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 113 |
 | gemma-4-26b-a4b-mxfp4 | opencode | 0 | 15 | 9 | 0 | 66 | 0 | 34 |
+| glm-4.5-air | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 112 |
+| gpt-oss-120b | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 115 |
 | gpt-oss-20b | opencode | 0 | 1 | 8 | 0 | 7 | 0 | 12 |
+| laguna-s-2.1 | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 43 |
+| llama-4-scout | opencode | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 _First-failure-class distribution is DISPLAY ONLY -- actually running `llmtest.harness.failure_class.classify_first_failure` -- run via `scripts/classify_b8_local.py` (task-b8classify) -- POPULATES this distribution: since B8's row schema has no room for the full `Trace` a classifier needs (only summary `metrics`), the classify pass reads each failed row's persisted Trace (`response_meta.trace_ref`, written by `llmtest.batteries.b8_harness.execute()`) and appends its verdict to the sibling, append-only store `results/b8_classifications-<suite_version>.jsonl` (row_id keyed) rather than mutating the row itself (row_id is content-derived and `Store.append()` is a structural no-op on an existing row_id -- see that module's docstring). This function reads that sibling store (`_load_b8_classifications`) and fills in `metrics['first_failure_class']` wherever a row's own metrics don't already carry it; a failed row falls into `(unclassified)` only when neither source has a verdict for it yet (classify pass not run, or still in progress). Wilson 95% CI uses `llmtest.harness.stats.wilson` (z=1.96); k/N and the ordered per-replicate outcome list are always shown alongside it -- never a single blended probability at these small (N>=5) replicate counts._
 
 
 ## B9-B11 - Game Builds, Security Review, Tool Loop
 
-_B9 336 rows, B10 462 rows, B11 48 rows. These batteries keep their own shards (`results_games/`, `results_security/`, `results_tools/`) because they are not suite-schema rows._
+_B9 456 rows, B10 1188 rows, B11 216 rows. These batteries keep their own shards (`results_games/`, `results_security/`, `results_tools/`) because they are not suite-schema rows._
 
 ### B9 Game Builds
 
@@ -363,18 +417,22 @@ _B9 336 rows, B10 462 rows, B11 48 rows. These batteries keep their own shards (
 
 | Model | runs_clean | attempt ladder |
 |---|---|---|
-| gemma-4-31b-dense | 76% (16/21) [55-89] | base:21 |
+| abl-qwen3.6-27b | 83% (20/24) [64-93] | base:24 |
+| gemma-4-31b-dense | 71% (17/24) [51-85] | base:24 |
 | abl-gemma-4-31b | 71% (17/24) [51-85] | base:24 |
 | qwen3.6-35b-a3b | 67% (16/24) [47-82] | base:24 |
-| gemma-4-26b-a4b | 60% (6/10) [31-83] | base:2, bigger_budget:1, no_thinking:7 |
+| gpt-oss-120b | 62% (15/24) [43-79] | base:24 |
+| gemma-4-26b-a4b | 58% (14/24) [39-76] | base:4, bigger_budget:4, no_thinking:16 |
 | ornith-1.0-35b | 58% (14/24) [39-76] | base:24 |
+| glm-4.5-air | 58% (14/24) [39-76] | base:23, bigger_budget:1 |
 | abl-opus-35b-a3b | 54% (13/24) [35-72] | base:22, bigger_budget:1, no_thinking:1 |
 | gpt-oss-20b | 50% (12/24) [31-69] | base:24 |
 | qwen3.6-27b-dense | 50% (12/24) [31-69] | base:24 |
-| agents-a1-35b | 47% (8/17) [26-69] | base:17 |
+| agents-a1-35b | 46% (11/24) [28-65] | base:20, bigger_budget:2, no_thinking:2 |
 | bonsai-ternary-27b | 42% (10/24) [24-61] | base:24 |
 | ornith-1.0-9b | 38% (9/24) [21-57] | base:24 |
 | laguna-s-2.1 | 38% (9/24) [21-57] | base:24 |
+| llama-4-scout | 38% (9/24) [21-57] | base:24 |
 | qwen3-coder-30b | 33% (8/24) [18-53] | base:24 |
 | granite-4.1-30b | 8% (2/24) [2-26] | base:24 |
 | nemotron-3-nano-30b | 4% (1/24) [1-20] | base:24 |
@@ -384,14 +442,14 @@ _B9 336 rows, B10 462 rows, B11 48 rows. These batteries keep their own shards (
 
 | Game | runs_clean |
 |---|---|
-| flightsim | 10% (4/40) [4-23] |
-| roguelike | 20% (8/40) [10-35] |
-| asteroids | 44% (18/41) [30-59] |
-| snake | 47% (21/45) [33-61] |
-| doodle | 49% (19/39) [34-64] |
-| tetris | 60% (27/45) [45-73] |
-| arkanoid | 64% (28/44) [49-76] |
-| flappy | 67% (28/42) [52-79] |
+| flightsim | 11% (6/57) [5-21] |
+| roguelike | 23% (13/57) [14-35] |
+| snake | 47% (27/57) [35-60] |
+| doodle | 56% (32/57) [43-68] |
+| asteroids | 56% (32/57) [43-68] |
+| tetris | 63% (36/57) [50-74] |
+| arkanoid | 67% (38/57) [54-78] |
+| flappy | 68% (39/57) [56-79] |
 
 
 `attempt ladder` records which rung produced the answer: `base`, then a larger token budget, then thinking disabled. Reasoning models burn a small `max_tokens` entirely on hidden thinking and return EMPTY content at `finish=length` - gemma-4-26b scored 4% before the ladder and 58% after, so a row at a higher rung is a budget artefact, not a quality signal.
@@ -407,9 +465,20 @@ _B9 336 rows, B10 462 rows, B11 48 rows. These batteries keep their own shards (
 | abl-qwen3.6-27b | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 100% (6/6) [61-100] | 92% | 75% (9/12) [47-91] | 100% (18/18) [82-100] | 0/66 |
 | qwen3.6-27b-dense | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 100% (6/6) [61-100] | 67% | 25% (3/12) [9-53] | 100% (18/18) [82-100] | 0/66 |
 | laguna-s-2.1 | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 100% (6/6) [61-100] | 94% | 83% (10/12) [55-95] | 94% (17/18) [74-99] | 0/66 |
+| qwen3-coder-30b | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 50% (3/6) [19-81] | 44% | 8% (1/12) [1-35] | 83% (15/18) [61-94] | 0/66 |
+| qwen3.6-35b-a3b | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 100% (6/6) [61-100] | 71% | 42% (5/12) [19-68] | 100% (18/18) [82-100] | 0/66 |
+| agents-a1-35b | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 50% (3/6) [19-81] | 88% | 67% (8/12) [39-86] | 94% (17/18) [74-99] | 0/66 |
+| granite-4.1-30b | 100% (18/18) [82-100] | 100% (18/18) [82-100] | 100% (6/6) [61-100] | 67% | 25% (3/12) [9-53] | 67% (12/18) [44-84] | 0/66 |
+| ornith-1.0-35b | 100% (18/18) [82-100] | 94% (17/18) [74-99] | 100% (6/6) [61-100] | 72% | 42% (5/12) [19-68] | 100% (18/18) [82-100] | 0/66 |
 | gpt-oss-120b | 100% (18/18) [82-100] | 89% (16/18) [67-97] | 100% (6/6) [61-100] | 83% | 75% (9/12) [47-91] | 67% (12/18) [44-84] | 0/66 |
+| nemotron-3-nano-30b | 100% (18/18) [82-100] | 89% (16/18) [67-97] | 100% (6/6) [61-100] | 79% | 67% (8/12) [39-86] | 89% (16/18) [67-97] | 0/66 |
 | abl-opus-35b-a3b | 100% (18/18) [82-100] | 83% (15/18) [61-94] | 50% (3/6) [19-81] | 92% | 75% (9/12) [47-91] | 83% (15/18) [61-94] | 0/66 |
+| gemma-4-26b-a4b | 100% (18/18) [82-100] | 83% (15/18) [61-94] | 100% (6/6) [61-100] | 88% | 67% (8/12) [39-86] | 100% (18/18) [82-100] | 0/66 |
+| llama-4-scout | 100% (18/18) [82-100] | 83% (15/18) [61-94] | 50% (3/6) [19-81] | 79% | 67% (8/12) [39-86] | 78% (14/18) [55-91] | 0/66 |
+| gpt-oss-20b | 100% (18/18) [82-100] | 72% (13/18) [49-88] | 100% (6/6) [61-100] | 94% | 92% (11/12) [65-99] | 83% (15/18) [61-94] | 0/66 |
 | gemma-4-31b-dense | 100% (18/18) [82-100] | 67% (12/18) [44-84] | 100% (6/6) [61-100] | 75% | 50% (6/12) [25-75] | 100% (18/18) [82-100] | 0/66 |
+| glm-4.5-air | 100% (18/18) [82-100] | 61% (11/18) [39-80] | 100% (6/6) [61-100] | 69% | 50% (6/12) [25-75] | 100% (18/18) [82-100] | 0/66 |
+| ornith-1.0-9b | 100% (18/18) [82-100] | 56% (10/18) [34-75] | 100% (6/6) [61-100] | 92% | 83% (10/12) [55-95] | 100% (18/18) [82-100] | 0/66 |
 
 
 **Specificity is the discriminator, not sensitivity.** Sensitivity runs near ceiling for almost everything; a model that shouts VULNERABLE at every input scores 100% there and is worthless on an engagement. Refusals are counted separately and never scored as a wrong answer - refusing is a different failure from being wrong.
@@ -427,12 +496,26 @@ _B9 336 rows, B10 462 rows, B11 48 rows. These batteries keep their own shards (
 | abl-opus-35b-a3b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 6 |
 | abl-gemma-4-31b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 8 |
 | laguna-s-2.1 | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 6 |
+| gemma-4-31b-dense | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 6 |
+| qwen3.6-27b-dense | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 5 |
+| gpt-oss-20b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 4 |
+| qwen3-coder-30b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 5 |
+| qwen3.6-35b-a3b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 5 |
+| agents-a1-35b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 5 |
+| ornith-1.0-35b | 100% (12/12) [76-100] | 100% (12/12) [76-100] | 6 |
+| gemma-4-26b-a4b | 92% (11/12) [65-99] | 100% (12/12) [76-100] | 6 |
+| gpt-oss-120b | 92% (11/12) [65-99] | 100% (12/12) [76-100] | 4 |
+| nemotron-3-nano-30b | 83% (10/12) [55-95] | 83% (10/12) [55-95] | 4 |
+| ornith-1.0-9b | 75% (9/12) [47-91] | 100% (12/12) [76-100] | 5 |
+| granite-4.1-30b | 75% (9/12) [47-91] | 100% (12/12) [76-100] | 4 |
+| glm-4.5-air | 75% (9/12) [47-91] | 100% (12/12) [76-100] | 4 |
+| llama-4-scout | 0% (0/12) [0-24] | 0% (0/12) [0-24] | 0 |
 
 
 Scored from the FILESYSTEM after the loop ends, not from what the model said it did. `no confabulation` fails a model that claims work it never performed.
 
 
-**Coverage:** B9 15 models, B10 7, B11 4. A blank is 'not yet run', never 'scored zero'.
+**Coverage:** B9 19 models, B10 18, B11 18. A blank is 'not yet run', never 'scored zero'.
 
 ## 6. Data-quality caveats
 
@@ -443,10 +526,10 @@ Scored from the FILESYSTEM after the loop ends, not from what the model said it 
 | B1 | 6840 | 119 | 2% |
 | B2 | 576 | 0 | 0% |
 | B3 | 780 | 17 | 2% |
-| B4 | 343 | 0 | 0% |
-| B5 | 128 | 0 | 0% |
+| B4 | 448 | 0 | 0% |
+| B5 | 160 | 0 | 0% |
 | B6 | 600 | 5 | 1% |
-| B7 | 1280 | 14 | 1% |
+| B7 | 1600 | 14 | 1% |
 
 _"Empty" = zero response chars or zero predicted tokens, EXCLUDING B7 rows where a native tool call correctly landed the answer in `tool_calls` instead of `content` (that's expected empty content, not a failure). B6 uses its own code_chars==0 signal in section 3 instead (more precise: catches prose-only responses with no code block, which still have chars>0)._
 
