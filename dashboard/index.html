@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local LLM Test Bench — coverage, scores &amp; gaps</title>
+<style>
+:root{
+  --bg:#0a0e14; --panel:#111823; --panel-2:#0d1420; --line:#243244; --line-soft:#1b2430;
+  --ink:#e8eef6; --ink-dim:#8697aa; --ink-faint:#5a6b7d;
+  --accent:#4c9aff; --accent-soft:rgba(76,154,255,.14); --accent-line:rgba(76,154,255,.5);
+  --s-lo:#e05248; --s-mid:#d9a83a; --s-hi:#46b95a;
+  --sev-crit:#e05248; --sev-high:#e0813a; --sev-med:#d9a83a; --sev-low:#6d8299;
+  --gap-ink:#556475;
+  --shadow:0 1px 0 rgba(255,255,255,.03), 0 8px 24px -12px rgba(0,0,0,.6);
+  --mono:ui-monospace,"Cascadia Code","SF Mono","Segoe UI Mono",Consolas,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --r:8px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1280px;margin:0 auto;padding:28px 20px 80px}
+h1{font-size:19px;margin:0;font-weight:650;letter-spacing:-.01em}
+h2{font-size:14px;margin:0 0 2px;font-weight:650;letter-spacing:.01em}
+h3{font-size:12px;margin:18px 0 8px;font-weight:650;color:var(--ink-dim);
+  text-transform:uppercase;letter-spacing:.07em}
+.dim{color:var(--ink-dim);font-weight:400}
+.faint{color:var(--ink-faint)}
+header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.sub{color:var(--ink-dim);font-size:12.5px;margin:2px 0 20px;max-width:76ch}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  box-shadow:var(--shadow);margin:16px 0;overflow:hidden}
+.panel-h{padding:12px 16px;border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.panel-h .why{color:var(--ink-faint);font-size:11.5px}
+.panel-b{padding:14px 16px}
+/* ---------- stat tiles ---------- */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin:0 0 4px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:11px 13px}
+.stat .v{font-family:var(--mono);font-size:21px;font-weight:600;letter-spacing:-.02em}
+.stat .k{color:var(--ink-faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;margin-top:2px}
+/* ---------- tables ---------- */
+table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line-soft);vertical-align:middle}
+thead th{color:var(--ink-faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+  font-weight:650;white-space:nowrap;position:sticky;top:0;background:var(--panel);z-index:2}
+tbody tr:last-child td{border-bottom:0}
+.matrix th.sortable{cursor:pointer;user-select:none}
+.matrix th.sortable:hover{color:var(--ink)}
+.matrix th.active{color:var(--accent)}
+.matrix td.model{font-family:var(--mono);font-size:12px;white-space:nowrap}
+.matrix td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+.cell{display:inline-block;min-width:52px;text-align:right;padding:2px 6px;border-radius:5px;
+  font-family:var(--mono);font-size:12px}
+.tiemark{color:var(--ink-faint);font-size:10px;margin-right:3px}
+.cell.gap{color:var(--gap-ink);background:transparent;font-style:italic;min-width:0}
+tr.row{cursor:pointer}
+tr.row:hover td{background:rgba(255,255,255,.022)}
+tr.row.on td{background:var(--accent-soft)}
+tr.row.on td.model{box-shadow:inset 2px 0 0 var(--accent)}
+.cov{font-family:var(--mono);color:var(--ink-faint);font-size:11px}
+/* ---------- magnitude bars (single hue = magnitude, not identity) ---------- */
+.bar{position:relative;height:16px;background:var(--line-soft);border-radius:4px;overflow:hidden;min-width:80px}
+.bar>span{position:absolute;left:0;top:0;bottom:0;background:var(--accent);
+  border-radius:0 4px 4px 0;box-shadow:0 0 0 2px var(--panel) inset}
+.bar.warn>span{background:var(--s-mid)}
+.bar.bad>span{background:var(--s-lo)}
+.barval{font-family:var(--mono);font-size:12px;white-space:nowrap}
+/* ---------- status chips: icon + word, never colour alone ---------- */
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:2px 7px;
+  border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.chip .ic{font-size:11px;line-height:1}
+.chip.pass{color:var(--s-hi);border-color:rgba(70,185,90,.4)}
+.chip.partial{color:var(--s-mid);border-color:rgba(217,168,58,.4)}
+.chip.fail{color:var(--s-lo);border-color:rgba(224,82,72,.4)}
+.chip.none{color:var(--gap-ink)}
+/* ---------- gaps ---------- */
+.gap-item{border-left:3px solid var(--line);padding:11px 0 11px 13px;margin:0 0 3px}
+.gap-item.critical{border-left-color:var(--sev-crit)}
+.gap-item.high{border-left-color:var(--sev-high)}
+.gap-item.medium{border-left-color:var(--sev-med)}
+.gap-item.low{border-left-color:var(--sev-low)}
+.gap-item h4{margin:0 0 4px;font-size:13px;font-weight:650;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sev{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;padding:1.5px 6px;
+  border-radius:4px;border:1px solid currentColor;font-weight:700}
+.sev.critical{color:var(--sev-crit)} .sev.high{color:var(--sev-high)}
+.sev.medium{color:var(--sev-med)} .sev.low{color:var(--sev-low)}
+.gap-item p{margin:0;color:var(--ink-dim);font-size:12.5px;max-width:96ch}
+.gap-item .fix{margin-top:5px;font-size:12px;color:var(--ink-faint)}
+.gap-item .fix b{color:var(--ink-dim);font-weight:600}
+/* ---------- detail / drill-down ---------- */
+.detail{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.dcard{background:var(--panel-2);border:1px solid var(--line-soft);border-radius:6px;padding:11px 12px}
+.dcard h5{margin:0 0 8px;font-size:11px;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.06em}
+.dcard .row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:12px}
+.dcard .row span:first-child{color:var(--ink-dim)}
+.dcard .row span:last-child{font-family:var(--mono)}
+.empty{color:var(--ink-faint);font-size:12.5px;font-style:italic}
+/* ---------- misc ---------- */
+details.gloss{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:0;margin:16px 0;box-shadow:var(--shadow)}
+details.gloss>summary{padding:12px 16px;cursor:pointer;font-weight:650;font-size:13px;list-style:none}
+details.gloss>summary::-webkit-details-marker{display:none}
+details.gloss>summary::before{content:"▸ ";color:var(--accent)}
+details.gloss[open]>summary::before{content:"▾ "}
+details.gloss .panel-b{border-top:1px solid var(--line-soft)}
+.gl{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;align-items:start}
+.gl dt{font-family:var(--mono);font-size:12px;color:var(--accent);white-space:nowrap}
+.gl dd{margin:0;color:var(--ink-dim);font-size:12.5px}
+.gl dd b{color:var(--ink);font-weight:600}
+.note{color:var(--ink-faint);font-size:12px;max-width:100ch;margin:10px 0 0}
+.tag{font-family:var(--mono);font-size:10.5px;padding:1.5px 6px;border-radius:4px;
+  border:1px solid var(--line);color:var(--ink-faint)}
+.legend-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center;color:var(--ink-faint);font-size:11px}
+.sw{display:inline-block;width:22px;height:9px;border-radius:3px;vertical-align:middle;margin-right:5px}
+footer{color:var(--ink-faint);font-size:11.5px;margin-top:34px;border-top:1px solid var(--line-soft);padding-top:14px}
+code{font-family:var(--mono);font-size:11.5px;background:var(--panel-2);padding:1px 5px;
+  border-radius:4px;border:1px solid var(--line-soft)}
+.tip{position:fixed;z-index:99;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:#05080d;border:1px solid var(--line);border-radius:6px;padding:8px 10px;
+  font-size:11.5px;max-width:340px;color:var(--ink);box-shadow:0 10px 30px -8px #000}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Local LLM Test Bench <span class="dim">— coverage, scores &amp; gaps</span></h1>
+  <span class="tag" id="gen"></span>
+</header>
+<p class="sub"><a href="explorer/index.html" style="font-weight:650">▸ Open the results explorer</a> — every prompt, every answer, the code each model wrote, the playable games, and your own grading.<br>Eight batteries across a local-model roster. Click any column header to sort;
+click a row to expand that model's sub-scores. Read the <b>Known gaps</b> panel before drawing
+conclusions — several things people assume are measured here are <em>not</em>.</p>
+
+<div class="stats" id="stats"></div>
+
+<details class="gloss" id="gloss">
+  <summary>What each battery actually measures</summary>
+  <div class="panel-b"><dl class="gl" id="glossbody"></dl></div>
+</details>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Coverage matrix</h2>
+    <span class="why">every model × every battery — blank means not run, not zero</span>
+  </div>
+  <div class="panel-b" style="padding:0;overflow-x:auto">
+    <table class="matrix" id="matrix"></table>
+  </div>
+  <div class="panel-b" style="border-top:1px solid var(--line-soft)">
+    <div class="legend-row">
+      <span><span class="sw" style="background:var(--s-hi)"></span>strong</span>
+      <span><span class="sw" style="background:var(--s-mid)"></span>mid</span>
+      <span><span class="sw" style="background:var(--s-lo)"></span>weak</span>
+      <span><span class="sw" style="background:var(--line-soft)"></span><i>not run</i></span>
+      <span class="faint">colour = value within that battery's own range; each battery has its own unit</span>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="detailpanel">
+  <div class="panel-h"><h2 id="detailtitle">Model detail</h2>
+    <span class="why">click a row above to inspect its sub-scores</span></div>
+  <div class="panel-b"><div class="detail" id="detail"></div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Statistical confidence — most of these rankings are ties</h2>
+    <span class="why">Wilson 95% intervals · <b>≈</b> in the matrix marks a model that is NOT distinguishable from the leader</span>
+  </div>
+  <div class="panel-b" id="confidence"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Judge reliability — how much the B1 scores can carry</h2>
+    <span class="why">3-seat blinded panel · agreement, spread, and self-preference</span>
+  </div>
+  <div class="panel-b" id="judgerel"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Efficiency — quality per GB of weights</h2>
+    <span class="why">what you can actually run, and what it costs you in VRAM</span>
+  </div>
+  <div class="panel-b">
+    <p class="note" style="margin-top:0">B1 is a 0–10 judged score, so “per GB” is a value ratio, not a
+    physical unit — use it to compare, not to quote. A 6.7&nbsp;GB model at 6.8/10 is a very different
+    proposition from an 18&nbsp;GB model at 7.4/10.</p>
+    <table id="eff"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Why agentic runs fail — first-failure classification</h2>
+    <span class="why">more actionable than the completion rate: the failure <i>mode</i></span>
+  </div>
+  <div class="panel-b" id="failclass"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Which harness knob moves the answer (B7)</h2>
+    <span class="why">lower agreement = that setting destabilises output more</span>
+  </div>
+  <div class="panel-b"><table id="drift"></table></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Speculative decoding — the throughput the suite doesn't show</h2>
+    <span class="why">lossless (temp-0 output is byte-identical) · zero VRAM cost · prism llama.cpp fork</span>
+  </div>
+  <div class="panel-b">
+    <p class="note" id="specnote" style="margin-top:0"></p>
+    <h3>n-gram spec-decode on EDIT / rewrite work <span class="dim">— <code>--spec-type ngram-mod</code></span></h3>
+    <table id="ngram"></table>
+    <h3>The same feature on the suite's B5 arm <span class="dim">— fresh generation</span></h3>
+    <table id="b5arms"></table>
+    <h3><code>--spec-ngram-mod-n-match</code> tuning</h3>
+    <table id="nmatch"></table>
+    <h3>MTP draft heads <span class="dim">— multi-token prediction</span></h3>
+    <table id="mtp"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Game / graphical builds</h2>
+    <span class="why">one-shot browser games — specified in the v2.1 design, never built as a battery</span>
+  </div>
+  <div class="panel-b">
+    <p class="note" style="margin-top:0">These are <b>ad-hoc laptop results from sessions 5–6</b>, graded by
+    blind code review on a bare one-line prompt — not a scored battery, no replicates, only 6 models.
+    Treat them as anecdotes, not measurements.</p>
+    <h3>Snake &amp; Tetris — what actually got built</h3>
+    <table id="games"></table>
+    <h3>The roster that was specified but never implemented</h3>
+    <table id="gamesplanned"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-h">
+    <h2>Known gaps — what these numbers do NOT cover</h2>
+    <span class="why">read this before ranking anything</span>
+  </div>
+  <div class="panel-b" id="gaps"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-h"><h2>Caveats that change how you read the table</h2></div>
+  <div class="panel-b" id="caveats"></div>
+</div>
+
+<footer id="foot"></footer>
+</div>
+<div class="tip" id="tip"></div>
+
+<script>
+const DATA = /* build */ {"generated_from": "llmtest-v2 results shards + labelled session constants", "phases": [{"id": "B1", "name": "Business Scorecard", "unit": "/10", "kind": "judged", "blurb": "15 business units x 8 tasks x 3 reps, scored 0-10 by a blinded 3-judge panel (Claude Fable-5 / GPT-5.6-sol / Gemini 3.1 Pro) against per-unit rubrics with CAL-strong/CAL-weak calibration anchors in every packet.", "sub": "by business unit"}, {"id": "B2", "name": "Tool Calling", "unit": "%", "kind": "deterministic", "blurb": "Can the model emit a well-formed tool call: correct schema, right tool selected, argument shapes valid. This is a FORMATION floor, not agentic skill - most models score ~100% and it cannot detect delegation failures.", "sub": "by axis"}, {"id": "B3", "name": "Hallucination Resistance", "unit": "%", "kind": "deterministic", "blurb": "Unanswerable / trick / false-premise prompts. Scores the 'correct' signal: did it refuse or hedge instead of fabricating. Note the 300-token answer budget starves reasoning models, which spend it on hidden thinking.", "sub": null}, {"id": "B4", "name": "Long-Context Retrieval", "unit": "%", "kind": "deterministic", "blurb": "Needle-in-a-haystack recall across a context-length sweep (16k -> 256k). Arms are pruned per model by VRAM fit, so 100B+ models legitimately get zero arms on a single card.", "sub": null}, {"id": "B5", "name": "Serving Throughput", "unit": "t/s", "kind": "deterministic", "blurb": "Decode tokens/sec on the datacenter box, with a speculative-decoding on/off arm. IMPORTANT: this arm generates fresh text, where n-gram spec-decode cannot help - see the Speculative Decoding panel for the edit-workload numbers.", "sub": null}, {"id": "B6", "name": "Agentic Coding", "unit": "%", "kind": "deterministic", "blurb": "10 tasks: 5 from-scratch (is_prime, word-count CLI, backup.sh, debounce, SQL) and 5 planted-bug fixes. Deterministic checks only - the judged quality axis is built but not yet run. Does NOT include the game builds (see Game Builds panel).", "sub": "by coding track"}, {"id": "B7", "name": "Reproducibility", "unit": "%", "kind": "deterministic", "blurb": "Same prompt across a config matrix (system prompt / temperature / tool format / spec-decode). Reports how often the deterministic signals agree with the baseline cell - i.e. how much the answer moves when harness settings move.", "sub": null}, {"id": "B8", "name": "Agentic Harness", "unit": "%", "kind": "deterministic", "blurb": "Real OpenCode agent in a disposable container: 23 sealed Python tasks across break-fix / cross-module / feature / stateful / build / robustness, scored by a hidden oracle. SINGLE-AGENT ONLY - no task requires spawning a subagent.", "sub": "by task category"}, {"id": "B9", "name": "Game Builds", "unit": "%", "kind": "deterministic", "blurb": "One-shot browser games from a bare one-line prompt (snake, tetris, arkanoid, flappy, doodle jump, asteroids, roguelike, and a fly.pieter-style 3D flight sim), scored by DRIVING each build in headless Chrome: does it load, paint, animate, wire up keys, survive a key burst. Gameplay quality is human-graded in the explorer - a browser cannot tell 'the snake moved' from 'a particle blinked'.", "sub": "by game"}, {"id": "B10", "name": "Security Review", "unit": "score", "kind": "deterministic", "blurb": "Authorised-pentest code review on vulnerable/patched PAIRS plus safe-but-alarming decoys. Headline is a usable-finding score = whole-chain recall x specificity, because sensitivity is ~100% for every model and the real discriminator is not inventing defects in already-fixed code. Includes a hard tier of multi-defect chains graded on how much of the chain is found.", "sub": "by measure"}, {"id": "B11", "name": "Tool Loop", "unit": "%", "kind": "deterministic", "blurb": "Can the model actually DRIVE a harness: emit a structured tool call, read the result, act on it. The client advertises schemas and owns execution, because llama.cpp's --tools never tells the model the tools exist. Scored from the filesystem, so narrating a command you never ran scores zero.", "sub": "by task"}], "models": ["abl-gemma-4-31b", "abl-opus-35b-a3b", "abl-qwen3.6-27b", "agents-a1-35b", "bonsai-ternary-27b", "gemma-4-26b-a4b", "gemma-4-31b-dense", "glm-4.5-air", "gpt-oss-120b", "gpt-oss-20b", "granite-4.1-30b", "laguna-s-2.1", "llama-4-scout", "nemotron-3-nano-30b", "ornith-1.0-35b", "ornith-1.0-9b", "qwen3-235b", "qwen3-coder-30b", "qwen3.6-27b-dense", "qwen3.6-35b-a3b"], "matrix": {"abl-gemma-4-31b": {"B2": {"tested": true, "n": 30, "score": 80, "display": "80%", "sub": [{"name": "abstention-no-tool", "score": 0, "display": "0/3"}, {"name": "ambiguous-refuse", "score": 0, "display": "0/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 24, "ci": [62.7, 90.5], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true, "is_leader": true}, "B3": {"tested": true, "n": 39, "score": 21, "display": "21%", "sub": [], "k": 8, "ci": [10.8, 35.5], "tied_with_leader": false}, "B4": {"tested": true, "n": 21, "score": 60, "display": "60%", "sub": [], "ci": [39.4, 81.3], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 56, "display": "56 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1317}, "B7": {"tested": true, "n": 64, "score": 89, "display": "89%", "sub": [], "ci": [81.4, 96.8], "tied_with_leader": true}, "B1": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 71, "k": 17, "display": "71%", "ci": [50.8, 85.1], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 100, "display": "3/3"}, {"name": "doodle", "score": 67, "display": "2/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 33, "display": "1/3"}, {"name": "snake", "score": 67, "display": "2/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 23, "display": "23", "ci": [8.9, 53.2], "sub": [{"name": "whole-chain", "score": 25, "display": "25%"}, {"name": "specificity", "score": 92, "display": "92%"}, {"name": "chain recall", "score": 56, "display": "56%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": false}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 8, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true, "is_leader": true}}, "abl-opus-35b-a3b": {"B2": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 67, "display": "2/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 29, "ci": [83.3, 99.4], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 87, "display": "87%", "sub": [{"name": "bug-fix", "score": 87, "display": "87%"}, {"name": "from-scratch", "score": 87, "display": "87%"}], "k": 26, "ci": [70.3, 94.7], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 31, "display": "31%", "sub": [], "k": 12, "ci": [18.6, 46.4], "tied_with_leader": false}, "B4": {"tested": true, "n": 28, "score": 99, "display": "99%", "sub": [], "ci": [96.5, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 209, "display": "209 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 3518}, "B7": {"tested": true, "n": 64, "score": 80, "display": "80%", "sub": [], "ci": [69.8, 89.6], "tied_with_leader": false}, "B1": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 54, "k": 13, "display": "54%", "ci": [35.1, 72.1], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 0, "display": "0/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 100, "display": "3/3"}, {"name": "tetris", "score": 67, "display": "2/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 50, "display": "50", "ci": [46.8, 91.1], "sub": [{"name": "whole-chain", "score": 75, "display": "75%"}, {"name": "specificity", "score": 67, "display": "67%"}, {"name": "chain recall", "score": 89, "display": "89%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 50, "display": "50%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 6, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "abl-qwen3.6-27b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true, "is_leader": true}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 93, "display": "93%"}], "k": 29, "ci": [83.3, 99.4], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 44, "display": "44%", "sub": [], "k": 17, "ci": [29.3, 59.0], "tied_with_leader": false}, "B4": {"tested": true, "n": 28, "score": 40, "display": "40%", "sub": [], "ci": [22.6, 58.4], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 68, "display": "68 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1502}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": [], "ci": [92.6, 100.0], "tied_with_leader": true}, "B1": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 83, "k": 20, "display": "83%", "ci": [64.1, 93.3], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 67, "display": "2/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 67, "display": "2/3"}, {"name": "roguelike", "score": 100, "display": "3/3"}, {"name": "snake", "score": 67, "display": "2/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true, "is_leader": true}, "B10": {"tested": true, "n": 66, "score": 69, "display": "69", "ci": [46.8, 91.1], "sub": [{"name": "whole-chain", "score": 75, "display": "75%"}, {"name": "specificity", "score": 92, "display": "92%"}, {"name": "chain recall", "score": 89, "display": "89%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 5, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "agents-a1-35b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 93, "display": "93%"}], "k": 29, "ci": [83.3, 99.4], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 62, "display": "62%", "sub": [], "k": 24, "ci": [45.9, 75.1], "tied_with_leader": true}, "B4": {"tested": true, "n": 7, "score": 19, "display": "19%", "sub": [], "ci": [0.0, 43.1], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 212, "display": "212 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 4482}, "B7": {"tested": true, "n": 64, "score": 62, "display": "62%", "sub": [], "ci": [50.5, 74.5], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 6.7, "display": "6.7", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 90, "display": "90%", "k": 62, "ci": [80.5, 95.0], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 93, "display": "93%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 100, "display": "100%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 46, "k": 11, "display": "46%", "ci": [27.9, 64.9], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 33, "display": "1/3"}, {"name": "doodle", "score": 33, "display": "1/3"}, {"name": "flappy", "score": 33, "display": "1/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 33, "display": "1/3"}, {"name": "snake", "score": 67, "display": "2/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 61, "display": "61", "ci": [39.1, 86.2], "sub": [{"name": "whole-chain", "score": 67, "display": "67%"}, {"name": "specificity", "score": 92, "display": "92%"}, {"name": "chain recall", "score": 85, "display": "85%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 50, "display": "50%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 5, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "bonsai-ternary-27b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 93, "display": "93%"}], "k": 28, "ci": [78.7, 98.2], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 74, "display": "74%", "sub": [], "k": 29, "ci": [58.9, 85.4], "tied_with_leader": true}, "B4": {"tested": true, "n": 28, "score": 37, "display": "37%", "sub": [], "ci": [20.3, 53.5], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 109, "display": "109 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1713}, "B7": {"tested": true, "n": 64, "score": 72, "display": "72%", "sub": [], "ci": [60.8, 83.0], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 6.8, "display": "6.8", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 83, "display": "83%", "k": 57, "ci": [72.0, 89.8], "sub": [{"name": "break-fix", "score": 89, "display": "89%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 93, "display": "93%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 56, "display": "56%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 42, "k": 10, "display": "42%", "ci": [24.5, 61.2], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 0, "display": "0/3"}, {"name": "doodle", "score": 67, "display": "2/3"}, {"name": "flappy", "score": 67, "display": "2/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 100, "display": "3/3"}, {"name": "tetris", "score": 33, "display": "1/3"}], "tied_with_leader": false}, "B10": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B11": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "gemma-4-26b-a4b": {"B2": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 67, "display": "2/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 29, "ci": [83.3, 99.4], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 87, "display": "87%", "sub": [{"name": "bug-fix", "score": 73, "display": "73%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 26, "ci": [70.3, 94.7], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 62, "display": "62%", "sub": [], "k": 24, "ci": [45.9, 75.1], "tied_with_leader": true}, "B4": {"tested": true, "n": 14, "score": 43, "display": "43%", "sub": [], "ci": [18.7, 67.0], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 204, "display": "204 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 5384}, "B7": {"tested": true, "n": 64, "score": 94, "display": "94%", "sub": [], "ci": [87.8, 99.7], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 7.2, "display": "7.2", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 300, "score": 59, "display": "59%", "k": 176, "ci": [53.0, 64.1], "sub": [{"name": "break-fix", "score": 91, "display": "91%"}, {"name": "build/migration", "score": 42, "display": "42%"}, {"name": "cross-module", "score": 50, "display": "50%"}, {"name": "feature", "score": 78, "display": "78%"}, {"name": "hard", "score": 75, "display": "75%"}, {"name": "robustness", "score": 27, "display": "27%"}, {"name": "stateful", "score": 47, "display": "47%"}], "tied_with_leader": false}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 58, "k": 14, "display": "58%", "ci": [38.8, 75.5], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 100, "display": "3/3"}, {"name": "doodle", "score": 100, "display": "3/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 0, "display": "0/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 50, "display": "50", "ci": [39.1, 86.2], "sub": [{"name": "whole-chain", "score": 67, "display": "67%"}, {"name": "specificity", "score": 75, "display": "75%"}, {"name": "chain recall", "score": 85, "display": "85%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 92, "display": "92%", "k": 11, "ci": [64.6, 98.5], "median_tool_calls": 6, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 67, "display": "2/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "gemma-4-31b-dense": {"B2": {"tested": true, "n": 27, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 27, "ci": [87.5, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "bug-fix", "score": 87, "display": "87%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 28, "ci": [78.7, 98.2], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 77, "display": "77%", "sub": [], "k": 30, "ci": [61.7, 87.4], "tied_with_leader": true}, "B4": {"tested": true, "n": 21, "score": 68, "display": "68%", "sub": [], "ci": [49.4, 87.1], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 58, "display": "58 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1824}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": [], "ci": [92.6, 100.0], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 7.4, "display": "7.4", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 91, "display": "91%", "k": 63, "ci": [82.3, 96.0], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 100, "display": "100%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 71, "k": 17, "display": "71%", "ci": [50.8, 85.1], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 67, "display": "2/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 100, "display": "3/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 33, "display": "1/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 42, "display": "42", "ci": [25.4, 74.6], "sub": [{"name": "whole-chain", "score": 50, "display": "50%"}, {"name": "specificity", "score": 83, "display": "83%"}, {"name": "chain recall", "score": 78, "display": "78%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 6, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "glm-4.5-air": {"B2": {"tested": true, "n": 27, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 27, "ci": [87.5, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 29, "ci": [83.3, 99.4], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 38, "display": "38%", "sub": [], "k": 15, "ci": [24.9, 54.1], "tied_with_leader": false}, "B4": {"tested": true, "n": 21, "score": 74, "display": "74%", "sub": [], "ci": [57.5, 90.2], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 92, "display": "92 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1408}, "B7": {"tested": true, "n": 64, "score": 98, "display": "98%", "sub": [], "ci": [95.4, 100.0], "tied_with_leader": true, "is_leader": true}, "B1": {"tested": true, "n": 360, "score": 6.3, "display": "6.3", "sub": [], "tied_with_leader": null}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 58, "k": 14, "display": "58%", "ci": [38.8, 75.5], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 100, "display": "3/3"}, {"name": "flappy", "score": 67, "display": "2/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 33, "display": "1/3"}, {"name": "snake", "score": 0, "display": "0/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 33, "display": "33", "ci": [25.4, 74.6], "sub": [{"name": "whole-chain", "score": 50, "display": "50%"}, {"name": "specificity", "score": 67, "display": "67%"}, {"name": "chain recall", "score": 67, "display": "67%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 75, "display": "75%", "k": 9, "ci": [46.8, 91.1], "median_tool_calls": 4, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 0, "display": "0/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "gpt-oss-120b": {"B2": {"tested": true, "n": 27, "score": 81, "display": "81%", "sub": [{"name": "abstention-no-tool", "score": 33, "display": "1/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 0, "display": "0/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 22, "ci": [63.3, 91.8], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 73, "display": "73%", "sub": [{"name": "bug-fix", "score": 47, "display": "47%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 22, "ci": [55.6, 85.8], "tied_with_leader": false}, "B3": {"tested": true, "n": 39, "score": 38, "display": "38%", "sub": [], "k": 15, "ci": [24.9, 54.1], "tied_with_leader": false}, "B4": {"tested": true, "n": 21, "score": 100, "display": "100%", "sub": [], "ci": [100.0, 100.0], "tied_with_leader": true, "is_leader": true}, "B5": {"tested": true, "n": 4, "score": 178, "display": "178 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 4151}, "B7": {"tested": true, "n": 64, "score": 86, "display": "86%", "sub": [], "ci": [77.4, 94.5], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 6.6, "display": "6.6", "sub": [], "tied_with_leader": null}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 62, "k": 15, "display": "62%", "ci": [42.7, 78.8], "sub": [{"name": "arkanoid", "score": 33, "display": "1/3"}, {"name": "asteroids", "score": 100, "display": "3/3"}, {"name": "doodle", "score": 100, "display": "3/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 33, "display": "1/3"}, {"name": "snake", "score": 33, "display": "1/3"}, {"name": "tetris", "score": 100, "display": "3/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 67, "display": "67", "ci": [46.8, 91.1], "sub": [{"name": "whole-chain", "score": 75, "display": "75%"}, {"name": "specificity", "score": 89, "display": "89%"}, {"name": "chain recall", "score": 78, "display": "78%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 92, "display": "92%", "k": 11, "ci": [64.6, 98.5], "median_tool_calls": 4, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 67, "display": "2/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "gpt-oss-20b": {"B2": {"tested": true, "n": 30, "score": 90, "display": "90%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 0, "display": "0/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 27, "ci": [74.4, 96.5], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 83, "display": "83%", "sub": [{"name": "bug-fix", "score": 67, "display": "67%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 25, "ci": [66.4, 92.7], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 33, "display": "33%", "sub": [], "k": 13, "ci": [20.6, 49.0], "tied_with_leader": false}, "B4": {"tested": true, "n": 14, "score": 95, "display": "95%", "sub": [], "ci": [88.9, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 245, "display": "245 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 8287}, "B7": {"tested": true, "n": 64, "score": 83, "display": "83%", "sub": [], "ci": [73.5, 92.1], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 6.0, "display": "6.0", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 205, "score": 86, "display": "86%", "k": 177, "ci": [81.0, 90.4], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 83, "display": "83%"}, {"name": "cross-module", "score": 93, "display": "93%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 96, "display": "96%"}, {"name": "robustness", "score": 73, "display": "73%"}, {"name": "stateful", "score": 60, "display": "60%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 50, "k": 12, "display": "50%", "ci": [31.4, 68.6], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 33, "display": "1/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 67, "display": "2/3"}, {"name": "snake", "score": 33, "display": "1/3"}, {"name": "tetris", "score": 33, "display": "1/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 69, "display": "69", "ci": [64.6, 98.5], "sub": [{"name": "whole-chain", "score": 92, "display": "92%"}, {"name": "specificity", "score": 75, "display": "75%"}, {"name": "chain recall", "score": 93, "display": "93%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 4, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "granite-4.1-30b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 51, "display": "51%", "sub": [], "k": 20, "ci": [36.2, 66.1], "tied_with_leader": true}, "B4": {"tested": true, "n": 21, "score": 100, "display": "100%", "sub": [], "ci": [100.0, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 61, "display": "61 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1980}, "B7": {"tested": true, "n": 64, "score": 91, "display": "91%", "sub": [], "ci": [83.4, 97.8], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 6.4, "display": "6.4", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 68, "display": "68%", "k": 47, "ci": [56.4, 77.9], "sub": [{"name": "break-fix", "score": 89, "display": "89%"}, {"name": "build/migration", "score": 44, "display": "44%"}, {"name": "cross-module", "score": 67, "display": "67%"}, {"name": "feature", "score": 56, "display": "56%"}, {"name": "hard", "score": 80, "display": "80%"}, {"name": "robustness", "score": 67, "display": "67%"}, {"name": "stateful", "score": 67, "display": "67%"}], "tied_with_leader": false}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 8, "k": 2, "display": "8%", "ci": [2.3, 25.8], "sub": [{"name": "arkanoid", "score": 0, "display": "0/3"}, {"name": "asteroids", "score": 0, "display": "0/3"}, {"name": "doodle", "score": 0, "display": "0/3"}, {"name": "flappy", "score": 0, "display": "0/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 0, "display": "0/3"}, {"name": "tetris", "score": 67, "display": "2/3"}], "tied_with_leader": false}, "B10": {"tested": true, "n": 66, "score": 25, "display": "25", "ci": [8.9, 53.2], "sub": [{"name": "whole-chain", "score": 25, "display": "25%"}, {"name": "specificity", "score": 100, "display": "100%"}, {"name": "chain recall", "score": 67, "display": "67%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": false}, "B11": {"tested": true, "n": 12, "score": 75, "display": "75%", "k": 9, "ci": [46.8, 91.1], "median_tool_calls": 4, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 0, "display": "0/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "laguna-s-2.1": {"B2": {"tested": true, "n": 30, "score": 90, "display": "90%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 67, "display": "2/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 33, "display": "1/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 27, "ci": [74.4, 96.5], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 44, "display": "44%", "sub": [], "k": 17, "ci": [29.3, 59.0], "tied_with_leader": false}, "B4": {"tested": true, "n": 28, "score": 100, "display": "100%", "sub": [], "ci": [100.0, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 134, "display": "134 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1630}, "B7": {"tested": true, "n": 64, "score": 92, "display": "92%", "sub": [], "ci": [85.6, 98.8], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 6.1, "display": "6.1", "sub": [{"name": "operations", "score": 7.2, "display": "7.2"}, {"name": "data_analytics", "score": 7.1, "display": "7.1"}, {"name": "hr_people_ops", "score": 6.9, "display": "6.9"}, {"name": "finance", "score": 6.7, "display": "6.7"}, {"name": "sales", "score": 6.5, "display": "6.5"}, {"name": "marketing", "score": 6.4, "display": "6.4"}, {"name": "seo", "score": 6.3, "display": "6.3"}, {"name": "helpdesk", "score": 6.3, "display": "6.3"}, {"name": "outreach", "score": 6.1, "display": "6.1"}, {"name": "knowledge_mgmt", "score": 6.1, "display": "6.1"}, {"name": "coding", "score": 6.1, "display": "6.1"}, {"name": "project_mgmt", "score": 5.7, "display": "5.7"}, {"name": "cybersecurity", "score": 5.6, "display": "5.6"}, {"name": "legal_compliance", "score": 5.0, "display": "5.0"}, {"name": "it_infra", "score": 3.9, "display": "3.9"}], "tied_with_leader": null}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 38, "k": 9, "display": "38%", "ci": [21.2, 57.3], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 0, "display": "0/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 0, "display": "0/3"}, {"name": "tetris", "score": 67, "display": "2/3"}], "tied_with_leader": false}, "B10": {"tested": true, "n": 66, "score": 83, "display": "83", "ci": [55.2, 95.3], "sub": [{"name": "whole-chain", "score": 83, "display": "83%"}, {"name": "specificity", "score": 100, "display": "100%"}, {"name": "chain recall", "score": 93, "display": "93%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true, "is_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 6, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "llama-4-scout": {"B2": {"tested": true, "n": 18, "score": 33, "display": "33%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 0, "display": "0/3"}, {"name": "nested-args-enum", "score": 0, "display": "0/3"}, {"name": "parallel-calls", "score": 0, "display": "0/3"}, {"name": "single-tool-basic", "score": 0, "display": "0/3"}], "k": 6, "ci": [16.3, 56.3], "tied_with_leader": false}, "B6": {"tested": true, "n": 30, "score": 90, "display": "90%", "sub": [{"name": "bug-fix", "score": 80, "display": "80%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 27, "ci": [74.4, 96.5], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 56, "display": "56%", "sub": [], "k": 22, "ci": [41.0, 70.7], "tied_with_leader": true}, "B4": {"tested": true, "n": 21, "score": 87, "display": "87%", "sub": [], "ci": [73.8, 99.2], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 86, "display": "86 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1520}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": [], "ci": [92.6, 100.0], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 5.6, "display": "5.6", "sub": [], "tied_with_leader": null}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 38, "k": 9, "display": "38%", "ci": [21.2, 57.3], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 100, "display": "3/3"}, {"name": "doodle", "score": 0, "display": "0/3"}, {"name": "flappy", "score": 0, "display": "0/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 100, "display": "3/3"}, {"name": "tetris", "score": 0, "display": "0/3"}], "tied_with_leader": false}, "B10": {"tested": true, "n": 66, "score": 50, "display": "50", "ci": [39.1, 86.2], "sub": [{"name": "whole-chain", "score": 67, "display": "67%"}, {"name": "specificity", "score": 75, "display": "75%"}, {"name": "chain recall", "score": 74, "display": "74%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 50, "display": "50%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 0, "display": "0%", "k": 0, "ci": [0.0, 24.3], "median_tool_calls": 0, "sub": [{"name": "chained_grep_fix", "score": 0, "display": "0/3"}, {"name": "find_secret", "score": 0, "display": "0/3"}, {"name": "multi_step_triage", "score": 0, "display": "0/3"}, {"name": "run_and_capture", "score": 0, "display": "0/3"}], "tied_with_leader": false}}, "nemotron-3-nano-30b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 83, "display": "83%", "sub": [{"name": "bug-fix", "score": 67, "display": "67%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 25, "ci": [66.4, 92.7], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 33, "display": "33%", "sub": [], "k": 13, "ci": [20.6, 49.0], "tied_with_leader": false}, "B4": {"tested": true, "n": 7, "score": 95, "display": "95%", "sub": [], "ci": [85.9, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 284, "display": "284 t/s", "sub": [], "ci": null, "tied_with_leader": null, "is_leader": true, "prefill_tps": 5541}, "B7": {"tested": true, "n": 64, "score": 88, "display": "88%", "sub": [], "ci": [79.3, 95.7], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 5.9, "display": "5.9", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 88, "display": "88%", "k": 61, "ci": [78.8, 94.0], "sub": [{"name": "break-fix", "score": 89, "display": "89%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 78, "display": "78%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 100, "display": "100%"}, {"name": "stateful", "score": 89, "display": "89%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 4, "k": 1, "display": "4%", "ci": [0.7, 20.2], "sub": [{"name": "arkanoid", "score": 0, "display": "0/3"}, {"name": "asteroids", "score": 0, "display": "0/3"}, {"name": "doodle", "score": 0, "display": "0/3"}, {"name": "flappy", "score": 0, "display": "0/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 33, "display": "1/3"}, {"name": "tetris", "score": 0, "display": "0/3"}], "tied_with_leader": false}, "B10": {"tested": true, "n": 66, "score": 61, "display": "61", "ci": [39.1, 86.2], "sub": [{"name": "whole-chain", "score": 67, "display": "67%"}, {"name": "specificity", "score": 92, "display": "92%"}, {"name": "chain recall", "score": 74, "display": "74%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 83, "display": "83%", "k": 10, "ci": [55.2, 95.3], "median_tool_calls": 4, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 33, "display": "1/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "ornith-1.0-35b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 93, "display": "93%"}], "k": 28, "ci": [78.7, 98.2], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 69, "display": "69%", "sub": [], "k": 27, "ci": [53.6, 81.4], "tied_with_leader": true}, "B4": {"tested": true, "n": 7, "score": 38, "display": "38%", "sub": [], "ci": [1.9, 74.2], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 209, "display": "209 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 4506}, "B7": {"tested": true, "n": 64, "score": 92, "display": "92%", "sub": [], "ci": [85.6, 98.8], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 7.4, "display": "7.4", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 93, "display": "93%", "k": 64, "ci": [84.1, 96.9], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 100, "display": "100%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 89, "display": "89%"}, {"name": "stateful", "score": 100, "display": "100%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 58, "k": 14, "display": "58%", "ci": [38.8, 75.5], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 33, "display": "1/3"}, {"name": "doodle", "score": 67, "display": "2/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 33, "display": "1/3"}, {"name": "roguelike", "score": 33, "display": "1/3"}, {"name": "snake", "score": 67, "display": "2/3"}, {"name": "tetris", "score": 67, "display": "2/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 39, "display": "39", "ci": [19.3, 68.0], "sub": [{"name": "whole-chain", "score": 42, "display": "42%"}, {"name": "specificity", "score": 94, "display": "94%"}, {"name": "chain recall", "score": 70, "display": "70%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 6, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "ornith-1.0-9b": {"B2": {"tested": true, "n": 30, "score": 93, "display": "93%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 33, "display": "1/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 28, "ci": [78.7, 98.2], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 97, "display": "97%", "sub": [{"name": "bug-fix", "score": 93, "display": "93%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 29, "ci": [83.3, 99.4], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 74, "display": "74%", "sub": [], "k": 29, "ci": [58.9, 85.4], "tied_with_leader": true}, "B4": {"tested": true, "n": 21, "score": 24, "display": "24%", "sub": [], "ci": [8.8, 38.9], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 130, "display": "130 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 5107}, "B7": {"tested": true, "n": 64, "score": 81, "display": "81%", "sub": [], "ci": [71.6, 90.9], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 6.7, "display": "6.7", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 81, "display": "81%", "k": 56, "ci": [70.4, 88.6], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 56, "display": "56%"}, {"name": "cross-module", "score": 78, "display": "78%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 93, "display": "93%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 56, "display": "56%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 38, "k": 9, "display": "38%", "ci": [21.2, 57.3], "sub": [{"name": "arkanoid", "score": 100, "display": "3/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 100, "display": "3/3"}, {"name": "flappy", "score": 0, "display": "0/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 0, "display": "0/3"}, {"name": "tetris", "score": 33, "display": "1/3"}], "tied_with_leader": false}, "B10": {"tested": true, "n": 66, "score": 65, "display": "65", "ci": [55.2, 95.3], "sub": [{"name": "whole-chain", "score": 83, "display": "83%"}, {"name": "specificity", "score": 78, "display": "78%"}, {"name": "chain recall", "score": 89, "display": "89%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 75, "display": "75%", "k": 9, "ci": [46.8, 91.1], "median_tool_calls": 5, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 0, "display": "0/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "qwen3-235b": {"B2": {"tested": true, "n": 27, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 27, "ci": [87.5, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 79, "display": "79%", "sub": [], "k": 31, "ci": [64.5, 89.2], "tied_with_leader": true, "is_leader": true}, "B4": {"tested": true, "n": 28, "score": 100, "display": "100%", "sub": [], "ci": [100.0, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 58, "display": "58 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1451}, "B7": {"tested": true, "n": 64, "score": 94, "display": "94%", "sub": [], "ci": [87.8, 99.7], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 7.2, "display": "7.2", "sub": [], "tied_with_leader": null}, "B8": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B9": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B10": {"tested": false, "n": null, "score": null, "display": null, "sub": []}, "B11": {"tested": false, "n": null, "score": null, "display": null, "sub": []}}, "qwen3-coder-30b": {"B2": {"tested": true, "n": 30, "score": 80, "display": "80%", "sub": [{"name": "abstention-no-tool", "score": 67, "display": "2/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 0, "display": "0/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 33, "display": "1/3"}], "k": 24, "ci": [62.7, 90.5], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 62, "display": "62%", "sub": [], "k": 24, "ci": [45.9, 75.1], "tied_with_leader": true}, "B4": {"tested": true, "n": 7, "score": 100, "display": "100%", "sub": [], "ci": [100.0, 100.0], "tied_with_leader": true}, "B5": {"tested": true, "n": 4, "score": 207, "display": "207 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 4464}, "B7": {"tested": true, "n": 64, "score": 97, "display": "97%", "sub": [], "ci": [92.6, 100.0], "tied_with_leader": true}, "B1": {"tested": true, "n": 360, "score": 5.0, "display": "5.0", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 68, "display": "68%", "k": 47, "ci": [56.4, 77.9], "sub": [{"name": "break-fix", "score": 78, "display": "78%"}, {"name": "build/migration", "score": 0, "display": "0%"}, {"name": "cross-module", "score": 78, "display": "78%"}, {"name": "feature", "score": 89, "display": "89%"}, {"name": "hard", "score": 80, "display": "80%"}, {"name": "robustness", "score": 67, "display": "67%"}, {"name": "stateful", "score": 78, "display": "78%"}], "tied_with_leader": false}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 33, "k": 8, "display": "33%", "ci": [18.0, 53.3], "sub": [{"name": "arkanoid", "score": 0, "display": "0/3"}, {"name": "asteroids", "score": 33, "display": "1/3"}, {"name": "doodle", "score": 67, "display": "2/3"}, {"name": "flappy", "score": 33, "display": "1/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 67, "display": "2/3"}, {"name": "tetris", "score": 67, "display": "2/3"}], "tied_with_leader": false}, "B10": {"tested": true, "n": 66, "score": 6, "display": "6", "ci": [1.5, 35.4], "sub": [{"name": "whole-chain", "score": 8, "display": "8%"}, {"name": "specificity", "score": 75, "display": "75%"}, {"name": "chain recall", "score": 44, "display": "44%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 50, "display": "50%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": false}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 5, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "qwen3.6-27b-dense": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "bug-fix", "score": 100, "display": "100%"}, {"name": "from-scratch", "score": 100, "display": "100%"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 72, "display": "72%", "sub": [], "k": 28, "ci": [56.2, 83.5], "tied_with_leader": true}, "B4": {"tested": true, "n": 21, "score": 40, "display": "40%", "sub": [], "ci": [19.2, 60.2], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 58, "display": "58 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 1599}, "B7": {"tested": true, "n": 64, "score": 80, "display": "80%", "sub": [], "ci": [69.8, 89.6], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 7.6, "display": "7.6", "sub": [], "tied_with_leader": null, "is_leader": true}, "B8": {"tested": true, "n": 69, "score": 83, "display": "83%", "k": 57, "ci": [72.0, 89.8], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 67, "display": "67%"}, {"name": "cross-module", "score": 78, "display": "78%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 87, "display": "87%"}, {"name": "robustness", "score": 78, "display": "78%"}, {"name": "stateful", "score": 67, "display": "67%"}], "tied_with_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 50, "k": 12, "display": "50%", "ci": [31.4, 68.6], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 67, "display": "2/3"}, {"name": "doodle", "score": 100, "display": "3/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 0, "display": "0/3"}, {"name": "snake", "score": 33, "display": "1/3"}, {"name": "tetris", "score": 33, "display": "1/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 21, "display": "21", "ci": [8.9, 53.2], "sub": [{"name": "whole-chain", "score": 25, "display": "25%"}, {"name": "specificity", "score": 83, "display": "83%"}, {"name": "chain recall", "score": 67, "display": "67%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": false}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 5, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}, "qwen3.6-35b-a3b": {"B2": {"tested": true, "n": 30, "score": 100, "display": "100%", "sub": [{"name": "abstention-no-tool", "score": 100, "display": "3/3"}, {"name": "ambiguous-refuse", "score": 100, "display": "3/3"}, {"name": "chained-calls", "score": 100, "display": "3/3"}, {"name": "error-recovery", "score": 100, "display": "3/3"}, {"name": "faithfulness", "score": 100, "display": "3/3"}, {"name": "long-context-call", "score": 100, "display": "3/3"}, {"name": "multi-tool-distractor", "score": 100, "display": "3/3"}, {"name": "nested-args-enum", "score": 100, "display": "3/3"}, {"name": "parallel-calls", "score": 100, "display": "3/3"}, {"name": "single-tool-basic", "score": 100, "display": "3/3"}], "k": 30, "ci": [88.6, 100.0], "tied_with_leader": true}, "B6": {"tested": true, "n": 30, "score": 83, "display": "83%", "sub": [{"name": "bug-fix", "score": 73, "display": "73%"}, {"name": "from-scratch", "score": 93, "display": "93%"}], "k": 25, "ci": [66.4, 92.7], "tied_with_leader": true}, "B3": {"tested": true, "n": 39, "score": 69, "display": "69%", "sub": [], "k": 27, "ci": [53.6, 81.4], "tied_with_leader": true}, "B4": {"tested": true, "n": 84, "score": 42, "display": "42%", "sub": [], "ci": [31.6, 51.7], "tied_with_leader": false}, "B5": {"tested": true, "n": 4, "score": 225, "display": "225 t/s", "sub": [], "ci": null, "tied_with_leader": null, "prefill_tps": 4386}, "B7": {"tested": true, "n": 64, "score": 83, "display": "83%", "sub": [], "ci": [73.5, 92.1], "tied_with_leader": false}, "B1": {"tested": true, "n": 360, "score": 7.3, "display": "7.3", "sub": [], "tied_with_leader": null}, "B8": {"tested": true, "n": 69, "score": 94, "display": "94%", "k": 65, "ci": [86.0, 97.7], "sub": [{"name": "break-fix", "score": 100, "display": "100%"}, {"name": "build/migration", "score": 78, "display": "78%"}, {"name": "cross-module", "score": 89, "display": "89%"}, {"name": "feature", "score": 100, "display": "100%"}, {"name": "hard", "score": 100, "display": "100%"}, {"name": "robustness", "score": 100, "display": "100%"}, {"name": "stateful", "score": 89, "display": "89%"}], "tied_with_leader": true, "is_leader": true}, "B9": {"tested": true, "n": 24, "expected": 24, "partial": false, "score": 67, "k": 16, "display": "67%", "ci": [46.7, 82.0], "sub": [{"name": "arkanoid", "score": 67, "display": "2/3"}, {"name": "asteroids", "score": 33, "display": "1/3"}, {"name": "doodle", "score": 100, "display": "3/3"}, {"name": "flappy", "score": 100, "display": "3/3"}, {"name": "flightsim", "score": 0, "display": "0/3"}, {"name": "roguelike", "score": 100, "display": "3/3"}, {"name": "snake", "score": 100, "display": "3/3"}, {"name": "tetris", "score": 33, "display": "1/3"}], "tied_with_leader": true}, "B10": {"tested": true, "n": 66, "score": 38, "display": "38", "ci": [19.3, 68.0], "sub": [{"name": "whole-chain", "score": 42, "display": "42%"}, {"name": "specificity", "score": 92, "display": "92%"}, {"name": "chain recall", "score": 70, "display": "70%"}, {"name": "sensitivity", "score": 100, "display": "100%"}, {"name": "decoys", "score": 100, "display": "100%"}, {"name": "refusals", "score": 100, "display": "0"}], "tied_with_leader": true}, "B11": {"tested": true, "n": 12, "score": 100, "display": "100%", "k": 12, "ci": [75.7, 100.0], "median_tool_calls": 5, "sub": [{"name": "chained_grep_fix", "score": 100, "display": "3/3"}, {"name": "find_secret", "score": 100, "display": "3/3"}, {"name": "multi_step_triage", "score": 100, "display": "3/3"}, {"name": "run_and_capture", "score": 100, "display": "3/3"}], "tied_with_leader": true}}}, "ngram_edit": [{"model": "granite-4.1-30b", "base": 31.9, "ngram": 385.8, "note": "hybrid Mamba ~29B near-dense - biggest measured", "speedup": 12.09}, {"model": "qwen3.6-27b-dense", "base": 31.0, "ngram": 273.0, "note": "slow dense model gains the most per accepted draft", "speedup": 8.81}, {"model": "gemma-4-26b-a4b", "base": 125.0, "ngram": 682.0, "note": "MoE A4B - fastest absolute edit throughput", "speedup": 5.46}, {"model": "gpt-oss-20b", "base": 153.0, "ngram": 655.0, "note": "", "speedup": 4.28}, {"model": "ornith-1.0-35b", "base": 153.0, "ngram": 596.0, "note": "MXFP4 A3B", "speedup": 3.9}, {"model": "nemotron-3-nano-30b", "base": 194.5, "ngram": 621.6, "note": "hybrid Mamba MoE", "speedup": 3.2}, {"model": "qwen3.6-35b-a3b", "base": 174.0, "ngram": 340.0, "note": "gains least - matches fewer exact n-grams", "speedup": 1.95}], "ngram_control": {"model": "gemma-4 (from-scratch control)", "base": 158.0, "ngram": 258.0, "note": "NOT an edit task - novel code still self-repeats enough for ~1.6x", "speedup": 1.63}, "ngram_nmatch": [{"n": 8, "speedup": 0.0, "note": "SLOWER than no spec-decode - never go below 16"}, {"n": 16, "speedup": 3.9, "note": "floor"}, {"n": 24, "speedup": 4.98, "note": "default"}, {"n": 32, "speedup": 5.46, "note": "best for edit-heavy work"}, {"n": 48, "speedup": 5.4, "note": "plateau"}], "b5_spec_arms": {"nemotron-3-nano-30b": {"off": 292.1, "ngram": 284.1, "speedup": 0.97}, "qwen3.6-35b-a3b": {"off": 226.4, "ngram": 224.6, "speedup": 0.99}, "qwen3.6-27b-dense": {"off": 58.5, "ngram": 58.5, "speedup": 1.0}, "qwen3-coder-30b": {"off": 206.6, "ngram": 207.1, "speedup": 1.0}, "ornith-1.0-35b": {"off": 210.0, "ngram": 209.2, "speedup": 1.0}, "granite-4.1-30b": {"off": 60.6, "ngram": 60.6, "speedup": 1.0}, "agents-a1-35b": {"off": 208.1, "ngram": 212.2, "speedup": 1.02}, "bonsai-ternary-27b": {"off": 110.2, "ngram": 109.1, "speedup": 0.99}, "gpt-oss-20b": {"off": 244.4, "ngram": 245.2, "speedup": 1.0}, "ornith-1.0-9b": {"off": 129.8, "ngram": 129.8, "speedup": 1.0}, "gemma-4-26b-a4b": {"off": 203.1, "ngram": 204.4, "speedup": 1.01}, "gpt-oss-120b": {"off": 177.5, "ngram": 177.6, "speedup": 1.0}, "llama-4-scout": {"off": 85.3, "ngram": 86.0, "speedup": 1.01}, "glm-4.5-air": {"off": 91.9, "ngram": 91.9, "speedup": 1.0}, "gemma-4-31b-dense": {"off": 57.3, "ngram": 57.8, "speedup": 1.01}, "qwen3-235b": {"off": 57.7, "ngram": 57.7, "speedup": 1.0}, "abl-gemma-4-31b": {"off": 56.1, "ngram": 55.9, "speedup": 1.0}, "abl-opus-35b-a3b": {"off": 227.3, "ngram": 208.8, "speedup": 0.92}, "laguna-s-2.1": {"off": 133.9, "ngram": 133.8, "speedup": 1.0}, "abl-qwen3.6-27b": {"off": 68.5, "ngram": 68.1, "speedup": 0.99}}, "mtp": [{"config": "gemma-4-31b-dense + separate mtp-*.gguf draft (prism fork)", "base": 68.0, "with": 173.0, "verdict": "works", "note": "2.55x lossless - use --spec-draft-model, NOT the embedded head"}, {"config": "qwen3.6-27b-MTP embedded head, --spec-type draft-mtp", "base": 30.1, "with": 6.0, "verdict": "dead-end", "note": "0.20x = 5x SLOWER; head loads but has ~zero acceptance"}, {"config": "qwen3.6-27b-MTP under Ollama", "base": 31.0, "with": 31.3, "verdict": "inert", "note": "draft head never engaged - Ollama exposes no --spec-type"}], "games_historical": [{"model": "ornith-1.0-35b", "snake": "pass", "snake_note": "clean", "tetris": "partial", "tetris_note": "richest build (hold/ghost/7-bag); 1 edge bug - forces invalid rotation when no wall-kick fits"}, {"model": "gemma-4-26b-a4b", "snake": "pass", "snake_note": "clean", "tetris": "partial", "tetris_note": "plays correctly but game-over does not halt - re-arms the rAF loop it just cancelled"}, {"model": "bonsai-ternary-27b", "snake": "pass", "snake_note": "clean, most polished (particles, screen-shake, mobile d-pad)", "tetris": "partial", "tetris_note": "great logic (7-bag, wall-kicks); 2 render bugs - falling piece never drawn, bevel covers board"}, {"model": "qwen3.6-27b-dense", "snake": "pass", "snake_note": "clean", "tetris": "pass", "tetris_note": "1 harmless issue"}, {"model": "qwen3.6-27b-mtp", "snake": "pass", "snake_note": "clean", "tetris": "partial", "tetris_note": "buggy sample"}, {"model": "bonsai-1bit-27b", "snake": "fail", "snake_note": "dead loop - per-frame dt vs 150ms tick, tickAccum unused, snake never advances", "tetris": "fail", "tetris_note": "crashes on start - SHAPES_keys typo for SHAPES_KEYS; drop timer also dead"}], "games_planned": [{"game": "Snake", "state": "ad-hoc only"}, {"game": "Tetris", "state": "ad-hoc only"}, {"game": "Arkanoid", "state": "not built"}, {"game": "Flappy Bird", "state": "not built"}, {"game": "Doodle Jump (procgen platforms)", "state": "not built"}, {"game": "Asteroids (procgen field, splitting rocks)", "state": "not built"}, {"game": "Tiny roguelike (procgen dungeon)", "state": "not built"}, {"game": "fly.pieter-style 3D flight sim (Three.js, procgen city, single HTML file)", "state": "not built"}], "gaps": [{"sev": "high", "title": "B8 cannot be measured on a Docker-less box - five models' 0% was an artifact", "detail": "B8's completion oracle (run_oracle) validates the agent's work inside a container. vast.ai instances have no Docker, so the runs were made with b8.sandbox.enabled=false: the AGENT runs fine on the host, but the ORACLE still shells out to a container, fails setup, and completion is never credited. Every row measured that way carries oracle.detail = \"hidden_validate setup failed: FileNotFoundError(...)\" instead of a PASS/FAIL verdict with a stage. Scored naively this produced a flat 0% for all five models run that way - abl-gemma-4-31b, abl-opus-35b-a3b, glm-4.5-air, gpt-oss-120b and laguna-s-2.1 - including gpt-oss-120b, which every other signal says is among the strongest agentic models in the roster. Those rows are now excluded as MISSING measurements rather than failed ones, and the cells read untested.", "fix": "Run B8 on a host with Docker (a -devel image plus dockerd, or a provider that exposes the socket), or replace the container oracle with a host-mode equivalent. Until then B8 is only comparable across the ten models measured under the real sandbox."}, {"sev": "med", "title": "bonsai-ternary-27b B10/B11 cannot run on the standard image - not a model failure", "detail": "Its Q2_0 is a prism-ml custom quantization and only the prism llama.cpp fork has the kernels for it. On the official ggml image the server exits before serving: \"failed to load model ... Ternary-Bonsai-27B-Q2_0.gguf\". The 2026-07-30 run confirmed this - it fetched, failed to serve in 14 minutes, and moved on. Those two cells are therefore blank for a TOOLING reason, and must never be read as the ternary exhibit scoring badly on security or tool use, which is exactly the misreading that model is in the roster to test for.", "fix": "Build the prism fork on-box (~25 min, ~$0.50) and serve bonsai from it, or run those two batteries against the Windows prism binary locally."}, {"sev": "high", "title": "qwen3-235b is held out by choice - its 4 cells are real gaps, not results", "detail": "Excluded on 2026-07-30 pending a dedicated large-model pass. At 134GB it does not fit the 96GB card, so --cpu-moe streams its experts over PCIe and every row costs roughly 8x: B8-B11 priced at ~11.3h / ~$13.54, which was 46% of the remaining budget for 14% of the remaining cells. The exclusion is recorded in scripts/build_run_manifest.py EXCLUDED and is one dict entry to reverse.", "fix": "Fund a large-model session, ideally on a card that fits 134GB so --cpu-moe is not needed, and delete the EXCLUDED entry."}, {"sev": "high", "title": "B4 has only ever run 7 of its 8 tasks - the classic single-needle probe is missing", "detail": "b4.single-needle-01 has ZERO rows for all 16 roster models; the other seven B4 tasks have 49 each. build_document() sizes the filler with a 4-chars-per-token heuristic, and that task's filler is dense operational log text (timestamps, asset IDs, digit groups) that really tokenizes at ~2.97 chars/token - a 1.35x overshoot. Every arm therefore overflows its own tier and the server rejects the request: 20716 vs 16384, 86644 vs 65536, 174563 vs 131072, 350408 vs 262144. No row is written, so the loss is invisible unless task-level completeness is checked. The missing task is the canonical 'lost in the middle' needle-in-a-haystack probe at depth 50%, which is the single most standard thing B4 claims to measure.", "fix": "Size the document by real tokenization (or measure-and-trim) instead of a fixed chars/token ratio. Note this re-bases B4: existing rows cover 7 tasks, so a fixed run is not directly comparable to the frozen roster until every model is re-run."}, {"sev": "high", "title": "Coverage is ragged across the three newest batteries", "detail": "B9 (games) ran for 12 models but 4 of those have partial rows, and the four largest models plus laguna have none at all - 96 completed rows were lost when a rented box was left idle, ran out of credit and could not be restarted. B10 (security) covers 6 models of 20. B11 (tool loop) covers 1. Every blank cell in the matrix is genuinely unrun, never a zero - but the newer columns are far thinner than B1-B7 and should not be read as a roster-wide ranking yet.", "fix": "One rented session per battery to fill the roster; pull results per phase, not at the end."}, {"sev": "high", "title": "Subagent delegation is deliberately unscored - and the canary never fires", "detail": "TESTPLAN 5.7 excludes the subagent axis from scoring ON PURPOSE - 'documented 0% with local models - non-differentiating' - keeping it as one unscored canary. The consequence still matters: every B8 row records subagent_spawned = 'no', so B8 is SINGLE-AGENT completion only. B11 now covers the related question (can the model drive a tool loop at all) and the answer is yes, but that is a client-owned loop, not model-initiated delegation.", "fix": "Re-test the axis periodically; the 0% result predates the current model generation."}, {"sev": "high", "title": "B10's hard tier reverses its own base tier - so neither alone is safe to quote", "detail": "On single-defect textbook cases every model scores at or near 100% and the base tier cannot separate them. On multi-defect chains the ordering changes outright: abl-gemma-4-31b is perfect on the base tier and worst on chains (25% whole-chain), while abl-qwen3.6-27b leads. Quoting the base tier alone would have produced - and did produce - the wrong recommendation.", "fix": "Always report the hard tier alongside; treat base-tier scores as a floor, not a rank."}, {"sev": "medium", "title": "The abliteration A/Bs are confounded by quantisation", "detail": "Abliterated builds beat their bases in both families (qwen3.6-27b 25%->75% whole-chain, gemma-4-31b 66%->100% base specificity), which is the opposite of the usual assumption. But the abliterated files are Q4_K while the bases are Q5_K_M, so part of that delta could be quantisation rather than abliteration.", "fix": "Re-run one pair at matched quant before treating the abliteration gain as established."}, {"sev": "medium", "title": "Small samples - most rankings are statistical ties", "detail": "B2/B6 run n=30 per model, B8's sweep n=69, B10's hard tier n=12 per model. Wilson intervals on whole-chain recall span roughly +/-25 points, so abl-qwen3.6-27b vs gpt-oss-120b is NOT a separated result. The matrix marks ties with a tilde.", "fix": "More replicates on the tasks that actually discriminate, rather than more tasks."}, {"sev": "medium", "title": "Judged axes built and never run", "detail": "B6's 0-10 code-quality axis has 510 generated rows waiting and is not wired into JUDGED_BATTERIES; B2's error-recovery and faithfulness axes are wired but have never been executed. Both would add discrimination to batteries currently sitting at a ceiling, and both need judge quota rather than GPU.", "fix": "One judging pass each, when judge budget allows."}, {"sev": "medium", "title": "Games are scored for 'runs clean', not for being good games", "detail": "The browser oracle can prove a build loads, paints, animates, wires keys and survives input. It CANNOT tell that the snake advanced - validated the hard way: a frozen snake whose particle layer animates changes more of the board than a working one. Gameplay quality is therefore human-graded in the explorer.", "fix": "Per-game probes exist for the authored snake fixture; extend them to tetris and the rest if scored gameplay is wanted."}, {"sev": "medium", "title": "The suite under-reports speculative decoding", "detail": "B5's spec-decode arm measures ~1.00x for every model because it generates fresh text, where n-gram drafting almost never hits. On edit/rewrite work - what agentic coding actually does - the same feature is worth 1.95x to 12.08x. Laguna also ran with no acceleration at all, and its purpose-built DFlash draft could not be loaded by upstream llama.cpp (wrong tensor count - it needs poolside's fork).", "fix": "Give B5 an edit-workload arm; test DFlash on poolside's fork."}, {"sev": "low", "title": "The quant-format A/B was never actually run", "detail": "gemma-4-26b-a4b-mxfp4 exists as a controlled quant arm ('runs B5 + B2 + B6') but produced B8 rows only. Worse, that B8 data is what the roster model's agentic score uses, so gemma-4-26b-a4b's B8 is the MXFP4 quant while its B1-B7 are UD-Q4_K_XL - one row mixing two quants.", "fix": "Run the mxfp4 arm through B2/B5/B6, or drop the arm and re-run B8 on UD-Q4_K_XL."}, {"sev": "low", "title": "Judges agree with each other only 35% of the time", "detail": "Across 6,120 judged answers the 3-seat panel lands within 1 point of itself on just 35.1%; mean spread is 2.45 points. A B1 gap of a few tenths is inside judge noise. Gemini scores its own family +0.53 higher than others; codex scores its own -0.67.", "fix": "Publish per-model score intervals from the judge spread; read B1 as tiers."}, {"sev": "low", "title": "Laguna has no B5 / B7 / B8, and its B1 is a rescaled incremental wave", "detail": "B5 and B7 were skipped (box-specific / needs the fork's spec arm) and B8 postdates its peer group. Its B1 6.1 comes from a 3-letter incremental packet rescaled through the CAL anchors rather than a full-roster packet - defensible, one step further from the frozen sixteen.", "fix": "Fold Laguna into the next full-roster judging wave."}], "caveats": {"hardware": "B1-B7 for the original 16 models ran on 2x RTX PRO 6000 (Blackwell). Laguna ran on a single rented RTX PRO 6000 Blackwell. The B8 agentic sweep ran locally on an RTX 5090 Laptop 24GB. Hardware is NOT interchangeable: re-running Laguna on an A100 (Ampere) moved its deterministic scores by up to 13 points (B6 87 -> 100, B2 97 -> 90) at temperature 0, because batching and GPU numerics shift borderline outputs.", "ngram_workload": "n-gram speculative decoding is lossless (temp-0 output is byte-identical) and costs no VRAM, but its speedup depends entirely on how much the output repeats the context. Edit/rewrite: 2-12x. Fresh generation: ~1.0-1.6x.", "b1_incremental": "Laguna's B1 was judged incrementally (only Laguna + calibration anchors, leaving the frozen 16 untouched) and then rescaled: the same fixed anchors score 9.0/1.5 in a small packet vs 8.0/1.0 in the full-roster packet, so judges are ~0.9pt more lenient without the comparison set. Raw 6.99 -> 6.13."}, "prefill": {"nemotron-3-nano-30b": 5541, "qwen3.6-35b-a3b": 4386, "qwen3.6-27b-dense": 1599, "qwen3-coder-30b": 4464, "ornith-1.0-35b": 4506, "granite-4.1-30b": 1980, "agents-a1-35b": 4482, "bonsai-ternary-27b": 1713, "gpt-oss-20b": 8287, "ornith-1.0-9b": 5107, "gemma-4-26b-a4b": 5384, "gpt-oss-120b": 4151, "llama-4-scout": 1520, "glm-4.5-air": 1408, "gemma-4-31b-dense": 1824, "qwen3-235b": 1451, "abl-gemma-4-31b": 1317, "abl-opus-35b-a3b": 3518, "laguna-s-2.1": 1630, "abl-qwen3.6-27b": 1502}, "b7_drift": [{"cell": "toolfmt=prompted", "agreement": 85.0, "n": 320}, {"cell": "sysp=minimal", "agreement": 86.2, "n": 320}, {"cell": "spec=ngram32", "agreement": 86.4, "n": 960}, {"cell": "temp=t0", "agreement": 87.5, "n": 960}, {"cell": "temp=tdef", "agreement": 87.8, "n": 320}, {"cell": "sysp=default", "agreement": 88.0, "n": 960}, {"cell": "toolfmt=native", "agreement": 88.4, "n": 960}, {"cell": "spec=off", "agreement": 91.2, "n": 320}], "failure_classes": {"labels": {"a": "schema never parsed", "b": "tool parsed but misused", "c": "task logic wrong", "d": "harness bug", "e": "budget/steps exhausted", "unknown": "unclassified"}, "total": [{"label": "e", "name": "budget/steps exhausted", "n": 73}, {"label": "c", "name": "task logic wrong", "n": 17}, {"label": "b", "name": "tool parsed but misused", "n": 16}], "per_model": {"gpt-oss-20b": [{"label": "c", "name": "task logic wrong", "n": 8}, {"label": "e", "name": "budget/steps exhausted", "n": 7}, {"label": "b", "name": "tool parsed but misused", "n": 1}], "gemma-4-26b-a4b-mxfp4": [{"label": "e", "name": "budget/steps exhausted", "n": 66}, {"label": "b", "name": "tool parsed but misused", "n": 15}, {"label": "c", "name": "task logic wrong", "n": 9}]}}, "judge_reliability": {"packets_with_panel": 6120, "agreement_pct": 35.1, "mean_spread": 2.45, "spread_gt2_pct": 38.2, "kin_delta": [{"judge": "claude", "kin_mean": null, "other_mean": 6.53, "delta": null}, {"judge": "codex", "kin_mean": 5.23, "other_mean": 5.9, "delta": -0.67}, {"judge": "gemini", "kin_mean": 6.77, "other_mean": 6.24, "delta": 0.53}]}, "efficiency": [{"model": "bonsai-ternary-27b", "gb": 6.7, "b1": 6.8, "b8": 83, "b1_per_gb": 1.015, "fits_24gb": true, "arch": "dense", "quant": "TERNARY"}, {"model": "ornith-1.0-9b", "gb": 8.9, "b1": 6.7, "b8": 81, "b1_per_gb": 0.753, "fits_24gb": true, "arch": "dense", "quant": "MXFP4"}, {"model": "gemma-4-26b-a4b", "gb": 13.3, "b1": 7.2, "b8": 59, "b1_per_gb": 0.541, "fits_24gb": true, "arch": "MoE", "quant": "K"}, {"model": "gpt-oss-20b", "gb": 12.9, "b1": 6.0, "b8": 86, "b1_per_gb": 0.465, "fits_24gb": true, "arch": "MoE", "quant": "MXFP4_MOE"}, {"model": "gemma-4-31b-dense", "gb": 16.5, "b1": 7.4, "b8": 91, "b1_per_gb": 0.448, "fits_24gb": true, "arch": "dense", "quant": "K"}, {"model": "qwen3.6-27b-dense", "gb": 18.2, "b1": 7.6, "b8": 83, "b1_per_gb": 0.418, "fits_24gb": true, "arch": "dense", "quant": "K"}, {"model": "ornith-1.0-35b", "gb": 18.4, "b1": 7.4, "b8": 93, "b1_per_gb": 0.402, "fits_24gb": true, "arch": "MoE", "quant": "MXFP4_MOE"}, {"model": "qwen3.6-35b-a3b", "gb": 18.4, "b1": 7.3, "b8": 94, "b1_per_gb": 0.397, "fits_24gb": true, "arch": "MoE", "quant": "IQ"}, {"model": "granite-4.1-30b", "gb": 16.5, "b1": 6.4, "b8": 68, "b1_per_gb": 0.388, "fits_24gb": true, "arch": "dense", "quant": "K"}, {"model": "agents-a1-35b", "gb": 18.4, "b1": 6.7, "b8": 90, "b1_per_gb": 0.364, "fits_24gb": true, "arch": "MoE", "quant": "MXFP4_MOE"}, {"model": "qwen3-coder-30b", "gb": 17.5, "b1": 5.0, "b8": 68, "b1_per_gb": 0.286, "fits_24gb": true, "arch": "MoE", "quant": "K"}, {"model": "nemotron-3-nano-30b", "gb": 21.3, "b1": 5.9, "b8": 88, "b1_per_gb": 0.277, "fits_24gb": false, "arch": "MoE", "quant": "K"}, {"model": "gpt-oss-120b", "gb": 61, "b1": 6.6, "b8": null, "b1_per_gb": 0.108, "fits_24gb": false, "arch": "MoE", "quant": "K"}, {"model": "laguna-s-2.1", "gb": 57.6, "b1": 6.1, "b8": null, "b1_per_gb": 0.106, "fits_24gb": false, "arch": "MoE", "quant": "IQ"}, {"model": "glm-4.5-air", "gb": 68, "b1": 6.3, "b8": null, "b1_per_gb": 0.093, "fits_24gb": false, "arch": "MoE", "quant": "K"}, {"model": "llama-4-scout", "gb": 62, "b1": 5.6, "b8": null, "b1_per_gb": 0.09, "fits_24gb": false, "arch": "MoE", "quant": "K"}, {"model": "qwen3-235b", "gb": 134, "b1": 7.2, "b8": null, "b1_per_gb": 0.054, "fits_24gb": false, "arch": "MoE", "quant": "K"}, {"model": "abl-gemma-4-31b", "gb": 18.7, "b1": null, "b8": null, "b1_per_gb": null, "fits_24gb": true, "arch": "dense", "quant": "K"}, {"model": "abl-opus-35b-a3b", "gb": 17.2, "b1": null, "b8": null, "b1_per_gb": null, "fits_24gb": true, "arch": "MoE", "quant": "K"}, {"model": "abl-qwen3.6-27b", "gb": 16.8, "b1": null, "b8": null, "b1_per_gb": null, "fits_24gb": true, "arch": "dense", "quant": "K"}], "quant_ab": {"pair": ["gemma-4-26b-a4b", "gemma-4-26b-a4b-mxfp4"], "batteries_run": {"gemma-4-26b-a4b": [1, 2, 3, 4, 5, 6, 7], "gemma-4-26b-a4b-mxfp4": [8]}, "comparable": [], "note": "Only B8 exists for the MXFP4 arm and nothing else, so no quant-format delta can be computed. Note the roster model's B8 figure is the MXFP4 quant while its B1-B7 figures are UD-Q4_K_XL - the one row mixes two quants."}};
+
+(function(){
+  const D = DATA, phases = D.phases||[], models = D.models||[], M = D.matrix||{};
+  let sort = {key:'B1', dir:'desc'}, selected = null;
+  const $ = id => document.getElementById(id);
+  const esc = s => String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const cell = (m,p) => (M[m]||{})[p] || {};
+  const unitOf = p => (phases.find(x=>x.id===p)||{}).unit || '%';
+
+  /* normalise a value to 0..1 within its battery, for colour only */
+  function norm(pid, c){
+    if(!c || c.score==null) return null;
+    const u = unitOf(pid);
+    if(u === '/10') return Math.max(0, Math.min(1, c.score/10));
+    if(u === 't/s'){
+      const all = models.map(m=>cell(m,pid).score).filter(v=>v!=null);
+      const mx = Math.max(...all, 1);
+      return Math.max(0, Math.min(1, c.score/mx));
+    }
+    return Math.max(0, Math.min(1, c.score/100));
+  }
+  function heat(t){
+    if(t==null) return null;
+    const lo=[224,82,72], mid=[217,168,58], hi=[70,185,90];
+    let a,b,f;
+    if(t<0.5){ a=lo; b=mid; f=t/0.5; } else { a=mid; b=hi; f=(t-0.5)/0.5; }
+    const c = a.map((v,i)=>Math.round(v+(b[i]-v)*f));
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+  }
+  const coverage = m => phases.reduce((n,p)=>n+(cell(m,p.id).tested?1:0),0);
+
+  /* ---------------- stats ---------------- */
+  function renderStats(){
+    const totalCells = models.length*phases.length;
+    let done=0; phases.forEach(p=>models.forEach(m=>{ if(cell(m,p.id).tested) done++; }));
+    const b8 = models.filter(m=>cell(m,'B8').tested).length;
+    const crit = (D.gaps||[]).filter(g=>g.sev==='critical'||g.sev==='high').length;
+    const best = (D.ngram_edit||[])[0];
+    const tiles = [
+      ['models', models.length, 'in the roster'],
+      ['coverage', Math.round(100*done/totalCells)+'%', done+' of '+totalCells+' cells'],
+      ['agentic (B8)', b8+'/'+models.length, 'models with real agent runs'],
+      ['best ngram gain', best? best.speedup.toFixed(2)+'×':'—', best? best.model:''],
+      ['open gaps', crit, 'critical or high severity']
+    ];
+    $('stats').innerHTML = tiles.map(([k,v,s])=>
+      `<div class="stat"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div>
+       <div class="k" style="text-transform:none;letter-spacing:0;color:var(--ink-faint)">${esc(s)}</div></div>`).join('');
+  }
+
+  /* ---------------- glossary ---------------- */
+  function renderGloss(){
+    $('glossbody').innerHTML = phases.map(p=>
+      `<dt>${esc(p.id)}</dt><dd><b>${esc(p.name)}</b> <span class="tag">${esc(p.unit)}</span>
+        <span class="tag">${esc(p.kind)}</span><br>${esc(p.blurb)}</dd>`).join('');
+  }
+
+  /* ---------------- matrix ---------------- */
+  function sortVal(m, key){
+    if(key==='model') return m;
+    if(key==='cov') return coverage(m);
+    const c = cell(m,key);
+    return c.score==null ? -Infinity : c.score;
+  }
+  function ordered(){
+    const arr = models.slice();
+    arr.sort((a,b)=>{
+      const x=sortVal(a,sort.key), y=sortVal(b,sort.key);
+      let r;
+      if(typeof x==='string'||typeof y==='string') r=String(x).localeCompare(String(y));
+      else r = x===y ? 0 : (x<y?-1:1);
+      if(r===0) r = a.localeCompare(b);
+      return sort.dir==='desc' ? -r : r;
+    });
+    return arr;
+  }
+  function setSort(k){
+    if(sort.key===k) sort.dir = sort.dir==='desc'?'asc':'desc';
+    else { sort.key=k; sort.dir = k==='model'?'asc':'desc'; }
+    render();
+  }
+  const arrow = () => sort.dir==='desc' ? '▾' : '▴';
+
+  function renderMatrix(){
+    const head = `<thead><tr>
+      <th class="sortable ${sort.key==='model'?'active':''}" data-k="model">model ${sort.key==='model'?arrow():''}</th>
+      ${phases.map(p=>`<th class="sortable ${sort.key===p.id?'active':''}" data-k="${p.id}"
+         style="text-align:right" data-tip="${esc(p.name)} (${esc(p.unit)}) — ${esc(p.blurb)}">
+         ${p.id} ${sort.key===p.id?arrow():''}</th>`).join('')}
+      <th class="sortable ${sort.key==='cov'?'active':''}" data-k="cov" style="text-align:right">cov ${sort.key==='cov'?arrow():''}</th>
+    </tr></thead>`;
+    const body = '<tbody>' + ordered().map(m=>{
+      const tds = phases.map(p=>{
+        const c = cell(m,p.id);
+        if(!c.tested) return `<td class="num"><span class="cell gap" data-tip="${esc(p.name)}: not run for this model">not run</span></td>`;
+        const col = heat(norm(p.id,c));
+        const ci = c.ci ? ` — 95% CI [${c.ci[0]}, ${c.ci[1]}]`
+                        : (p.unit==='t/s' ? ' — median over n=8, no CI' : '');
+        const tiedTxt = c.tied_with_leader===true ? ' — statistically TIED with the leader' : '';
+        const tie = (c.tied_with_leader===true && !c.is_leader)
+          ? '<span class="tiemark">≈</span>' : '';
+        return `<td class="num"><span class="cell" style="color:${col}"
+          data-tip="${esc(p.name)}: ${esc(c.display)} (n=${esc(c.n)})${esc(ci)}${esc(tiedTxt)}"
+          >${tie}${esc(c.display)}</span></td>`;
+      }).join('');
+      const cv = coverage(m);
+      return `<tr class="row ${selected===m?'on':''}" data-m="${esc(m)}">
+        <td class="model">${esc(m)}</td>${tds}
+        <td class="num"><span class="cov">${cv}/${phases.length}</span></td></tr>`;
+    }).join('') + '</tbody>';
+    const t = $('matrix');
+    t.innerHTML = head + body;
+    t.querySelectorAll('th.sortable').forEach(th=>th.onclick=()=>setSort(th.dataset.k));
+    t.querySelectorAll('tr.row').forEach(tr=>tr.onclick=()=>{
+      selected = (selected===tr.dataset.m) ? null : tr.dataset.m; render();
+    });
+  }
+
+  /* ---------------- model detail ---------------- */
+  function subHead(pid){
+    const p = phases.find(x=>x.id===pid);
+    return (p && p.sub) ? p.sub : 'breakdown';
+  }
+  function renderDetail(){
+    const box = $('detail');
+    $('detailtitle').textContent = selected ? ('Model detail — ' + selected) : 'Model detail';
+    if(!selected){ box.innerHTML = '<p class="empty">No model selected — click a row in the matrix.</p>'; return; }
+    const cards = [];
+    /* headline card */
+    cards.push(`<div class="dcard"><h5>all batteries</h5>${
+      phases.map(p=>{
+        const c = cell(selected,p.id);
+        const v = c.tested ? esc(c.display) : '<span class="faint">not run</span>';
+        return `<div class="row"><span>${p.id} ${esc(p.name)}</span><span>${v}</span></div>`;
+      }).join('')}</div>`);
+    /* sub-score cards */
+    phases.forEach(p=>{
+      const c = cell(selected,p.id);
+      if(!c.sub || !c.sub.length) return;
+      const rows = c.sub.slice().sort((a,b)=>b.score-a.score).map(s=>{
+        const t = unitOf(p.id)==='/10' ? s.score/10 : s.score/100;
+        return `<div class="row"><span>${esc(String(s.name).replace(/_/g,' '))}</span>
+          <span style="color:${heat(Math.max(0,Math.min(1,t)))}">${esc(s.display)}</span></div>`;
+      }).join('');
+      cards.push(`<div class="dcard"><h5>${p.id} — ${esc(subHead(p.id))}</h5>${rows}</div>`);
+    });
+    /* game anecdotes for this model, if any */
+    const g = (D.games_historical||[]).find(x=>x.model===selected);
+    if(g){
+      cards.push(`<div class="dcard"><h5>one-shot games <span class="faint">(ad-hoc, not scored)</span></h5>
+        <div class="row"><span>Snake</span><span>${chip(g.snake)}</span></div>
+        <div class="row" style="display:block"><span class="faint" style="font-size:11px">${esc(g.snake_note)}</span></div>
+        <div class="row"><span>Tetris</span><span>${chip(g.tetris)}</span></div>
+        <div class="row" style="display:block"><span class="faint" style="font-size:11px">${esc(g.tetris_note)}</span></div>
+      </div>`);
+    }
+    /* ngram gain for this model, if measured */
+    const n = (D.ngram_edit||[]).find(x=>x.model===selected);
+    if(n){
+      cards.push(`<div class="dcard"><h5>edit-workload throughput</h5>
+        <div class="row"><span>baseline</span><span>${n.base} t/s</span></div>
+        <div class="row"><span>with ngram-mod</span><span style="color:var(--s-hi)">${n.ngram} t/s</span></div>
+        <div class="row"><span>speedup</span><span>${n.speedup.toFixed(2)}×</span></div>
+        ${n.note?`<div class="row" style="display:block"><span class="faint" style="font-size:11px">${esc(n.note)}</span></div>`:''}
+      </div>`);
+    }
+    box.innerHTML = cards.join('');
+    bindTips();
+  }
+
+  function chip(state){
+    const map = {pass:['pass','✓','works'], partial:['partial','△','bugs'],
+                 fail:['fail','✗','broken'], none:['none','—','not tried']};
+    const [cls,ic,label] = map[state] || map.none;
+    return `<span class="chip ${cls}"><span class="ic">${ic}</span>${label}</span>`;
+  }
+
+  /* ---------------- speculative decoding ---------------- */
+  function renderSpec(){
+    $('specnote').innerHTML = esc(D.caveats && D.caveats.ngram_workload || '');
+    const ng = D.ngram_edit||[], ctl = D.ngram_control;
+    const maxS = Math.max(...ng.map(r=>r.speedup), ctl?ctl.speedup:1);
+    const row = (r,isCtl)=>{
+      const w = Math.max(2, 100*r.speedup/maxS);
+      return `<tr>
+        <td class="model" ${isCtl?'style="font-style:italic;color:var(--ink-dim)"':''}>${esc(r.model)}</td>
+        <td class="num">${r.base} t/s</td>
+        <td class="num" style="color:var(--s-hi)">${r.ngram} t/s</td>
+        <td style="width:34%"><div class="bar"><span style="width:${w}%"></span></div></td>
+        <td class="num"><b>${r.speedup.toFixed(2)}×</b></td>
+        <td class="faint" style="font-size:11.5px">${esc(r.note||'')}</td></tr>`;
+    };
+    $('ngram').innerHTML = `<thead><tr><th>model</th><th style="text-align:right">baseline</th>
+      <th style="text-align:right">ngram-mod</th><th>speedup</th><th style="text-align:right">×</th>
+      <th>note</th></tr></thead><tbody>${ng.map(r=>row(r,false)).join('')}
+      ${ctl?row(ctl,true):''}</tbody>`;
+
+    const arms = D.b5_spec_arms||{};
+    const keys = Object.keys(arms).sort((a,b)=>arms[b].speedup-arms[a].speedup);
+    $('b5arms').innerHTML = `<thead><tr><th>model</th><th style="text-align:right">spec off</th>
+      <th style="text-align:right">spec ngram32</th><th style="text-align:right">speedup</th></tr></thead>
+      <tbody>${keys.map(k=>`<tr><td class="model">${esc(k)}</td>
+        <td class="num">${arms[k].off} t/s</td><td class="num">${arms[k].ngram} t/s</td>
+        <td class="num" style="color:var(--ink-dim)">${arms[k].speedup.toFixed(2)}×</td></tr>`).join('')}</tbody>`;
+
+    const nm = D.ngram_nmatch||[];
+    const mxn = Math.max(...nm.map(r=>r.speedup),1);
+    $('nmatch').innerHTML = `<thead><tr><th>n-match</th><th>speedup</th>
+      <th style="text-align:right">×</th><th>note</th></tr></thead><tbody>${
+      nm.map(r=>`<tr><td class="model">${r.n}</td>
+        <td style="width:40%"><div class="bar ${r.speedup===0?'bad':''}">
+          <span style="width:${Math.max(2,100*r.speedup/mxn)}%"></span></div></td>
+        <td class="num">${r.speedup? r.speedup.toFixed(2)+'×':'—'}</td>
+        <td class="faint" style="font-size:11.5px">${esc(r.note)}</td></tr>`).join('')}</tbody>`;
+
+    $('mtp').innerHTML = `<thead><tr><th>configuration</th><th style="text-align:right">baseline</th>
+      <th style="text-align:right">with MTP</th><th style="text-align:right">×</th><th>verdict</th>
+      <th>note</th></tr></thead><tbody>${(D.mtp||[]).map(r=>{
+        const s = r.with/r.base;
+        const cls = r.verdict==='works'?'pass':(r.verdict==='inert'?'partial':'fail');
+        const ic = r.verdict==='works'?'✓':(r.verdict==='inert'?'△':'✗');
+        return `<tr><td class="model" style="white-space:normal">${esc(r.config)}</td>
+          <td class="num">${r.base} t/s</td>
+          <td class="num" style="color:${s>1.2?'var(--s-hi)':(s<0.9?'var(--s-lo)':'var(--ink-dim)')}">${r.with} t/s</td>
+          <td class="num"><b>${s.toFixed(2)}×</b></td>
+          <td><span class="chip ${cls}"><span class="ic">${ic}</span>${esc(r.verdict)}</span></td>
+          <td class="faint" style="font-size:11.5px">${esc(r.note)}</td></tr>`;}).join('')}</tbody>`;
+  }
+
+  /* ---------------- games ---------------- */
+  function renderGames(){
+    $('games').innerHTML = `<thead><tr><th>model</th><th>Snake</th><th>Tetris</th>
+      <th>what went wrong</th></tr></thead><tbody>${(D.games_historical||[]).map(g=>
+      `<tr><td class="model">${esc(g.model)}</td><td>${chip(g.snake)}</td><td>${chip(g.tetris)}</td>
+       <td class="faint" style="font-size:11.5px;white-space:normal">
+         <b class="dim">snake:</b> ${esc(g.snake_note)}<br>
+         <b class="dim">tetris:</b> ${esc(g.tetris_note)}</td></tr>`).join('')}</tbody>`;
+    $('gamesplanned').innerHTML = `<thead><tr><th>target</th><th>status</th></tr></thead><tbody>${
+      (D.games_planned||[]).map(g=>`<tr><td class="model" style="white-space:normal">${esc(g.game)}</td>
+        <td>${g.state==='ad-hoc only'
+          ? '<span class="chip partial"><span class="ic">△</span>ad-hoc only, never scored</span>'
+          : '<span class="chip none"><span class="ic">○</span>specified, not built</span>'}</td></tr>`).join('')}</tbody>`;
+  }
+
+  /* ---------------- gaps & caveats ---------------- */
+  function renderGaps(){
+    $('gaps').innerHTML = (D.gaps||[]).map(g=>
+      `<div class="gap-item ${esc(g.sev)}">
+        <h4><span class="sev ${esc(g.sev)}">${esc(g.sev)}</span>${esc(g.title)}</h4>
+        <p>${esc(g.detail)}</p>
+        <div class="fix"><b>To close it:</b> ${esc(g.fix)}</div></div>`).join('');
+    const c = D.caveats||{};
+    const order = [['hardware','Hardware is not interchangeable'],
+                   ['b1_incremental','How Laguna’s B1 was scored'],
+                   ['ngram_workload','What speculative decoding depends on']];
+    $('caveats').innerHTML = order.filter(([k])=>c[k]).map(([k,t])=>
+      `<div class="gap-item low"><h4>${esc(t)}</h4><p>${esc(c[k])}</p></div>`).join('');
+    $('foot').innerHTML = 'Generated from ' + esc(D.generated_from||'the eval shards') +
+      '. Regenerate with <code>python build_data.py</code>. Blank cells mean the battery was not run for that model — never a zero score.';
+  }
+
+  /* ---------------- tooltips ---------------- */
+  function bindTips(){
+    const tip = $('tip');
+    document.querySelectorAll('[data-tip]').forEach(n=>{
+      n.onmouseenter = e=>{
+        tip.textContent = n.dataset.tip; tip.style.opacity = 1;
+        const r = n.getBoundingClientRect();
+        let x = r.left, y = r.bottom + 8;
+        tip.style.left = '0px'; tip.style.top = '0px';
+        const tw = tip.offsetWidth, th = tip.offsetHeight;
+        if(x + tw > innerWidth - 12) x = innerWidth - tw - 12;
+        if(y + th > innerHeight - 12) y = r.top - th - 8;
+        tip.style.left = Math.max(8,x)+'px'; tip.style.top = Math.max(8,y)+'px';
+      };
+      n.onmouseleave = ()=>{ tip.style.opacity = 0; };
+    });
+  }
+
+
+  function renderConfidence(){
+    const box=$('confidence'); const out=[];
+    phases.forEach(p=>{
+      const scored=models.filter(m=>cell(m,p.id).score!=null);
+      if(!scored.length) return;
+      const lead=scored.reduce((a,b)=>cell(a,p.id).score>=cell(b,p.id).score?a:b);
+      const tied=scored.filter(m=>cell(m,p.id).tied_with_leader===true);
+      const n=cell(lead,p.id).n, ci=cell(lead,p.id).ci;
+      const sev = tied.length>3?'high':(tied.length>1?'medium':'low');
+      out.push('<div class="gap-item '+sev+'"><h4>'+p.id+' '+esc(p.name)+
+        ' <span class="tag">n='+esc(n)+'</span> '+
+        (ci?'<span class="tag">leader CI '+ci[0]+'\u2013'+ci[1]+'</span>':'<span class="tag">no CI</span>')+
+        '</h4><p>'+(tied.length>1
+          ? '<b>'+tied.length+' models are statistically tied for the lead</b> at 95% confidence: '+
+            tied.map(m=>esc(m)+' ('+esc(cell(m,p.id).display)+')').join(', ')+
+            '. Treat these as one tier \u2014 the visible order inside it is noise.'
+          : '<b>'+esc(lead)+'</b> leads with a separated interval; pairs further down the column may still overlap.')+
+        '</p></div>');
+    });
+    box.innerHTML=out.join('')+'<p class="note">Interval width is driven by sample size: B2/B6 run n=30 '+
+      'per model, B3 n=39, B4 n=21, the B8 sweep n=69, and B5 is a median over just n=8. At those sizes a '+
+      'several-point gap is not evidence of a real difference.</p>';
+  }
+
+  function renderJudgeRel(){
+    const j=D.judge_reliability||{};
+    if(!j.packets_with_panel){ $('judgerel').innerHTML='<p class="empty">No judged data.</p>'; return; }
+    const sev = j.agreement_pct<50?'critical':(j.agreement_pct<70?'high':'low');
+    const kin=(j.kin_delta||[]).filter(k=>k.delta!=null);
+    const tile=(v,k,s,col)=>'<div class="stat"><div class="v"'+(col?' style="color:'+col+'"':'')+'>'+v+
+      '</div><div class="k">'+k+'</div><div class="k" style="text-transform:none;letter-spacing:0">'+s+'</div></div>';
+    let h='<div class="stats" style="margin-bottom:12px">'+
+      tile(j.agreement_pct+'%','panel agreement','all 3 judges within 1 point',
+           j.agreement_pct<50?'var(--s-lo)':null)+
+      tile(j.mean_spread,'mean spread','points, high\u2212low per answer')+
+      tile(j.spread_gt2_pct+'%','spread &gt; 2 pts','judges materially disagree')+
+      tile(j.packets_with_panel.toLocaleString(),'answers judged','calibration anchors excluded')+
+      '</div>'+
+      '<div class="gap-item '+sev+'"><h4><span class="sev '+sev+'">'+sev+'</span>What this means for B1</h4>'+
+      '<p>The panel lands within a point of itself on only <b>'+j.agreement_pct+'%</b> of answers, and the '+
+      'average high\u2212low spread is <b>'+j.mean_spread+' points</b>. A B1 gap of a few tenths \u2014 7.6 vs 7.2 '+
+      '\u2014 is therefore inside judge noise. Read B1 as broad tiers, not a ranked list.</p></div>';
+    if(kin.length){
+      h+='<h3>Self-preference (kin_delta)</h3><table><thead><tr><th>judge</th>'+
+         '<th style="text-align:right">scores own family</th><th style="text-align:right">scores others</th>'+
+         '<th style="text-align:right">delta</th></tr></thead><tbody>'+
+         kin.map(k=>'<tr><td class="model">'+esc(k.judge)+'</td><td class="num">'+k.kin_mean+
+           '</td><td class="num">'+k.other_mean+'</td><td class="num" style="color:'+
+           (Math.abs(k.delta)>0.4?'var(--s-mid)':'var(--ink-dim)')+'">'+(k.delta>0?'+':'')+k.delta+
+           '</td></tr>').join('')+'</tbody></table>'+
+         '<p class="note">A judge with no same-family model in the roster shows no delta. A non-zero value '+
+         'is a bias signal, not proof of bad faith \u2014 the score itself uses the panel median.</p>';
+    }
+    $('judgerel').innerHTML=h;
+  }
+
+  function renderEff(){
+    const e=D.efficiency||[]; if(!e.length){ $('eff').innerHTML=''; return; }
+    const mx=Math.max.apply(null,e.map(r=>r.b1_per_gb||0));
+    $('eff').innerHTML='<thead><tr><th>model</th><th style="text-align:right">weights</th>'+
+      '<th style="text-align:right">B1</th><th>B1 per GB</th><th style="text-align:right">ratio</th>'+
+      '<th>fits a 24GB card</th><th>arch / quant</th></tr></thead><tbody>'+
+      e.map(r=>'<tr><td class="model">'+esc(r.model)+'</td><td class="num">'+r.gb+' GB</td>'+
+        '<td class="num">'+(r.b1==null?'\u2014':r.b1)+'</td>'+
+        '<td style="width:26%"><div class="bar"><span style="width:'+
+          Math.max(2,100*(r.b1_per_gb||0)/mx)+'%"></span></div></td>'+
+        '<td class="num">'+(r.b1_per_gb==null?'\u2014':r.b1_per_gb)+'</td>'+
+        '<td>'+(r.fits_24gb?'<span class="chip pass"><span class="ic">\u2713</span>fits</span>'
+                           :'<span class="chip fail"><span class="ic">\u2717</span>too big</span>')+'</td>'+
+        '<td class="faint" style="font-size:11.5px">'+esc(r.arch)+' \u00b7 '+esc(r.quant)+'</td></tr>').join('')+
+      '</tbody>';
+  }
+
+  function renderFailClass(){
+    const fc=D.failure_classes||{}; const tot=fc.total||[];
+    if(!tot.length){ $('failclass').innerHTML='<p class="empty">No classification data on disk.</p>'; return; }
+    const sum=tot.reduce((a,b)=>a+b.n,0), mx=Math.max.apply(null,tot.map(t=>t.n));
+    $('failclass').innerHTML='<table><thead><tr><th>failure mode</th><th>share</th>'+
+      '<th style="text-align:right">n</th><th style="text-align:right">%</th></tr></thead><tbody>'+
+      tot.map(t=>'<tr><td class="model">'+esc(t.label)+' \u2014 '+esc(t.name)+'</td>'+
+        '<td style="width:40%"><div class="bar '+(t.label==='e'?'warn':'')+'"><span style="width:'+
+          Math.max(2,100*t.n/mx)+'%"></span></div></td><td class="num">'+t.n+'</td>'+
+        '<td class="num">'+Math.round(100*t.n/sum)+'%</td></tr>').join('')+'</tbody></table>'+
+      '<p class="note">Classified by a blinded panel over the failures of the first two models put through '+
+      'the harness ('+sum+' failures). <b>Budget/step exhaustion dominates</b> \u2014 most failures are the '+
+      'model running out of its 20-step / 8,000-token / 180-second budget rather than being unable to do '+
+      'the task, which is an efficiency finding rather than a capability one. <b>Zero</b> were harness bugs, '+
+      'which is what validates the run. The ten models added in the later sweep are not yet classified.</p>';
+  }
+
+  function renderDrift(){
+    const d=D.b7_drift||[]; if(!d.length){ $('drift').innerHTML=''; return; }
+    const lo=Math.min.apply(null,d.map(r=>r.agreement)), hi=Math.max.apply(null,d.map(r=>r.agreement));
+    $('drift').innerHTML='<thead><tr><th>matrix cell</th><th>agreement with baseline</th>'+
+      '<th style="text-align:right">%</th><th style="text-align:right">n</th></tr></thead><tbody>'+
+      d.map(r=>{
+        const t=(r.agreement-lo)/Math.max(0.001,hi-lo);
+        return '<tr><td class="model">'+esc(r.cell)+'</td><td style="width:44%">'+
+          '<div class="bar '+(t<0.34?'bad':(t<0.67?'warn':''))+'"><span style="width:'+
+          Math.max(2,r.agreement)+'%"></span></div></td><td class="num">'+r.agreement+
+          '</td><td class="num">'+r.n+'</td></tr>';
+      }).join('')+'</tbody>'+
+      '<p class="note">Reading: removing the system prompt (<code>sysp=minimal</code>) and switching to a '+
+      'prompted tool format move answers most; temperature barely matters. The spec-decode rows are not a '+
+      'lossless test \u2014 every cell is compared against one baseline cell, so the arms are asymmetric.</p>';
+  }
+
+  function render(){ renderMatrix(); renderDetail(); bindTips(); }
+
+  $('gen').textContent = models.length + ' models · ' + phases.length + ' batteries';
+  renderStats(); renderGloss(); renderConfidence(); renderJudgeRel(); renderEff();
+  renderFailClass(); renderDrift(); renderSpec(); renderGames(); renderGaps(); render();
+})();
+</script>
+</body>
+</html>
