@@ -22,7 +22,11 @@ import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent / "llmtest-v2"
+# Works in BOTH layouts: as a sibling checkout during local development
+# (../llmtest-v2), and as a subdirectory of the published repo, where the suite lives in
+# the parent. Resolved by looking for the results tree rather than by assuming a name, so
+# neither layout needs a code change.
+REPO = ROOT.parent / "llmtest-v2" if (ROOT.parent / "llmtest-v2" / "results").is_dir()     else ROOT.parent
 GAMES_SRC = ROOT.parent / "michael"
 OUT = ROOT / "explorer"
 DATA = OUT / "data"
