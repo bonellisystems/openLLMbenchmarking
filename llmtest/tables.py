@@ -106,19 +106,41 @@ def render_flags(agg: AggResult) -> str:
 
 
 def _current_rubric_sha(root: Path) -> dict:
-    """{unit: rubric_sha} for every unit with a grading/anchors/<unit>.md
-    file CURRENTLY checked out (TESTPLAN 6.2: aggregation selects judgments
-    matching the checked-out rubric_sha). Mirrors packets.py's own formula
-    exactly. A unit with no anchor file is simply absent -- aggregate()
-    treats an absent unit as "don't filter" (today's reality: no anchors
-    exist yet for any unit)."""
+    """{unit: {acceptable rubric_sha, ...}} for every unit with a
+    grading/anchors/<unit>.md file CURRENTLY checked out (TESTPLAN 6.2:
+    aggregation selects judgments matching the checked-out rubric_sha).
+    Mirrors packets.py's own formula. A unit with no anchor file is simply
+    absent -- aggregate() treats an absent unit as "don't filter".
+
+    A SET, AND LINE-ENDING INDEPENDENT, because this hash is taken over FILE BYTES and
+    the anchors are ordinary text files. Git hands them to Windows as CRLF and to Linux
+    as LF, so the same rubric hashes differently per platform. The packets were built on
+    Windows, so on Linux every single one looked "superseded by a rubric change", every
+    judgment was dropped, and the whole B1 scorecard silently regenerated EMPTY - which is
+    what broke the CI byte-clean gate. It would equally have corrupted the flagship table
+    for anyone who cloned the repo on Linux.
+
+    Both spellings of the same content are therefore accepted: the LF-normalised form and
+    the CRLF form, each computed from normalised text so either can be derived on any
+    platform. That matches the existing packets without rewriting their recorded
+    provenance, and stays correct whichever way a future checkout lands.
+    """
     judge_prompt_path = root / "grading" / "judge_prompt.md"
     anchors_dir = root / "grading" / "anchors"
     if not judge_prompt_path.exists() or not anchors_dir.exists():
         return {}
+
+    def _both(anchor: bytes, prompt: bytes) -> set[str]:
+        lf_a = anchor.replace(b"\r\n", b"\n")
+        lf_p = prompt.replace(b"\r\n", b"\n")
+        crlf_a = lf_a.replace(b"\n", b"\r\n")
+        crlf_p = lf_p.replace(b"\n", b"\r\n")
+        return {hashlib.sha256(lf_a + lf_p).hexdigest(),
+                hashlib.sha256(crlf_a + crlf_p).hexdigest()}
+
     judge_prompt_bytes = judge_prompt_path.read_bytes()
     return {
-        anchor_path.stem: hashlib.sha256(anchor_path.read_bytes() + judge_prompt_bytes).hexdigest()
+        anchor_path.stem: _both(anchor_path.read_bytes(), judge_prompt_bytes)
         for anchor_path in sorted(anchors_dir.glob("*.md"))
     }
 

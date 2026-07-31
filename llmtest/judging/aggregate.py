@@ -168,8 +168,14 @@ def aggregate(
             continue
         unit = m.get("unit")
         want_sha = current_rubric_sha.get(unit)
-        if want_sha is not None and m.get("rubric_sha") != want_sha:
-            continue   # superseded packet (rubric changed since this was judged)
+        # want_sha is a SET of acceptable hashes (see tables._current_rubric_sha): the
+        # same rubric hashes differently depending on whether the checkout produced LF or
+        # CRLF, so a single value made every packet look superseded on the other platform.
+        # A bare string is still accepted for callers/tests that pass one.
+        if want_sha is not None:
+            acceptable = want_sha if isinstance(want_sha, (set, frozenset)) else {want_sha}
+            if m.get("rubric_sha") not in acceptable:
+                continue   # superseded packet (rubric changed since this was judged)
         groups.setdefault(key, {})[j["judge_id"]] = j["score"]
 
     packet_answers = [
