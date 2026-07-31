@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tiny Roguelike</title>
+    <style>
+        body { background: #111; color: #0f0; font-family: monospace; }
+        #game { display: grid; grid-template-columns: repeat(50, 12px); gap: 1px; }
+        .cell { width: 12px; height: 12px; text-align: center; font-size: 10px; }
+        .wall { background: #333; }
+        .floor { background: #111; }
+        .player { color: #0ff; }
+        .monster { color: #f00; }
+        .exit { color: #ff0; }
+        #status { margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <div id="game"></div>
+    <div id="status">Health: 100 | Score: 0</div>
+    <script>
+        const WIDTH = 50;
+        const HEIGHT = 30;
+        const WALL = '#';
+        const FLOOR = '.';
+        const PLAYER = '@';
+        const MONSTER = 'g';
+        const EXIT = '>';
+        
+        let player = { x: 0, y: 0, health: 100 };
+        let monsters = [];
+        let exit = { x: 0, y: 0 };
+        let score = 0;
+        let dungeon = [];
+        
+        function generateDungeon() {
+            dungeon = Array(HEIGHT).fill().map(() => Array(WIDTH).fill(WALL));
+            
+            // Random walk for cave generation
+            let x = Math.floor(WIDTH / 2);
+            let y = Math.floor(HEIGHT / 2);
+            for (let i = 0; i < 500; i++) {
+                dungeon[y][x] = FLOOR;
+                x += Math.floor(Math.random() * 3) - 1;
+                y += Math.floor(Math.random() * 3) - 1;
+                x = Math.max(1, Math.min(WIDTH - 2, x));
+                y = Math.max(1, Math.min(HEIGHT - 2, y));
+            }
+            
+            // Place player
+            do {
+                player.x = Math.floor(Math.random() * WIDTH);
+                player.y = Math.floor(Math.random() * HEIGHT);
+            } while (dungeon[player.y][player.x] !== FLOOR);
+            
+            // Place exit
+            do {
+                exit.x = Math.floor(Math.random() * WIDTH);
+                exit.y = Math.floor(Math.random() * HEIGHT);
+            } while (dungeon[exit.y][exit.x] !== FLOOR || 
+                     (Math.abs(exit.x - player.x) < 10 && Math.abs(exit.y - player.y) < 10));
+            
+            // Place monsters
+            monsters = [];
+            for (let i = 0; i < 10; i++) {
+                let m;
+                do {
+                    m = {
+                        x: Math.floor(Math.random() * WIDTH),
+                        y: Math.floor(Math.random() * HEIGHT)
+                    };
+                } while (dungeon[m.y][m.x] !== FLOOR || 
+                         (Math.abs(m.x - player.x) < 3 && Math.abs(m.y - player.y) < 3));
+                monsters.push(m);
+            }
+        }
+        
+        function render() {
+            const game = document.getElementById('game');
+            game.innerHTML = '';
+            
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    
+                    if (x === player.x && y === player.y) {
+                        cell.textContent = PLAYER;
+                        cell.classList.add('player');
+                    } else if (x === exit.x && y === exit.y) {
+                        cell.textContent = EXIT;
+                        cell.classList.add('exit');
+                    } else {
+                        const monster = monsters.find(m => m.x === x && m.y === y);
+                        if (monster) {
+                            cell.textContent = MONSTER;
+                            cell.classList.add('monster');
+                        } else {
+                            cell.textContent = dungeon[y][x];
+                            cell.classList.add(dungeon[y][x] === WALL ? 'wall' : 'floor');
+                        }
+                    }
+                    game.appendChild(cell);
+                }
+            }
+            
+            document.getElementById('status').textContent = 
+                `Health: ${player.health} | Score: ${score}`;
+        }
+        
+        function movePlayer(dx, dy) {
+            const newX = player.x + dx;
+            const newY = player.y + dy;
+            
+            if (newX < 0 || newX >= WIDTH || newY < 0 || newY >= HEIGHT) return;
+            if (dungeon[newY][newX] === WALL) return;
+            
+            player.x = newX;
+            player.y = newY;
+            
+            // Check for monster collision
+            const monsterIndex = monsters.findIndex(m => m.x === player.x && m.y === player.y);
+            if (monsterIndex !== -1) {
+                player.health -= 20;
+                monsters.splice(monsterIndex, 1);
+                score += 10;
+                if (player.health <= 0) {
+                    alert('Game Over! Score: ' + score);
+                    generateDungeon();
+                    player.health = 100;
+                }
+            }
+            
+            // Check for exit
+            if (player.x === exit.x && player.y === exit.y) {
+                score += 100;
+                generateDungeon();
+            }
+            
+            moveMonsters();
+            render();
+        }
+        
+        function moveMonsters() {
+            monsters.forEach(monster => {
+                const dx = Math.sign(player.x - monster.x);
+                const dy = Math.sign(player.y - monster.y);
+                
+                const newX = monster.x + (Math.random() > 0.5 ? dx : 0);
+                const newY = monster.y + (Math.random() > 0.5 ? dy : 0);
+                
+                if (newX >= 0 && newX < WIDTH && newY >= 0 && newY < HEIGHT &&
+                    dungeon[newY][newX] !== WALL &&
+                    !monsters.some(m => m.x === newX && m.y === newY)) {
+                    monster.x = newX;
+                    monster.y = newY;
+                }
+            });
+        }
+        
+        document.addEventListener('keydown', e => {
+            switch(e.key) {
+                case 'ArrowUp': case 'w': movePlayer(0, -1); break;
+                case 'ArrowDown': case 's': movePlayer(0, 1); break;
+                case 'ArrowLeft': case 'a': movePlayer(-1, 0); break;
+                case 'ArrowRight': case 'd': movePlayer(1, 0); break;
+            }
+        });
+        
+        generateDungeon();
+        render();
+    </script>
+</body>
+</html>

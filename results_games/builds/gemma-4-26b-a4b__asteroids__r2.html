@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asteroids</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #000;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        const keys = {};
+        window.addEventListener('keydown', e => keys[e.code] = true);
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        class Entity {
+            constructor(x, y, radius) {
+                this.x = x;
+                this.y = y;
+                this.radius = radius;
+                this.vx = 0;
+                this.vy = 0;
+                this.angle = 0;
+                this.destroyed = false;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+
+                if (this.x < 0) this.x = canvas.width;
+                else if (this.x > canvas.width) this.x = 0;
+                if (this.y < 0) this.y = canvas.height;
+                else if (this.y > canvas.height) this.y = 0;
+            }
+        }
+
+        class Player extends Entity {
+            constructor() {
+                super(canvas.width / 2, canvas.height / 2, 15);
+                this.rotationSpeed = 0.07;
+                this.thrust = 0.15;
+                this.friction = 0.99;
+                this.cooldown = 0;
+            }
+
+            update() {
+                if (keys['ArrowLeft'] || keys['KeyA']) this.angle -= this.rotationSpeed;
+                if (keys['ArrowRight'] || keys['KeyD']) this.angle += this.rotationSpeed;
+                
+                if (keys['ArrowUp'] || keys['KeyW']) {
+                    this.vx += Math.cos(this.angle) * this.thrust;
+                    this.vy += Math.sin(this.angle) * this.thrust;
+                }
+
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+
+                super.update();
+
+                if (keys['Space'] && this.cooldown <= 0) {
+                    this.shoot();
+                    this.cooldown = 15;
+                }
+                if (this.cooldown > 0) this.cooldown--;
+            }
+
+            shoot() {
+                const bullet = new Bullet(this.x, this.y, this.angle);
+                game.bullets.push(bullet);
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(this.radius, 0);
+                ctx.lineTo(-this.radius, -this.radius * 0.7);
+                ctx.lineTo(-this.radius * 0.5, 0);
+                ctx.lineTo(-this.radius, this.radius * 0.7);
+                ctx.closePath();
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        class Asteroid extends Entity {
+            constructor(x, y, radius, level) {
+                super(x, y, radius);
+                this.level = level; // 3: large, 2: medium, 1: small
+                this.vx = (Math.random() - 0.5) * (5 - level) * 2;
+                this.vy = (Math.random() - 0.5) * (5 - level) * 2;
+                this.vertices = [];
+                const vertCount = 8 + Math.floor(Math.random() * 7);
+                for (let i = 0; i < vertCount; i++) {
+                    const angle = (i / vertCount) * Math.PI * 2;
+                    const dist = radius * (0.8 + Math.random() * 0.4);
+                    this.vertices.push({
+                        x: Math.cos(angle) * dist,
+                        y: Math.sin(angle) * dist
+                    });
+                }
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(this.vertices[0].x, this.vertices[0].y);
+                for (let i = 1; i < this.vertices.length; i++) {
+                    ctx.lineTo(this.vertices[i].x, this.vertices[i].y);
+                }
+                ctx.closePath();
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        class Bullet extends Entity {
+            constructor(x, y, angle) {
+                super(x, y, 2);
+                this.vx = Math.cos(angle) * 8;
+                this.vy = Math.sin(angle) * 8;
+                this.life = 60;
+            }
+
+            update() {
+                super.update();
+                this.life--;
+                if (this.life <= 0) this.destroyed = true;
+            }
+
+            draw() {
+                ctx.fillStyle = 'white';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        class Particle extends Entity {
+            constructor(x, y) {
+                super(x, y, 1);
+                this.vx = (Math.random() - 0.5) * 4;
+                this.vy = (Math.random() - 0.5) * 4;
+                this.life = 30;
+            }
+
+            update() {
+                super.update();
+                this.life--;
+                if (this.life <= 0) this.destroyed = true;
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.life / 30})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        const game = {
+            player: new Player(),
+            asteroids: [],
+            bullets: [],
+            particles: [],
+            score: 0,
+            lives: 3,
+            gameOver: false,
+
+            init() {
+                this.spawnLevel();
+                this.loop();
+            },
+
+            spawnLevel() {
+                for (let i = 0; i < 3; i++) {
+                    this.spawnAsteroid(true);
+                }
+            },
+
+            spawnAsteroid(isInitial = false) {
+                let x, y;
+                if (isInitial) {
+                    x = Math.random() * canvas.width;
+                    y = Math.random() * canvas.height;
+                    // Don't spawn on player
+                    const dist = Math.hypot(x - this.player.x, y - this.player.y);
+                    if (dist < 200) return this.spawnAsteroid(true);
+                } else {
+                    // Spawn near edges
+                    if (Math.random() < 0.5) {
+                        x = Math.random() < 0.5 ? 0 : canvas.width;
+                        y = Math.random() * canvas.height;
+                    } else {
+                        x = Math.random() * canvas.width;
+                        y = Math.random() < 0.5 ? 0 : canvas.height;
+                    }
+                }
+                this.asteroids.push(new Asteroid(x, y, 40, 3));
+            },
+
+            update() {
+                if (this.gameOver) {
+                    if (keys['Space']) this.reset();
+                    return;
+                }
+
+                this.player.update();
+
+                this.bullets.forEach(b => b.update());
+                this.asteroids.forEach(a => a.update());
+                this.particles.forEach(p => p.update());
+
+                // Collisions: Bullet vs Asteroid
+                for (let i = this.bullets.length - 1; i >= 0; i--) {
+                    const b = this.bullets[i];
+                    for (let j = this.asteroids.length - 1; j >= 0; j--) {
+                        const a = this.asteroids[j];
+                        if (Math.hypot(b.x - a.x, b.y - a.y) < a.radius) {
+                            b.destroyed = true;
+                            this.splitAsteroid(a);
+                            this.score += 100;
+                            for (let k = 0; k < 10; k++) this.particles.push(new Particle(a.x, a.y));
+                            break;
+                        }
+                    }
+                }
+
+                // Collisions: Player vs Asteroid
+                for (let i = 0; i < this.asteroids.length; i++) {
+                    const a = this.asteroids[i];
+                    if (Math.hypot(this.player.x - a.x, this.player.y - a.y) < a.radius + this.player.radius) {
+                        this.handlePlayerDeath();
+                        break;
+                    }
+                }
+
+                // Cleanup
+                this.bullets = this.bullets.filter(b => !b.destroyed);
+                this.asteroids = this.asteroids.filter(a => !a.destroyed);
+                this.particles = this.particles.filter(p => !p.destroyed);
+
+                if (this.asteroids.length === 0) {
+                    this.spawnLevel();
+                }
+            },
+
+            splitAsteroid(a) {
+                a.destroyed = true;
+                if (a.level > 1) {
+                    for (let i = 0; i < 2; i++) {
+                        const sub = new Asteroid(a.x, a.y, a.radius / 2, a.level - 1);
+                        sub.vx = a.vx + (Math.random() - 0.5) * 4;
+                        sub.vy = a.vy + (Math.random() - 0.5) * 4;
+                        this.asteroids.push(sub);
+                    }
+                }
+            },
+
+            handlePlayerDeath() {
+                this.lives--;
+                for (let k = 0; k < 20; k++) this.particles.push(new Particle(this.player.x, this.player.y));
+                
+                if (this.lives <= 0) {
+                    this.gameOver = true;
+                } else {
+                    this.player.x = canvas.width / 2;
+                    this.player.y = canvas.height / 2;
+                    this.player.vx = 0;
+                    this.player.vy = 0;
+                }
+            },
+
+            reset() {
+                this.score = 0;
+                this.lives = 3;
+                this.gameOver = false;
+                this.player = new Player();
+                this.asteroids = [];
+                this.bullets = [];
+                this.particles = [];
+                this.spawnLevel();
+            },
+
+            draw() {
+                ctx.fillStyle = 'black';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                if (!this.gameOver) {
+                    this.player.draw();
+                }
+
+                this.asteroids.forEach(a => a.draw());
+                this.bullets.forEach(b => b.draw());
+                this.particles.forEach(p => p.draw());
+
+                // UI
+                ctx.fillStyle = 'white';
+                ctx.font = '24px Arial';
+                ctx.fillText(`Score: ${this.score}`, 20, 40);
+                ctx.fillText(`Lives: ${this.lives}`, 20, 70);
+
+                if (this.gameOver) {
+                    ctx.textAlign = 'center';
+                    ctx.font = '48px Arial';
+                    ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2);
+                    ctx.font = '24px Arial';
+                    ctx.fillText('Press SPACE to Restart', canvas.width / 2, canvas.height / 2 + 40);
+                    ctx.textAlign = 'left';
+                }
+            },
+
+            loop() {
+                this.update();
+                this.draw();
+                requestAnimationFrame(() => this.loop());
+            }
+        };
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+
+        game.init();
+    </script>
+</body>
+</html>

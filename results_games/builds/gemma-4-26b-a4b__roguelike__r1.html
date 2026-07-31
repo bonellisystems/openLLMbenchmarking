@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tiny Roguelike</title>
+    <style>
+        body { background: #111; color: #eee; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        #game-container { position: relative; line-height: 1.2; font-size: 18px; white-space: pre; }
+        #ui { margin-top: 10px; width: 400px; display: flex; justify-content: space-between; }
+        .log { margin-top: 10px; font-size: 14px; color: #aaa; height: 60px; overflow: hidden; width: 400px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="game-container"></div>
+    <div id="ui">
+        <span>HP: <span id="hp">20</span></span>
+        <span>LVL: <span id="lvl">1</span></span>
+        <span>FLOOR: <span id="floor">1</span></span>
+    </div>
+    <div class="log" id="log">Welcome, adventurer! Use WASD to move.</div>
+
+    <script>
+        const WIDTH = 30;
+        const HEIGHT = 15;
+        const TILE_SIZE = 18;
+
+        const MAP = [];
+        const ENTITIES = [];
+        const PLAYER = { x: 0, y: 0, hp: 20, maxHp: 20, atk: 5, lvl: 1, exp: 0 };
+        
+        const TYPES = { WALL: '#', FLOOR: '.', PLAYER: '@', ENEMY: 'E', GOAL: 'X' };
+
+        function initMap() {
+            for (let y = 0; y < HEIGHT; y++) {
+                MAP[y] = [];
+                for (let x = 0; x < WIDTH; x++) {
+                    MAP[y][x] = (x === 0 || x === WIDTH - 1 || y === 0 || y === HEIGHT - 1) ? TYPES.WALL : TYPES.FLOOR;
+                }
+            }
+
+            // Simple Room Generation
+            for (let i = 0; i < 5; i++) {
+                let rw = Math.floor(Math.random() * 4) + 3;
+                let rh = Math.floor(Math.random() * 4) + 3;
+                let rx = Math.floor(Math.random() * (WIDTH - rw - 2)) + 1;
+                let ry = Math.floor(Math.random() * (HEIGHT - rh - 2)) + 1;
+                for (let y = ry; y < ry + rh; y++) {
+                    for (let x = rx; x < rx + rw; x++) {
+                        if (MAP[y][x] === TYPES.FLOOR) MAP[y][x] = TYPES.FLOOR;
+                        else MAP[y][x] = TYPES.FLOOR;
+                    }
+                }
+            }
+
+            // Place Player
+            do {
+                PLAYER.x = Math.floor(Math.random() * WIDTH);
+                PLAYER.y = Math.floor(Math.random() * HEIGHT);
+            } while (MAP[PLAYER.y][PLAYER.x] !== TYPES.FLOOR);
+
+            // Place Goal
+            do {
+                PLAYER.goalX = Math.floor(Math.random() * WIDTH);
+                PLAYER.goalY = Math.floor(Math.random() * HEIGHT);
+            } while (MAP[PLAYER.goalY][PLAYER.goalX] !== TYPES.FLOOR);
+            MAP[PLAYER.goalY][PLAYER.goalX] = TYPES.GOAL;
+
+            // Place Enemies
+            ENTITIES.length = 0;
+            for (let i = 0; i < 3 + PLAYER.lvl; i++) {
+                let ex, ey;
+                do {
+                    ex = Math.floor(Math.random() * WIDTH);
+                    ey = Math.floor(Math.random() * HEIGHT);
+                } while (MAP[ey][ex] !== TYPES.FLOOR || (ex === PLAYER.x && ey === PLAYER.y));
+                ENTITIES.push({ x: ex, y: ey, hp: 5 + PLAYER.lvl * 2, atk: 2 + PLAYER.lvl });
+            }
+        }
+
+        function log(msg) {
+            const l = document.getElementById('log');
+            l.innerText = msg;
+        }
+
+        function updateUI() {
+            document.getElementById('hp').innerText = PLAYER.hp;
+            document.getElementById('lvl').innerText = PLAYER.lvl;
+            document.getElementById('floor').innerText = PLAYER.floor || 1;
+        }
+
+        function draw() {
+            let output = "";
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    let char = MAP[y][x];
+                    let color = "#eee";
+
+                    if (x === PLAYER.x && y === PLAYER.y) {
+                        char = TYPES.PLAYER;
+                        color = "#0f0";
+                    } else {
+                        for (let e of ENTITIES) {
+                            if (e.x === x && e.y === y) {
+                                char = TYPES.ENEMY;
+                                color = "#f00";
+                                break;
+                            }
+                        }
+                        if (char === TYPES.GOAL) color = "#ff0";
+                        if (char === TYPES.WALL) color = "#555";
+                    }
+                    output += `<span style="color:${color}">${char}</span>`;
+                }
+                output += "\n";
+            }
+            document.getElementById('game-container').innerHTML = output;
+        }
+
+        function movePlayer(dx, dy) {
+            let nx = PLAYER.x + dx;
+            let ny = PLAYER.y + dy;
+
+            if (MAP[ny][nx] === TYPES.WALL) return;
+
+            // Combat check
+            let enemy = ENTITIES.find(e => e.x === nx && e.y === ny);
+            if (enemy) {
+                enemy.hp -= PLAYER.atk;
+                log(`You hit enemy for ${PLAYER.atk}!`);
+                if (enemy.hp <= 0) {
+                    ENTITIES.splice(ENTITIES.indexOf(enemy), 1);
+                    PLAYER.exp += 10;
+                    log("Enemy defeated!");
+                    if (PLAYER.exp >= PLAYER.lvl * 30) {
+                        PLAYER.lvl++;
+                        PLAYER.atk += 2;
+                        PLAYER.hp = PLAYER.maxHp;
+                        log("LEVEL UP! HP Restored.");
+                    }
+                }
+            } else {
+                PLAYER.x = nx;
+                PLAYER.y = ny;
+            }
+
+            if (MAP[ny][nx] === TYPES.GOAL) {
+                PLAYER.floor = (PLAYER.floor || 1) + 1;
+                PLAYER.exp += 20;
+                log("Descending deeper...");
+                initMap();
+            }
+
+            enemyTurn();
+            updateUI();
+            draw();
+        }
+
+        function enemyTurn() {
+            ENTITIES.forEach(e => {
+                let dx = Math.sign(PLAYER.x - e.x);
+                let dy = Math.sign(PLAYER.y - e.y);
+
+                if (Math.abs(PLAYER.x - e.x) + Math.abs(PLAYER.y - e.y) === 1) {
+                    PLAYER.hp -= e.atk;
+                    log(`Enemy hits you for ${e.atk}!`);
+                } else if (Math.random() > 0.5) {
+                    let nx = e.x + dx;
+                    let ny = e.y + dy;
+                    if (nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT && MAP[ny][nx] !== TYPES.WALL) {
+                        if (!(nx === PLAYER.x && ny === PLAYER.y)) {
+                            e.x = nx;
+                            e.y = ny;
+                        }
+                    }
+                }
+            });
+
+            if (PLAYER.hp <= 0) {
+                log("GAME OVER. Refresh to restart.");
+                PLAYER.hp = 0;
+                window.removeEventListener('keydown', handleKey);
+            }
+        }
+
+        function handleKey(e) {
+            switch(e.key.toLowerCase()) {
+                case 'w': movePlayer(0, -1); break;
+                case 's': movePlayer(0, 1); break;
+                case 'a': movePlayer(-1, 0); break;
+                case 'd': movePlayer(1, 0); break;
+            }
+        }
+
+        window.addEventListener('keydown', handleKey);
+        initMap();
+        updateUI();
+        draw();
+    </script>
+</body>
+</html>

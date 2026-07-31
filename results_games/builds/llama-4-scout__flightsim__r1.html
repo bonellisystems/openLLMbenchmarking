@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Flight Simulator</title>
+  <style>
+    body { margin: 0; }
+    canvas { width: 100%; height: 100vh; display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!ctx) alert('WebGL not supported');
+
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    ctx.viewport(0, 0, canvas.width, canvas.height);
+
+    const scene = {};
+    scene.camera = { x: 0, y: 10, z: 20 };
+    scene.rotation = { x: 0, y: 0 };
+    scene.skyscrapers = [];
+
+    for (let i = 0; i < 100; i++) {
+      scene.skyscrapers.push({
+        x: Math.random() * 100 - 50,
+        z: Math.random() * 100 - 50,
+        height: Math.random() * 10 + 5,
+      });
+    }
+
+    const renderer = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.enable(ctx.DEPTH_TEST);
+
+      const fov = 45;
+      const near = 1;
+      const far = 1000;
+      const aspect = canvas.width / canvas.height;
+      const perspectiveMatrix = [
+        1 / Math.tan(fov * Math.PI / 360), 0, 0, 0,
+        0, 1 / Math.tan(fov * Math.PI / 360), 0, 0,
+        0, 0, far / (far - near), 1,
+        0, 0, -(far * near) / (far - near), 0,
+      ];
+
+      const cameraMatrix = [
+        1, 0, 0, 0,
+        0, Math.cos(scene.rotation.x), -Math.sin(scene.rotation.x), 0,
+        0, Math.sin(scene.rotation.x), Math.cos(scene.rotation.x), 0,
+        0, 0, 0, 1,
+      ];
+
+      const viewMatrix = [
+        1, 0, 0, -scene.camera.x,
+        0, 1, 0, -scene.camera.y,
+        0, 0, 1, -scene.camera.z,
+        0, 0, 0, 1,
+      ];
+
+      const projectionMatrix = [
+        perspectiveMatrix[0] / aspect, perspectiveMatrix[1], perspectiveMatrix[2], perspectiveMatrix[3],
+        perspectiveMatrix[4], perspectiveMatrix[5] / aspect, perspectiveMatrix[6], perspectiveMatrix[7],
+        perspectiveMatrix[8], perspectiveMatrix[9], perspectiveMatrix[10], perspectiveMatrix[11],
+        perspectiveMatrix[12], perspectiveMatrix[13], perspectiveMatrix[14], perspectiveMatrix[15],
+      ];
+
+      const mvpMatrix = multiplyMatrices(multiplyMatrices(projectionMatrix, viewMatrix), cameraMatrix);
+
+      ctx.clearColor(0.2, 0.2, 0.2, 1);
+      ctx.clear(ctx.COLOR_BUFFER_BIT | ctx.DEPTH_BUFFER_BIT);
+
+      for (const skyscraper of scene.skyscrapers) {
+        const vertices = [
+          -1, -1,  1,
+           1, -1,  1,
+           1,  skyscraper.height,  1,
+          -1,  skyscraper.height,  1,
+
+          -1, -1, -1,
+           1, -1, -1,
+           1,  skyscraper.height, -1,
+          -1,  skyscraper.height, -1,
+        ];
+
+        const indices = [
+          0, 1, 2,  0, 2, 3,
+          1, 5, 6,  1, 6, 2,
+          5, 4, 7,  5, 7, 6,
+          4, 0, 3,  4, 3, 7,
+          4, 5, 1,  4, 1, 0,
+          3, 2, 6,  3, 6, 7,
+        ];
+
+        const vertexBuffer = ctx.createBuffer();
+        ctx.bindBuffer(ctx.ARRAY_BUFFER, vertexBuffer);
+        ctx.bufferData(ctx.ARRAY_BUFFER, new Float32Array(vertices), ctx.STATIC_DRAW);
+
+        const indexBuffer = ctx.createBuffer();
+        ctx.bindBuffer(ctx.ELEMENT_ARRAY_BUFFER, indexBuffer);
+        ctx.bufferData(ctx.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), ctx.STATIC_DRAW);
+
+        const vshader = `
+          attribute vec3 position;
+          uniform mat4 mvp;
+          void main() {
+            gl_Position = mvp * vec4(position.x + ${skyscraper.x}, position.y, position.z + ${skyscraper.z}, 1.0);
+          }
+        `;
+
+        const fshader = `
+          void main() {
+            gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+          }
+        `;
+
+        const vertexShader = ctx.createShader(ctx.VERTEX_SHADER);
+        ctx.shaderSource(vertexShader, vshader);
+        ctx.compileShader(vertexShader);
+
+        const fragmentShader = ctx.createShader(ctx.FRAGMENT_SHADER);
+        ctx.shaderSource(fragmentShader, fshader);
+        ctx.compileShader(fragmentShader);
+
+        const program = ctx.createProgram();
+        ctx.attachShader(program, vertexShader);
+        ctx.attachShader(program, fragmentShader);
+        ctx.linkProgram(program);
+        ctx.useProgram(program);
+
+        const positionAttrib = ctx.getAttribLocation(program, 'position');
+        ctx.vertexAttribPointer(positionAttrib, 3, ctx.FLOAT, false, 0, 0);
+        ctx.enableVertexAttribArray(positionAttrib);
+
+        const mvpUniform = ctx.getUniformLocation(program, 'mvp');
+        ctx.uniformMatrix4fv(mvpUniform, false, mvpMatrix);
+
+        ctx.drawElements(ctx.TRIANGLES, indices.length, ctx.UNSIGNED_SHORT, 0);
+      }
+    };
+
+    const handleKeyDown = (e) => {
+      switch (e.key) {
+        case 'ArrowUp':
+          scene.camera.z -= 1;
+          break;
+        case 'ArrowDown':
+          scene.camera.z += 1;
+          break;
+        case 'ArrowLeft':
+          scene.camera.x -= 1;
+          break;
+        case 'ArrowRight':
+          scene.camera.x += 1;
+          break;
+        case 'w':
+        case 'W':
+          scene.rotation.x -= 0.1;
+          break;
+        case 's':
+        case 'S':
+          scene.rotation.x += 0.1;
+          break;
+        case 'a':
+        case 'A':
+          scene.rotation.y -= 0.1;
+          break;
+        case 'd':
+        case 'D':
+          scene.rotation.y += 0.1;
+          break;
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    const multiplyMatrices = (a, b) => {
+      const result = [];
+      for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+          result.push(
+            a[i * 4 + 0] * b[0 * 4 + j] +
+            a[i * 4 + 1] * b[1 * 4 + j] +
+            a[i * 4 + 2] * b[2 * 4 + j] +
+            a[i * 4 + 3] * b[3 * 4 + j]
+          );
+        }
+      }
+      return result;
+    };
+
+    setInterval(renderer, 1000 / 60);
+  </script>
+</body>
+</html>

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#ccc;font-family:monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;overflow:hidden}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{line-height:1.15;font-size:16px;letter-spacing:2px;white-space:pre;user-select:none}
+#hud{margin-top:8px;font-size:14px;color:#aaa;text-align:center}
+#msg{margin-top:4px;font-size:13px;color:#888;min-height:1.5em;text-align:center}
+span.wall{color:#555}
+span.floor{color:#333}
+span.player{color:#ff0;font-weight:bold}
+span.enemy{color:#f44}
+span.item{color:#4f4}
+span.stairs{color:#ff4}
+span.seen{color:#666}
+span.gold{color:#fd0}
+span.potion{color:#f4f}
+span.msg{color:#aaf}
+</style>
+</head>
+<body>
+<div id="game">
+<pre id="map"></pre>
+<div id="hud"></div>
+<div id="msg"></div>
+</div>
+<script>
+const W=50,H=25,MAX_ROOMS=10,MIN_R=4,MAX_R=8;
+const T_WALL=0,T_FLOOR=1;
+let grid,rooms,player,enemies,items,stairs,seen,level,msgs,gameOver;
+let px,py,ehp,eatk,emax;
+
+function rng(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+
+function init(){
+  level=1;player={hp:30,maxHp:30,atk:4,def:1,x:0,y:0,gold:0};
+  gameOver=false;msgs=[];
+  generateLevel();
+  render();
+}
+
+function generateLevel(){
+  grid=[];for(let y=0;y<H;y++){grid[y]=[];for(let x=0;x<W;x++)grid[y][x]=T_WALL}
+  seen=[];for(let y=0;y<H;y++){seen[y]=[];for(let x=0;x<W;x++)seen[y][x]=false}
+  rooms=[];
+  for(let i=0;i<MAX_ROOMS*2&&rooms.length<MAX_ROOMS;i++){
+    let rw=rng(MIN_R,MAX_R),rh=rng(MIN_R,MAX_R);
+    let rx=rng(1,W-rw-1),ry=rng(1,H-rh-1);
+    let ok=true;
+    for(let r of rooms){
+      if(rx<r.x+r.w+1&&rx+rw>r.x-1&&ry<r.y+r.h+1&&ry+rh>r.y-1){ok=false;break}
+    }
+    if(ok){
+      let room={x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)};
+      for(let dy=0;dy<rh;dy++)for(let dx=0;dx<rw;dx++)grid[ry+dy][rx+dx]=T_FLOOR;
+      rooms.push(room);
+    }
+  }
+  for(let i=1;i<rooms.length;i++){
+    let a=rooms[i-1],b=rooms[i];
+    carveCorridor(a.cx,a.cy,b.cx,b.cy);
+  }
+  player.x=rooms[0].cx;player.y=rooms[0].cy;
+  stairs={x:rooms[rooms.length-1].cx,y:rooms[rooms.length-1].cy};
+  enemies=[];items=[];
+  for(let i=1;i<rooms.length;i++){
+    let r=rooms[i];
+    let ne=rng(1,3);
+    for(let j=0;j<ne;j++){
+      let ex=rng(r.x,r.x+r.w-1),ey=rng(r.y,r.y+r.h-1);
+      if(grid[ey][ex]===T_FLOOR&&!(ex===player.x&&ey===player.y)){
+        let s=level*0.5;
+        enemies.push({x:ex,y:ey,hp:rng(3+level,6+level*2),atk:rng(1+level,2+level),
+          ch:['g','o','r','t','b'][rng(0,4)],name:['Goblin','Orc','Rat','Troll','Bat'][rng(0,4)]});
+      }
+    }
+    if(Math.random()<0.5){
+      let ix=rng(r.x,r.x+r.w-1),iy=rng(r.y,r.y+r.h-1);
+      if(grid[iy][ix]===T_FLOOR){
+        items.push({x:ix,y:iy,type:Math.random()<0.6?'gold':'potion',
+          ch:Math.random()<0.6?'$':'!',val:Math.random()<0.6?rng(5,15+level*5):rng(5,15)});
+      }
+    }
+  }
+  updateSeen();
+}
+
+function carveCorridor(x1,y1,x2,y2){
+  let x=x1,y=y1;
+  while(x!==x2){x+=x<x2?1:-1;if(grid[y][x]===T_WALL)grid[y][x]=T_FLOOR}
+  while(y!==y2){y+=y<y2?1:-1;if(grid[y][x]===T_WALL)grid[y][x]=T_FLOOR}
+}
+
+function updateSeen(){
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)seen[y][x]=false;
+  for(let dy=-5;dy<=5;dy++)for(let dx=-5;dx<=5;dx++){
+    let nx=player.x+dx,ny=player.y+dy;
+    if(nx>=0&&nx<W&&ny>=0&&ny<H&&Math.abs(dx)+Math.abs(dy)<=6)seen[ny][nx]=true;
+  }
+}
+
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)}
+
+function moveEnemy(e){
+  if(dist(e,player)>7)return;
+  let dx=Math.sign(player.x-e.x),dy=Math.sign(player.y-e.y);
+  let mx=dx,my=0;
+  let alt={mx:0,my:dy};
+  if(Math.abs(player.y-e.y)>Math.abs(player.x-e.x)){mx=0;my=dy;alt={mx:dx,my:0}}
+  let nx=e.x+mx,ny=e.y+my;
+  if(canMove(nx,ny)){e.x=nx;e.y=ny}
+  else{nx=e.x+alt.mx;ny=e.y+alt.my;if(canMove(nx,ny)){e.x=nx;e.y=ny}}
+  if(e.x===player.x&&e.y===player.y){
+    let dmg=Math.max(1,e.atk-player.def+rng(0,1));
+    player.hp-=dmg;
+    msgs.push(e.name+' hits you for '+dmg+'!');
+    if(player.hp<=0){player.hp=0;gameOver=true;msgs.push('You died! Press R to restart.');}
+  }
+}
+
+function canMove(x,y){
+  if(x<0||x>=W||y<0||y>=H||grid[y][x]===T_WALL)return false;
+  for(let e of enemies)if(e.x===x&&e.y===y)return false;
+  return true;
+}
+
+function movePlayer(dx,dy){
+  if(gameOver)return;
+  let nx=player.x+dx,ny=player.y+dy;
+  if(!canMove(nx,ny)){
+    for(let e of enemies){
+      if(e.x===nx&&e.y===ny){
+        let dmg=Math.max(1,player.atk+rng(0,2)-Math.floor(level/3));
+        e.hp-=dmg;
+        msgs.push('You hit '+e.name+' for '+dmg+'!');
+        if(e.hp<=0){msgs.push(e.name+' dies!');enemies=enemies.filter(e2=>e2!==e)}
+        break;
+      }
+    }
+    return;
+  }
+  player.x=nx;player.y=ny;
+  for(let i=items.length-1;i>=0;i--){
+    if(items[i].x===nx&&items[i].y===ny){
+      let it=items[i];
+      if(it.type==='gold'){player.gold+=it.val;msgs.push('Picked up '+it.val+' gold!')}
+      else{let heal=it.val;player.hp=Math.min(player.maxHp,player.hp+heal);msgs.push('Drank potion! +'+heal+' HP')}
+      items.splice(i,1);
+    }
+  }
+  if(player.x===stairs.x&&player.y===stairs.y){
+    level++;msgs.push('Descended to level '+level+'!');
+    generateLevel();
+  }
+  for(let e of enemies)moveEnemy(e);
+  updateSeen();
+}
+
+function render(){
+  let html='';
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      let visible=seen[y][x];
+      if(!visible){html+='<span class="wall"> </span>';continue}
+      if(x===player.x&&y===player.y){html+='<span class="player">@</span>';continue}
+      let e=enemies.find(e=>e.x===x&&e.y===y);
+      if(e){html+='<span class="enemy">'+e.ch+'</span>';continue}
+      let it=items.find(i=>i.x===x&&i.y===y);
+      if(it){html+='<span class="'+(it.type==='gold'?'gold':'potion')+'">'+it.ch+'</span>';continue}
+      if(x===stairs.x&&y===stairs.y){html+='<span class="stairs">></span>';continue}
+      if(grid[y][x]===T_WALL){html+='<span class="wall">#</span>'}
+      else{html+='<span class="floor">.</span>'}
+    }
+    html+='\n';
+  }
+  document.getElementById('map').innerHTML=html;
+  let hud='Level '+level+' | HP '+player.hp+'/'+player.maxHp+' | ATK '+player.atk+' | DEF '+player.def+' | Gold '+player.gold;
+  if(gameOver)hud+=' | GAME OVER';
+  document.getElementById('hud').textContent=hud;
+  let m=msgs.slice(-3).join(' ');
+  document.getElementById('msg').textContent=m;
+}
+
+document.addEventListener('keydown',function(ev){
+  if(gameOver){if(ev.key.toLowerCase()==='r')init();return}
+  let dx=0,dy=0;
+  switch(ev.key){
+    case'ArrowUp':case'w':case'W':dy=-1;break;
+    case'ArrowDown':case's':case'S':dy=1;break;
+    case'ArrowLeft':case'a':case'A':dx=-1;break;
+    case'ArrowRight':case'd':case'D':dx=1;break;
+    case' ':case'.':case',':return;
+    default:return;
+  }
+  ev.preventDefault();
+  movePlayer(dx,dy);
+  render();
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Tiny Roguelike</title>
+    <style>
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+        #ui {
+            margin-bottom: 10px;
+            font-size: 20px;
+            width: 400px;
+            display: flex;
+            justify-content: space-between;
+        }
+        #game {
+            white-space: pre;
+            line-height: 1.1;
+            font-size: 18px;
+            background: #000;
+            padding: 10px;
+            border: 2px solid #0f0;
+        }
+        .msg {
+            color: #ff0;
+            margin-top: 10px;
+            height: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <span id="hp">HP: 20</span>
+        <span id="status">Find the X!</span>
+    </div>
+    <div id="game"></div>
+    <div id="msg" class="msg"></div>
+
+    <script>
+        const W = 40, H = 20;
+        let map = [];
+        let player = { x: 0, y: 0, hp: 20 };
+        let enemies = [];
+        let goal = { x: 0, y: 0 };
+        let gameState = 'play';
+
+        function init() {
+            map = Array.from({ length: H }, () => Array(W).fill('#'));
+            const rooms = [];
+            
+            for (let i = 0; i < 8; i++) {
+                const rw = Math.floor(Math.random() * 4) + 3;
+                const rh = Math.floor(Math.random() * 4) + 3;
+                const rx = Math.floor(Math.random() * (W - rw - 1)) + 1;
+                const ry = Math.floor(Math.random() * (H - rh - 1)) + 1;
+                
+                let overlap = false;
+                for (const r of rooms) {
+                    if (!(rx + rw < r.x || rx > r.x + r.w || ry + rh < r.y || ry > r.y + r.h)) {
+                        overlap = true;
+                        break;
+                    }
+                }
+                
+                if (!overlap) {
+                    for (let y = ry; y < ry + rh; y++) {
+                        for (let x = rx; x < rx + rw; x++) map[y][x] = '.';
+                    }
+                    rooms.push({ x: rx, y: ry, w: rw, h: rh });
+                }
+            }
+
+            for (let i = 0; i < rooms.length - 1; i++) {
+                let x1 = Math.floor(rooms[i].x + rooms[i].w / 2);
+                let y1 = Math.floor(rooms[i].y + rooms[i].h / 2);
+                let x2 = Math.floor(rooms[i+1].x + rooms[i+1].w / 2);
+                let y2 = Math.floor(rooms[i+1].y + rooms[i+1].h / 2);
+                
+                let cx = x1, cy = y1;
+                while (cx !== x2) { map[cy][cx] = '.'; cx += Math.sign(x2 - cx); }
+                while (cy !== y2) { map[cy][cx] = '.'; cy += Math.sign(y2 - cy); }
+            }
+
+            player.x = Math.floor(rooms[0].x + rooms[0].w / 2);
+            player.y = Math.floor(rooms[0].y + rooms[0].h / 2);
+            goal.x = Math.floor(rooms[rooms.length-1].x + rooms[rooms.length-1].w / 2);
+            goal.y = Math.floor(rooms[rooms.length-1].y + rooms[rooms.length-1].h / 2);
+
+            for (let i = 0; i < 5; i++) {
+                let ex, ey;
+                do {
+                    ex = Math.floor(Math.random() * W);
+                    ey = Math.floor(Math.random() * H);
+                } while (map[ey][ex] !== '.' || (ex === player.x && ey === player.y));
+                enemies.push({ x: ex, y: ey, hp: 3 });
+            }
+            render();
+        }
+
+        function render() {
+            let view = map.map(row => [...row]);
+            view[goal.y][goal.x] = 'X';
+            enemies.forEach(e => view[e.y][e.x] = 'E');
+            view[player.y][player.x] = '@';
+            
+            document.getElementById('game').innerText = view.map(r => r.join('')).join('\n');
+            document.getElementById('hp').innerText = `HP: ${player.hp}`;
+        }
+
+        function moveEnemies() {
+            enemies.forEach(e => {
+                let dx = player.x - e.x;
+                let dy = player.y - e.y;
+                let nx = e.x, ny = e.y;
+                
+                if (Math.abs(dx) > Math.abs(dy)) nx += Math.sign(dx);
+                else ny += Math.sign(dy);
+
+                if (map[ny] && map[ny][nx] === '.') {
+                    if (nx === player.x && ny === player.y) {
+                        player.hp -= 1;
+                        document.getElementById('msg').innerText = "Enemy hits you!";
+                    } else {
+                        e.x = nx; e.y = ny;
+                    }
+                } else {
+                    // Try other axis
+                    nx = e.x; ny = e.y;
+                    if (Math.abs(dx) > Math.abs(dy)) ny += Math.sign(dy);
+                    else nx += Math.sign(dx);
+                    if (map[ny] && map[ny][nx] === '.') {
+                        if (nx === player.x && ny === player.y) {
+                            player.hp -= 1;
+                            document.getElementById('msg').innerText = "Enemy hits you!";
+                        } else {
+                            e.x = nx; e.y = ny;
+                        }
+                    }
+                }
+            });
+        }
+
+        window.addEventListener('keydown', e => {
+            if (gameState !== 'play') return;
+            
+            let dx = 0, dy = 0;
+            if (e.key === 'ArrowUp' || e.key === 'w') dy = -1;
+            else if (e.key === 'ArrowDown' || e.key === 's') dy = 1;
+            else if (e.key === 'ArrowLeft' || e.key === 'a') dx = -1;
+            else if (e.key === 'ArrowRight' || e.key === 'd') dx = 1;
+            else return;
+
+            e.preventDefault();
+            
+            const nx = player.x + dx;
+            const ny = player.y + dy;
+
+            if (nx < 0 || nx >= W || ny < 0 || ny >= H || map[ny][nx] === '#') return;
+
+            const enemyIdx = enemies.findIndex(e => e.x === nx && e.y === ny);
+            if (enemyIdx !== -1) {
+                enemies[enemyIdx].hp -= 1;
+                document.getElementById('msg').innerText = "You hit the enemy!";
+                if (enemies[enemyIdx].hp <= 0) enemies.splice(enemyIdx, 1);
+            } else {
+                player.x = nx;
+                player.y = ny;
+                document.getElementById('msg').innerText = "";
+            }
+
+            if (player.x === goal.x && player.y === goal.y) {
+                gameState = 'win';
+                document.getElementById('status').innerText = "YOU ESCAPED!";
+                document.getElementById('msg').innerText = "Press F5 to restart";
+            }
+
+            moveEnemies();
+
+            if (player.hp <= 0) {
+                gameState = 'lost';
+                document.getElementById('status').innerText = "YOU DIED";
+                document.getElementById('msg').innerText = "Press F5 to restart";
+            }
+
+            render();
+        });
+
+        init();
+    </script>
+</body>
+</html>

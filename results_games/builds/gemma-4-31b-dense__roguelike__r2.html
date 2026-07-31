@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tiny Roguelike</title>
+    <style>
+        body {
+            background: #000;
+            color: #0f0;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+        #game {
+            line-height: 1;
+            font-size: 18px;
+            white-space: pre;
+        }
+        #ui {
+            margin-top: 10px;
+            font-size: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="game"></div>
+    <div id="ui">HP: 20 | Find the Goal (G)</div>
+    <script>
+        const WIDTH = 30;
+        const HEIGHT = 20;
+        let map = [];
+        let player = { x: 0, y: 0, hp: 20 };
+        let enemies = [];
+        let goal = { x: 0, y: 0 };
+        let gameState = 'PLAYING';
+
+        function init() {
+            map = Array(HEIGHT).fill().map(() => Array(WIDTH).fill('#'));
+            const rooms = [];
+            for (let i = 0; i < 6; i++) {
+                const w = Math.floor(Math.random() * 4) + 3;
+                const h = Math.floor(Math.random() * 4) + 3;
+                const x = Math.floor(Math.random() * (WIDTH - w - 1)) + 1;
+                const y = Math.floor(Math.random() * (HEIGHT - h - 1)) + 1;
+                
+                for (let ry = y; ry < y + h; ry++) {
+                    for (let rx = x; rx < x + w; rx++) {
+                        map[ry][rx] = '.';
+                    }
+                }
+                rooms.push({ x: x + Math.floor(w/2), y: y + Math.floor(h/2), x1: x, y1: y, x2: x+w-1, y2: y+h-1 });
+            }
+
+            for (let i = 0; i < rooms.length - 1; i++) {
+                let r1 = rooms[i], r2 = rooms[i+1];
+                let cx = r1.x, cy = r1.y;
+                while (cx !== r2.x) {
+                    map[cy][cx] = '.';
+                    cx += cx < r2.x ? 1 : -1;
+                }
+                while (cy !== r2.y) {
+                    map[cy][cx] = '.';
+                    cy += cy < r2.y ? 1 : -1;
+                }
+            }
+
+            player.x = rooms[0].x;
+            player.y = rooms[0].y;
+            goal.x = rooms[rooms.length-1].x;
+            goal.y = rooms[rooms.length-1].y;
+
+            for (let i = 1; i < rooms.length - 1; i++) {
+                enemies.push({ x: rooms[i].x, y: rooms[i].y, hp: 3 });
+            }
+            render();
+        }
+
+        function render() {
+            let display = "";
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    let char = map[y][x];
+                    if (x === player.x && y === player.y) char = '@';
+                    else if (x === goal.x && y === goal.y) char = 'G';
+                    else {
+                        const enemy = enemies.find(e => e.x === x && e.y === y);
+                        if (enemy) char = 'E';
+                    }
+                    display += char;
+                }
+                display += "\n";
+            }
+            document.getElementById('game').innerText = display;
+            document.getElementById('ui').innerText = `HP: ${player.hp} | Find the Goal (G)`;
+            if (gameState === 'WIN') document.getElementById('ui').innerText = "YOU WIN! Press R to restart.";
+            if (gameState === 'GAMEOVER') document.getElementById('ui').innerText = "YOU DIED! Press R to restart.";
+        }
+
+        function moveEnemy(e) {
+            let dx = player.x - e.x;
+            let dy = player.y - e.y;
+            let nx = e.x + (dx !== 0 ? Math.sign(dx) : 0);
+            let ny = e.y + (dy !== 0 ? Math.sign(dy) : 0);
+
+            if (nx === player.x && ny === player.y) {
+                player.hp -= 1;
+            } else if (map[ny] && map[ny][nx] === '.') {
+                if (!enemies.some(other => other !== e && other.x === nx && other.y === ny)) {
+                    e.x = nx;
+                    e.y = ny;
+                }
+            } else {
+                // Try moving only X or only Y
+                if (map[e.y][nx] === '.' && !enemies.some(other => other !== e && other.x === nx && other.y === e.y)) {
+                    e.x = nx;
+                } else if (map[ny][e.x] === '.' && !enemies.some(other => other !== e && other.x === e.x && other.y === ny)) {
+                    e.y = ny;
+                }
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (gameState !== 'PLAYING') {
+                if (e.key.toLowerCase() === 'r') {
+                    player.hp = 20;
+                    gameState = 'PLAYING';
+                    init();
+                }
+                return;
+            }
+
+            let dx = 0, dy = 0;
+            if (e.key === 'ArrowUp' || e.key === 'w') dy = -1;
+            else if (e.key === 'ArrowDown' || e.key === 's') dy = 1;
+            else if (e.key === 'ArrowLeft' || e.key === 'a') dx = -1;
+            else if (e.key === 'ArrowRight' || e.key === 'd') dx = 1;
+            else return;
+
+            const nx = player.x + dx;
+            const ny = player.y + dy;
+
+            if (nx >= 0 && nx < WIDTH && ny >= 0 && ny < HEIGHT) {
+                const enemy = enemies.find(en => en.x === nx && en.y === ny);
+                if (enemy) {
+                    enemy.hp -= 1;
+                    if (enemy.hp <= 0) {
+                        enemies = enemies.filter(en => en !== enemy);
+                    }
+                } else if (map[ny][nx] === '.') {
+                    player.x = nx;
+                    player.y = ny;
+                }
+            }
+
+            if (player.x === goal.x && player.y === goal.y) {
+                gameState = 'WIN';
+            }
+
+            enemies.forEach(moveEnemy);
+            if (player.hp <= 0) gameState = 'GAMEOVER';
+            render();
+        });
+
+        init();
+    </script>
+</body>
+</html>

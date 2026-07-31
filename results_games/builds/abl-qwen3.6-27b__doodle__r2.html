@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Doodle Jump</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #000;
+display: flex;
+justify-content: center;
+align-items: center;
+height: 100vh;
+overflow: hidden;
+font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+canvas {
+border: 2px solid #333;
+border-radius: 8px;
+box-shadow: 0 0 30px rgba(0, 255, 0, 0.2);
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+canvas.width = 400;
+canvas.height = 600;
+
+const GRAVITY = 0.45;
+const JUMP_FORCE = -12;
+const MOVE_SPEED = 6;
+const PLATFORM_WIDTH = 70;
+const PLATFORM_HEIGHT = 15;
+const PLAYER_SIZE = 30;
+
+let player, platforms, score, highScore, gameOver, keys, cameraY, particles, springs, monsters;
+
+highScore = 0;
+
+function init() {
+    player = {
+        x: canvas.width / 2 - PLAYER_SIZE / 2,
+        y: canvas.height - 100,
+        vy: 0,
+        vx: 0,
+        width: PLAYER_SIZE,
+        height: PLAYER_SIZE,
+        facing: 1,
+        jumpCount: 0
+    };
+    platforms = [];
+    particles = [];
+    springs = [];
+    monsters = [];
+    score = 0;
+    gameOver = false;
+    cameraY = 0;
+    keys = {};
+
+    // Generate initial platforms
+    for (let i = 0; i < 15; i++) {
+        platforms.push({
+            x: Math.random() * (canvas.width - PLATFORM_WIDTH),
+            y: canvas.height - 80 - i * 80,
+            width: PLATFORM_WIDTH,
+            height: PLATFORM_HEIGHT,
+            type: Math.random() < 0.15 ? 'moving' : (Math.random() < 0.1 ? 'fragile' : 'normal'),
+            moveDir: Math.random() < 0.5 ? 1 : -1,
+            moveSpeed: 1 + Math.random() * 2,
+            broken: false,
+            breakTimer: 0
+        });
+    }
+
+    // Ensure a platform directly under the player at start
+    platforms[0].x = canvas.width / 2 - PLATFORM_WIDTH / 2;
+    platforms[0].y = canvas.height - 60;
+    platforms[0].type = 'normal';
+}
+
+function generatePlatform(y) {
+    const difficulty = Math.min(score / 5000, 1);
+    const typeRoll = Math.random();
+    let type = 'normal';
+
+    if (typeRoll < 0.1 + difficulty * 0.15) {
+        type = 'moving';
+    } else if (typeRoll < 0.15 + difficulty * 0.15) {
+        type = 'fragile';
+    }
+
+    const platform = {
+        x: Math.random() * (canvas.width - PLATFORM_WIDTH),
+        y: y,
+        width: PLATFORM_WIDTH,
+        height: PLATFORM_HEIGHT,
+        type: type,
+        moveDir: Math.random() < 0.5 ? 1 : -1,
+        moveSpeed: 1 + Math.random() * (1 + difficulty * 2),
+        broken: false,
+        breakTimer: 0
+    };
+
+    // Add spring to some platforms
+    if (Math.random() < 0.08 && type === 'normal') {
+        springs.push({
+            x: platform.x + platform.width / 2 - 8,
+            y: platform.y - 12,
+            width: 16,
+            height: 12,
+            active: true
+        });
+    }
+
+    // Add monsters at higher scores
+    if (score > 2000 && Math.random() < 0.04 + difficulty * 0.06) {
+        monsters.push({
+            x: Math.random() * (canvas.width - 30),
+            y: y - 40,
+            width: 30,
+            height: 30,
+            vx: (Math.random() < 0.5 ? -1 : 1) * (1 + Math.random() * 2),
+            alive: true
+        });
+    }
+
+    return platform;
+}
+
+function spawnParticle(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x: x,
+            y: y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            life: 1,
+            decay: 0.02 + Math.random() * 0.03,
+            size: 2 + Math.random() * 4,
+            color: color
+        });
+    }
+}
+
+function update() {
+    if (gameOver) {
+        if (keys[' '] || keys['Enter']) {
+            init();
+        }
+        return;
+    }
+
+    // Player horizontal movement
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+        player.vx = -MOVE_SPEED;
+        player.facing = -1;
+    } else if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+        player.vx = MOVE_SPEED;
+        player.facing = 1;
+    } else {
+        player.vx *= 0.8;
+    }
+
+    player.x += player.vx;
+
+    // Screen wrapping
+    if (player.x + player.width < 0) player.x = canvas.width;
+    if (player.x > canvas.width) player.x = -player.width;
+
+    // Gravity
+    player.vy += GRAVITY;
+    player.y += player.vy;
+
+    // Camera follows player upward
+    const cameraThreshold = canvas.height * 0.4;
+    if (player.y < cameraThreshold + cameraY) {
+        const diff = (cameraThreshold + cameraY) - player.y;
+        cameraY -= diff;
+        score += Math.floor(diff);
+
+        // Move platforms down
+        platforms.forEach(p => p.y += diff);
+        springs.forEach(s => s.y += diff);
+        monsters.forEach(m => m.y += diff);
+        particles.forEach(p => p.y += diff);
+
+        // Generate new platforms above
+        const highestPlatform = Math.min(...platforms.map(p => p.y));
+        while (highestPlatform > cameraY - 100) {
+            const gap = 50 + Math.random() * 60 + Math.min(score / 200, 40);
+            platforms.push(generatePlatform(highestPlatform - gap));
+            break;
+        }
+
+        // Remove platforms below screen
+        platforms = platforms.filter(p => p.y < cameraY + canvas.height + 50);
+        springs = springs.filter(s => s.y < cameraY + canvas.height + 50);
+        monsters = monsters.filter(m => m.y < cameraY + canvas.height + 50);
+    }
+
+    // Platform collision (only when falling)
+    if (player.vy > 0) {
+        platforms.forEach(platform => {
+            if (platform.broken) return;
+
+            const playerBottom = player.y + player.height;
+            const prevBottom = playerBottom - player.vy;
+
+            if (
+                player.x + player.width > platform.x &&
+                player.x < platform.x + platform.width &&
+                playerBottom >= platform.y &&
+                prevBottom <= platform.y + platform.height + 5
+            ) {
+                if (platform.type === 'fragile') {
+                    platform.broken = true;
+                    platform.breakTimer = 10;
+                    spawnParticle(platform.x + platform.width / 2, platform.y, '#ffaa00', 8);
+                }
+
+                player.y = platform.y - player.height;
+
+                // Check for spring
+                let onSpring = false;
+                springs.forEach(spring => {
+                    if (
+                        player.x + player.width > spring.x &&
+                        player.x < spring.x + spring.width &&
+                        playerBottom >= spring.y &&
+                        playerBottom <= spring.y + spring.height + 5
+                    ) {
+                        player.vy = JUMP_FORCE * 1.8;
+                        onSpring = true;
+                        spawnParticle(spring.x + spring.width / 2, spring.y, '#00ffff', 6);
+                    }
+                });
+
+                if (!onSpring) {
+                    player.vy = JUMP_FORCE;
+                    spawnParticle(player.x + player.width / 2, player.y + player.height, '#90ee90', 4);
+                }
+            }
+        });
+    }
+
+    // Update moving platforms
+    platforms.forEach(p => {
+        if (p.type === 'moving') {
+            p.x += p.moveDir * p.moveSpeed;
+            if (p.x <= 0 || p.x + p.width >= canvas.width) {
+                p.moveDir *= -1;
+            }
+        }
+        if (p.broken && p.breakTimer > 0) {
+            p.breakTimer--;
+        }
+    });
+
+    // Update monsters
+    monsters.forEach(m => {
+        if (!m.alive) return;
+        m.x += m.vx;
+        if (m.x <= 0 || m.x + m.width >= canvas.width) {
+            m.vx *= -1;
+        }
+
+        // Collision with player
+        if (
+            player.x + player.width > m.x &&
+            player.x < m.x + m.width &&
+            player.y + player.height > m.y &&
+            player.y < m.y + m.height
+        ) {
+            // If player is falling onto monster, stomp it
+            if (player.vy > 0 && player.y + player.height - player.vy <= m.y + 5) {
+                m.alive = false;
+                player.vy = JUMP_FORCE;
+                spawnParticle(m.x + m.width / 2, m.y + m.height / 2, '#ff4444', 12);
+                score += 500;
+            } else {
+                // Player dies
+                gameOver = true;
+                if (score > highScore) highScore = score;
+                spawnParticle(player.x + player.width / 2, player.y + player.height / 2, '#ff0000', 20);
+            }
+        }
+    });
+
+    // Update particles
+    particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= p.decay;
+        p.vy += 0.1;
+    });
+    particles = particles.filter(p => p.life > 0);
+
+    // Game over - fell below screen
+    if (player.y > cameraY + canvas.height + 50) {
+        gameOver = true;
+        if (score > highScore) highScore = score;
+    }
+}
+
+function drawBackground() {
+    // Gradient background
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, '#e8f5e9');
+    gradient.addColorStop(0.5, '#c8e6c9');
+    gradient.addColorStop(1, '#a5d6a7');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Grid pattern (notebook paper style)
+    ctx.strokeStyle = 'rgba(0, 100, 0, 0.08)';
+    ctx.lineWidth = 1;
+    const gridSize = 30;
+    const offsetY = (-cameraY % gridSize + gridSize) % gridSize;
+    for (let y = offsetY; y < canvas.height; y += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+    }
+    for (let x = 0; x < canvas.width; x += gridSize) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+    }
+}
+
+function drawPlatform(platform) {
+    const screenY = platform.y - cameraY;
+    if (screenY < -20 || screenY > canvas.height + 20) return;
+
+    if (platform.broken && platform.breakTimer <= 0) return;
+
+    ctx.save();
+    if (platform.broken) {
+        ctx.globalAlpha = platform.breakTimer / 10;
+    }
+
+    // Platform shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.fillRect(platform.x + 3, screenY + 3, platform.width, platform.height);
+
+    // Platform body
+    let color;
+    if (platform.type === 'normal') color = '#4caf50';
+    else if (platform.type === 'moving') color = '#2196f3';
+    else if (platform.type === 'fragile') color = '#ff9800';
+
+    ctx.fillStyle = color;
+    ctx.fillRect(platform.x, screenY, platform.width, platform.height);
+
+    // Platform highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.fillRect(platform.x, screenY, platform.width, 4);
+
+    // Platform border
+    ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(platform.x, screenY, platform.width, platform.height);
+
+    ctx.restore();
+}
+
+function drawSpring(spring) {
+    const screenY = spring.y - cameraY;
+    if (screenY < -20 || screenY > canvas.height + 20) return;
+
+    // Spring base
+    ctx.fillStyle = '#ff5722';
+    ctx.fillRect(spring.x, screenY + spring.height - 4, spring.width, 4);
+
+    // Spring coil
+    ctx.strokeStyle = '#ffab40';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    const segments = 3;
+    for (let i = 0; i < segments; i++) {
+        const y1 = screenY + 2 + (i * (spring.height - 6) / segments);
+        const y2 = screenY + 2 + ((i + 1) * (spring.height - 6) / segments);
+        ctx.moveTo(spring.x + 2, y1);
+        ctx.lineTo(spring.x + spring.width - 2, y1 + (spring.height - 6) / segments / 2);
+        ctx.lineTo(spring.x + 2, y2);
+    }
+    ctx.stroke();
+
+    // Spring top
+    ctx.fillStyle = '#ff5722';
+    ctx.fillRect(spring.x - 2, screenY, spring.width + 4, 3);
+}
+
+function drawMonster(monster) {
+    if (!monster.alive) return;
+    const screenY = monster.y - cameraY;
+    if (screenY < -40 || screenY > canvas.height + 40) return;
+
+    // Body
+    ctx.fillStyle = '#e53935';
+    ctx.beginPath();
+    ctx.arc(monster.x + monster.width / 2, screenY + monster.height / 2, monster.width / 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(monster.x + 9, screenY + 10, 5, 0, Math.PI * 2);
+    ctx.arc(monster.x + 21, screenY + 10, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.arc(monster.x + 9 + monster.vx * 0.5, screenY + 10, 2.5, 0, Math.PI * 2);
+    ctx.arc(monster.x + 21 + monster.vx * 0.5, screenY + 10, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Mouth
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(monster.x + monster.width / 2, screenY + 20, 5, 0, Math.PI);
+    ctx.stroke();
+
+    // Spikes
+    ctx.fillStyle = '#c62828';
+    for (let i = 0; i < 5; i++) {
+        const angle = (i / 5) * Math.PI * 2 - Math.PI / 2;
+        const sx = monster.x + monster.width / 2 + Math.cos(angle) * (monster.width / 2 + 4);
+        const sy = screenY + monster.height / 2 + Math.sin(angle) * (monster.height / 2 + 4);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
+
+function drawPlayer() {
+    const screenY = player.y - cameraY;
+
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.15)';
+    ctx.beginPath();
+    ctx.ellipse(player.x + player.width / 2 + 2, screenY + player.height + 2, player.width / 2, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Body
+    ctx.fillStyle = '#7cb342';
+    ctx.beginPath();
+    ctx.roundRect(player.x, screenY, player.width, player.height, 8);
+    ctx.fill();
+
+    // Body highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    ctx.beginPath();
+    ctx.roundRect(player.x + 2, screenY + 2, player.width - 4, player.height / 2, 6);
+    ctx.fill();
+
+    // Eyes
+    const eyeOffsetX = player.facing * 3;
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.ellipse(player.x + 10 + eyeOffsetX, screenY + 10, 5, 6, 0, 0, Math.PI * 2);
+    ctx.ellipse(player.x + 20 + eyeOffsetX, screenY + 10, 5, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pupils
+    ctx.fillStyle = '#1b5e20';
+    ctx.beginPath();
+    ctx.arc(player.x + 10 + eyeOffsetX + player.facing * 2, screenY + 11, 2.5, 0, Math.PI * 2);
+    ctx.arc(player.x + 20 + eyeOffsetX + player.facing * 2, screenY + 11, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Mouth
+    ctx.strokeStyle = '#1b5e20';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (player.vy < 0) {
+        // Happy when going up
+        ctx.arc(player.x + player.width / 2, screenY + 20, 4, 0, Math.PI);
+    } else {
+        // Surprised when falling
+        ctx.arc(player.x + player.width / 2, screenY + 21, 3, 0, Math.PI * 2);
+    }
+    ctx.stroke();
+
+    // Feet
+    ctx.fillStyle = '#558b2f';
+    ctx.fillRect(player.x + 4, screenY + player.height - 2, 8, 4);
+    ctx.fillRect(player.x + player.width - 12, screenY + player.height - 2, 8, 4);
+}
+
+function drawParticles() {
+    particles.forEach(p => {
+        const screenY = p.y - cameraY;
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, screenY, p.size * p.life, 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+}
+
+function drawUI() {
+    // Score
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.font = 'bold 24px "Segoe UI", sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(score.toString(), 15, 35);
+
+    // High score
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.font = '14px "Segoe UI", sans-serif';
+    ctx.fillText('Best: ' + highScore, 15, 55);
+
+    // Game over screen
+    if (gameOver) {
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 42px "Segoe UI", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2 - 60);
+
+        ctx.font = '28px "Segoe UI", sans-serif';
+        ctx.fillText('Score: ' + score, canvas.width / 2, canvas.height / 2);
+
+        if (score >= highScore && score > 0) {
+            ctx.fillStyle = '#ffeb3b';
+            ctx.font = 'bold 22px "Segoe UI", sans-serif';
+            ctx.fillText('New High Score!', canvas.width / 2, canvas.height / 2 + 35);
+        }
+
+        ctx.fillStyle = '#fff';
+        ctx.font = '18px "Segoe UI", sans-serif';
+        ctx.fillText('Press SPACE or ENTER to restart', canvas.width / 2, canvas.height / 2 + 80);
+
+        ctx.textAlign = 'left';
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    drawBackground();
+
+    platforms.forEach(drawPlatform);
+    springs.forEach(drawSpring);
+    monsters.forEach(drawMonster);
+    drawParticles();
+    drawPlayer();
+    drawUI();
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// Keyboard input
+document.addEventListener('keydown', (e) => {
+    keys[e.key] = true;
+    // Prevent scrolling
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', ' '].includes(e.key)) {
+        e.preventDefault();
+    }
+});
+
+document.addEventListener('keyup', (e) => {
+    keys[e.key] = false;
+});
+
+// Polyfill for roundRect if needed
+if (!CanvasRenderingContext2D.prototype.roundRect) {
+    CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+        if (typeof r === 'number') r = [r, r, r, r];
+        const [tl, tr, br, bl] = r;
+        this.moveTo(x + tl, y);
+        this.lineTo(x + w - tr, y);
+        this.quadraticCurveTo(x + w, y, x + w, y + tr);
+        this.lineTo(x + w, y + h - br);
+        this.quadraticCurveTo(x + w, y + h, x + w - br, y + h);
+        this.lineTo(x + bl, y + h);
+        this.quadraticCurveTo(x, y + h, x, y + h - bl);
+        this.lineTo(x, y + tl);
+        this.quadraticCurveTo(x, y, x + tl, y);
+        this.closePath();
+        return this;
+    };
+}
+
+init();
+gameLoop();
+</script>
+</body>
+</html>

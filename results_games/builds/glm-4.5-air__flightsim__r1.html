@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Flight Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            cursor: crosshair;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 14px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-size: 12px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="info">
+        <div>Speed: <span id="speed">0</span> m/s</div>
+        <div>Altitude: <span id="altitude">0</span> m</div>
+        <div>Fuel: <span id="fuel">100</span>%</div>
+    </div>
+    <div id="controls">
+        <div>W/S: Throttle | A/D: Yaw | Q/E: Roll | Shift: Boost</div>
+        <div>Arrow Keys: Pitch/Roll</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+        
+        // 3D Math utilities
+        const vec3 = {
+            create: (x, y, z) => ({x, y, z}),
+            add: (a, b) => ({x: a.x + b.x, y: a.y + b.y, z: a.z + b.z}),
+            sub: (a, b) => ({x: a.x - b.x, y: a.y - b.y, z: a.z - b.z}),
+            mul: (v, s) => ({x: v.x * s, y: v.y * s, z: v.z * s}),
+            dot: (a, b) => a.x * b.x + a.y * b.y + a.z * b.z,
+            cross: (a, b) => ({
+                x: a.y * b.z - a.z * b.y,
+                y: a.z * b.x - a.x * b.z,
+                z: a.x * b.y - a.y * b.x
+            }),
+            normalize: (v) => {
+                const len = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+                return len > 0 ? {x: v.x / len, y: v.y / len, z: v.z / len} : {x: 0, y: 0, z: 0};
+            },
+            length: (v) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+        };
+        
+        // Camera and projection
+        const camera = {
+            pos: vec3.create(0, 50, 100),
+            rot: vec3.create(0, 0, 0),
+            fov: 60,
+            near: 0.1,
+            far: 1000
+        };
+        
+        // Plane state
+        const plane = {
+            pos: vec3.create(0, 50, 100),
+            vel: vec3.create(0, 0, 0),
+            rot: vec3.create(0, 0, 0),
+            speed: 0,
+            maxSpeed: 200,
+            throttle: 0,
+            fuel: 100,
+            wingSpan: 20,
+            length: 30
+        };
+        
+        // Input state
+        const keys = {};
+        
+        // City generation
+        const buildings = [];
+        const citySize = 100;
+        const buildingCount = 200;
+        
+        function generateCity() {
+            buildings.length = 0;
+            for (let i = 0; i < buildingCount; i++) {
+                const x = (Math.random() - 0.5) * citySize * 100;
+                const z = (Math.random() - 0.5) * citySize * 100;
+                const width = 10 + Math.random() * 30;
+                const depth = 10 + Math.random() * 30;
+                const height = 20 + Math.random() * 150;
+                buildings.push({
+                    x, z, width, depth, height,
+                    color: `hsl(${200 + Math.random() * 60}, 20%, ${30 + Math.random() * 20}%)`
+                });
+            }
+        }
+        
+        generateCity();
+        
+        // 3D to 2D projection
+        function project3D(point3D) {
+            const dx = point3D.x - camera.pos.x;
+            const dy = point3D.y - camera.pos.y;
+            const dz = point3D.z - camera.pos.z;
+            
+            // Simple perspective projection
+            const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            const scale = canvas.height / (2 * Math.tan(camera.fov * Math.PI / 360));
+            
+            const x2D = (dx * scale / dz) + canvas.width / 2;
+            const y2D = (dy * scale / dz) + canvas.height / 2;
+            
+            return {x: x2D, y: y2D, scale: scale / dz, distance};
+        }
+        
+        // Draw functions
+        function drawSky() {
+            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            gradient.addColorStop(0, '#87CEEB');
+            gradient.addColorStop(0.7, '#98D8E8');
+            gradient.addColorStop(1, '#F0E68C');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        
+        function drawGround() {
+            ctx.fillStyle = '#228B22';
+            ctx.fillRect(0, canvas.height * 0.7, canvas.width, canvas.height * 0.3);
+        }
+        
+        function drawBuilding(building) {
+            const corners = [
+                vec3.create(building.x - building.width/2, 0, building.z - building.depth/2),
+                vec3.create(building.x + building.width/2, 0, building.z - building.depth/2),
+                vec3.create(building.x + building.width/2, building.height, building.z - building.depth/2),
+                vec3.create(building.x - building.width/2, building.height, building.z - building.depth/2),
+                vec3.create(building.x - building.width/2, 0, building.z + building.depth/2),
+                vec3.create(building.x + building.width/2, 0, building.z + building.depth/2),
+                vec3.create(building.x + building.width/2, building.height, building.z + building.depth/2),
+                vec3.create(building.x - building.width/2, building.height, building.z + building.depth/2)
+            ];
+            
+            const projected = corners.map(c => project3D(c));
+            
+            // Draw faces
+            ctx.fillStyle = building.color;
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            
+            // Front face
+            ctx.beginPath();
+            ctx.moveTo(projected[0].x, projected[0].y);
+            ctx.lineTo(projected[1].x, projected[1].y);
+            ctx.lineTo(projected[2].x, projected[2].y);
+            ctx.lineTo(projected[3].x, projected[3].y);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            
+            // Right face
+            ctx.beginPath();
+            ctx.moveTo(projected[1].x, projected[1].y);
+            ctx.lineTo(projected[5].x, projected[5].y);
+            ctx.lineTo(projected[6].x, projected[6].y);
+            ctx.lineTo(projected[2].x, projected[2].y);
+            ctx.closePath();
+            ctx.fillStyle = building.color.replace('20%', '15%');
+            ctx.fill();
+            ctx.stroke();
+            
+            // Top face
+            ctx.beginPath();
+            ctx.moveTo(projected[3].x, projected[3].y);
+            ctx.lineTo(projected[2].x, projected[2].y);
+            ctx.lineTo(projected[6].x, projected[6].y);
+            ctx.lineTo(projected[7].x, projected[7].y);
+            ctx.closePath();
+            ctx.fillStyle = building.color.replace('20%', '25%');
+            ctx.fill();
+            ctx.stroke();
+        }
+        
+        function drawPlane() {
+            const nose = vec3.create(plane.pos.x, plane.pos.y, plane.pos.z - plane.length/2);
+            const tail = vec3.create(plane.pos.x, plane.pos.y, plane.pos.z + plane.length/2);
+            const leftWing = vec3.create(plane.pos.x - plane.wingSpan/2, plane.pos.y, plane.pos.z);
+            const rightWing = vec3.create(plane.pos.x + plane.wingSpan/2, plane.pos.y, plane.pos.z);
+            
+            const projectedNose = project3D(nose);
+            const projectedTail = project3D(tail);
+            const projectedLeftWing = project3D(leftWing);
+            const projectedRightWing = project3D(rightWing);
+            
+            ctx.strokeStyle = '#FF0000';
+            ctx.lineWidth = 3;
+            
+            // Fuselage
+            ctx.beginPath();
+            ctx.moveTo(projectedNose.x, projectedNose.y);
+            ctx.lineTo(projectedTail.x, projectedTail.y);
+            ctx.stroke();
+            
+            // Wings
+            ctx.beginPath();
+            ctx.moveTo(projectedLeftWing.x, projectedLeftWing.y);
+            ctx.lineTo(projectedRightWing.x, projectedRightWing.y);
+            ctx.stroke();
+            
+            // Vertical stabilizer
+            const topFin = vec3.create(plane.pos.x, plane.pos.y + 10, plane.pos.z + plane.length/2);
+            const projectedTopFin = project3D(topFin);
+            ctx.beginPath();
+            ctx.moveTo(projectedTail.x, projectedTail.y);
+            ctx.lineTo(projectedTopFin.x, projectedTopFin.y);
+            ctx.stroke();
+        }
+        
+        // Update functions
+        function updatePlane(deltaTime) {
+            // Handle input
+            if (keys['ArrowUp']) plane.rot.x -= 0.02;
+            if (keys['ArrowDown']) plane.rot.x += 0.02;
+            if (keys['ArrowLeft']) plane.rot.z -= 0.02;
+            if (keys['ArrowRight']) plane.rot.z += 0.02;
+            if (keys['a'] || keys['A']) plane.rot.y -= 0.02;
+            if (keys['d'] || keys['D']) plane.rot.y += 0.02;
+            if (keys['q'] || keys['Q']) plane.rot.x -= 0.02;
+            if (keys['e'] || keys['E']) plane.rot.x += 0.02;
+            
+            // Throttle
+            if (keys['w'] || keys['W']) {
+                plane.throttle = Math.min(plane.throttle + 0.01, 1);
+            }
+            if (keys['s'] || keys['S']) {
+                plane.throttle = Math.max(plane.throttle - 0.01, 0);
+            }
+            
+            // Boost
+            const boost = keys['Shift'] ? 2 : 1;
+            
+            // Update speed
+            plane.speed = plane.throttle * plane.maxSpeed * boost;
+            
+            // Update velocity based on rotation
+            const forward = vec3.create(
+                Math.sin(plane.rot.y) * Math.cos(plane.rot.x),
+                Math.sin(plane.rot.x),
+                Math.cos(plane.rot.y) * Math.cos(plane.rot.x)
+            );
+            
+            plane.vel = vec3.mul(forward, plane.speed * deltaTime);
+            
+            // Update position
+            plane.pos = vec3.add(plane.pos, plane.vel);
+            
+            // Update camera to follow plane
+            camera.pos = vec3.add(plane.pos, vec3.create(0, -20, -50));
+            camera.rot = vec3.create(plane.rot.x, plane.rot.y, 0);
+            
+            // Consume fuel
+            if (plane.throttle > 0) {
+                plane.fuel = Math.max(0, plane.fuel - 0.01);
+            }
+            
+            // Regenerate fuel slowly
+            if (plane.fuel < 100) {
+                plane.fuel = Math.min(100, plane.fuel + 0.001);
+            }
+            
+            // Update UI
+            document.getElementById('speed').textContent = Math.round(plane.speed);
+            document.getElementById('altitude').textContent = Math.round(plane.pos.y);
+            document.getElementById('fuel').textContent = Math.round(plane.fuel);
+        }
+        
+        // Input handling
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+        });
+        
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+        
+        // Main loop
+        let lastTime = 0;
+        function animate(currentTime) {
+            const deltaTime = (currentTime - lastTime) / 1000;
+            lastTime = currentTime;
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw scene
+            drawSky();
+            drawGround();
+            
+            // Sort buildings by distance for proper rendering
+            const sortedBuildings = buildings.slice().sort((a, b) => {
+                const distA = Math.sqrt(a.x * a.x + a.z * a.z);
+                const distB = Math.sqrt(b.x * b.x + b.z * b.z);
+                return distB - distA;
+            });
+            
+            // Draw buildings
+            sortedBuildings.forEach(building => {
+                drawBuilding(building);
+            });
+            
+            // Update and draw plane
+            updatePlane(deltaTime);
+            drawPlane();
+            
+            requestAnimationFrame(animate);
+        }
+        
+        // Start animation
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>

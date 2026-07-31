@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tiny Roguelike</title>
+    <style>
+        body { background: #111; color: #eee; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        #game-container { position: relative; border: 2px solid #444; padding: 10px; background: #000; }
+        #output { white-space: pre; line-height: 1.2; font-size: 18px; }
+        #stats { margin-bottom: 10px; font-size: 16px; color: #0f0; }
+        #log { margin-top: 10px; font-size: 14px; color: #aaa; height: 60px; overflow: hidden; width: 400px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="stats">HP: 20 | Level: 1 | Floor: 1</div>
+    <div id="game-container"><div id="output"></div></div>
+    <div id="log">Welcome to the dungeon! Use WASD to move.</div>
+
+    <script>
+        const WIDTH = 30;
+        const HEIGHT = 20;
+        const TILE = { WALL: '#', FLOOR: '.', PLAYER: '@', ENEMY: 'E', GOAL: 'X', ITEM: '!' };
+        
+        let map = [];
+        let player = { x: 1, y: 1, hp: 20, maxHp: 20, floor: 1, xp: 0 };
+        let enemies = [];
+        let items = [];
+        let goal = { x: 0, y: 0 };
+        let logMessages = ["Welcome to the dungeon!"];
+
+        function initMap() {
+            map = [];
+            for (let y = 0; y < HEIGHT; y++) {
+                map[y] = [];
+                for (let x = 0; x < WIDTH; x++) {
+                    map[y][x] = (x === 0 || x === WIDTH - 1 || y === 0 || y === HEIGHT - 1) ? TILE.WALL : TILE.FLOOR;
+                }
+            }
+
+            // Simple Room Generation
+            for (let i = 0; i < 5; i++) {
+                let rw = Math.floor(Math.random() * 4) + 4;
+                let rh = Math.floor(Math.random() * 4) + 4;
+                let rx = Math.floor(Math.random() * (WIDTH - rw - 2)) + 1;
+                let ry = Math.floor(Math.random() * (HEIGHT - rh - 2)) + 1;
+                for (let y = ry; y < ry + rh; y++) {
+                    for (let x = rx; x < rx + rw; x++) {
+                        if (map[y][x] === TILE.FLOOR) map[y][x] = TILE.FLOOR;
+                        else map[y][x] = TILE.FLOOR;
+                    }
+                }
+            }
+
+            // Place Player
+            player.x = 1; player.y = 1;
+            while(map[player.y][player.x] !== TILE.FLOOR) { player.x++; player.y++; }
+
+            // Place Goal
+            goal.x = WIDTH - 2; goal.y = HEIGHT - 2;
+            while(map[goal.y][goal.x] !== TILE.FLOOR) { goal.x--; goal.y--; }
+            map[goal.y][goal.x] = TILE.GOAL;
+
+            // Place Enemies
+            enemies = [];
+            for (let i = 0; i < 3 + player.floor; i++) {
+                let ex = Math.floor(Math.random() * WIDTH);
+                let ey = Math.floor(Math.random() * HEIGHT);
+                if (map[ey][ex] === TILE.FLOOR && (ex !== player.x || ey !== player.y)) {
+                    enemies.push({ x: ex, y: ey, hp: 5 + player.floor });
+                }
+            }
+
+            // Place Items
+            items = [];
+            for (let i = 0; i < 2; i++) {
+                let ix = Math.floor(Math.random() * WIDTH);
+                let iy = Math.floor(Math.random() * HEIGHT);
+                if (map[iy][ix] === TILE.FLOOR) items.push({ x: ix, y: iy });
+            }
+        }
+
+        function draw() {
+            let display = "";
+            for (let y = 0; y < HEIGHT; y++) {
+                for (let x = 0; x < WIDTH; x++) {
+                    let char = TILE.WALL;
+                    if (map[y][x] === TILE.FLOOR) char = TILE.FLOOR;
+                    if (map[y][x] === TILE.GOAL) char = TILE.GOAL;
+                    
+                    for (let e of enemies) if (e.x === x && e.y === y) char = TILE.ENEMY;
+                    for (let it of items) if (it.x === x && it.y === y) char = TILE.ITEM;
+                    if (x === player.x && y === player.y) char = TILE.PLAYER;
+                    
+                    display += `<span style="color:${getCharColor(char)}">${char}</span>`;
+                }
+                display += "\n";
+            }
+            document.getElementById('output').innerHTML = display;
+            document.getElementById('stats').innerText = `HP: ${player.hp}/${player.maxHp} | Floor: ${player.floor}`;
+            document.getElementById('log').innerText = logMessages[logMessages.length - 1];
+        }
+
+        function getCharColor(char) {
+            if (char === TILE.WALL) return "#555";
+            if (char === TILE.PLAYER) return "#fff";
+            if (char === TILE.ENEMY) return "#f00";
+            if (char === TILE.GOAL) return "#0ff";
+            if (char === TILE.ITEM) return "#ff0";
+            return "#333";
+        }
+
+        function log(msg) {
+            logMessages.push(msg);
+            if (logMessages.length > 5) logMessages.shift();
+        }
+
+        function movePlayer(dx, dy) {
+            let nx = player.x + dx;
+            let ny = player.y + dy;
+
+            if (map[ny][nx] === TILE.WALL) return;
+
+            // Combat
+            let enemy = enemies.find(e => e.x === nx && e.y === ny);
+            if (enemy) {
+                enemy.hp -= 2;
+                log("You hit the enemy!");
+                if (enemy.hp <= 0) {
+                    enemies = enemies.filter(e => e !== enemy);
+                    log("Enemy defeated!");
+                }
+            } else {
+                player.x = nx;
+                player.y = ny;
+            }
+
+            // Item pickup
+            let itemIdx = items.findIndex(it => it.x === player.x && it.y === player.y);
+            if (itemIdx > -1) {
+                player.hp = Math.min(player.maxHp, player.hp + 5);
+                items.splice(itemIdx, 1);
+                log("Healed +5 HP!");
+            }
+
+            // Goal
+            if (player.x === goal.x && player.y === goal.y) {
+                player.floor++;
+                log("Descending deeper...");
+                initMap();
+            }
+
+            // Enemy Turn
+            enemies.forEach(e => {
+                let edx = Math.sign(player.x - e.x);
+                let edy = Math.sign(player.y - e.y);
+                if (e.x + edx === player.x && e.y + edy === player.y) {
+                    player.hp -= 1;
+                    log("Enemy hits you!");
+                } else if (Math.abs(player.x - e.x) + Math.abs(player.y - e.y) < 4) {
+                    if (map[e.y + edy][e.x + edx] !== TILE.WALL) {
+                        e.x += edx;
+                        e.y += edy;
+                    }
+                }
+            });
+
+            if (player.hp <= 0) {
+                alert("GAME OVER! Floor reached: " + player.floor);
+                player.hp = 20;
+                player.floor = 1;
+                initMap();
+            }
+
+            draw();
+        }
+
+        window.addEventListener('keydown', e => {
+            switch(e.key.toLowerCase()) {
+                case 'w': movePlayer(0, -1); break;
+                case 's': movePlayer(0, 1); break;
+                case 'a': movePlayer(-1, 0); break;
+                case 'd': movePlayer(1, 0); break;
+            }
+        });
+
+        initMap();
+        draw();
+    </script>
+</body>
+</html>

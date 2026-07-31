@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SKY CITY SIMULATOR</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        #ui {
+            position: absolute; top: 20px; left: 20px; color: #0f0;
+            pointer-events: none; text-shadow: 1px 1px 2px #000;
+        }
+        .controls { position: absolute; bottom: 20px; left: 20px; color: #aaa; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        ALT: <span id="alt">0</span>m<br>
+        SPD: <span id="spd">0</span>km/h
+    </div>
+    <div class="controls">WASD/ARROWS: Pitch/Roll | SHIFT: Throttle Up | CTRL: Throttle Down</div>
+    <canvas id="glCanvas"></canvas>
+
+    <script>
+        /**
+         * MINI-THREE.JS IMPLEMENTATION (SUBSET)
+         * Since no CDNs are allowed, we implement a minimal 3D engine 
+         * with Matrix4, Vector3, and WebGL boilerplate.
+         */
+
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) {
+            alert("WebGL not supported");
+        }
+
+        // --- MATH UTILS ---
+        const Mat4 = {
+            identity: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+            multiply: (a, b) => {
+                let out = new Float32Array(16);
+                for (let i = 0; i < 4; i++) {
+                    for (let j = 0; j < 4; j++) {
+                        out[i*4+j] = a[i*4+0]*b[0*4+j] + a[i*4+1]*b[1*4+j] + a[i*4+2]*b[2*4+j] + a[i*4+3]*b[3*4+j];
+                    }
+                }
+                return out;
+            },
+            perspective: (fovy, aspect, near, far) => {
+                let f = 1.0 / Math.tan(fovy / 2), nf = 1 / (near - far);
+                return new Float32Array([f/aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far+near)*nf, -1, 0, 0, (2*far*near)*nf, 0]);
+            },
+            translate: (m, v) => {
+                let out = new Float32Array(m);
+                out[12] = m[0]*v[0] + m[4]*v[1] + m[8]*v[2] + m[12];
+                out[13] = m[1]*v[0] + m[5]*v[1] + m[9]*v[2] + m[13];
+                out[14] = m[2]*v[0] + m[6]*v[1] + m[10]*v[2] + m[14];
+                out[15] = m[3]*v[0] + m[7]*v[1] + m[11]*v[2] + m[15];
+                return out;
+            },
+            rotateX: (m, rad) => {
+                let s = Math.sin(rad), c = Math.cos(rad), out = new Float32Array(m);
+                out[4] = m[4]*c + m[8]*s; out[5] = m[5]*c + m[9]*s; out[6] = m[6]*c + m[10]*s; out[7] = m[7]*c + m[11]*s;
+                out[8] = m[8]*c - m[4]*s; out[9] = m[9]*c - m[5]*s; out[10] = m[10]*c - m[6]*s; out[11] = m[11]*c - m[7]*s;
+                return out;
+            },
+            rotateY: (m, rad) => {
+                let s = Math.sin(rad), c = Math.cos(rad), out = new Float32Array(m);
+                out[0] = m[0]*c - m[8]*s; out[1] = m[1]*c - m[9]*s; out[2] = m[2]*c - m[10]*s; out[3] = m[3]*c - m[11]*s;
+                out[8] = m[0]*s + m[8]*c; out[9] = m[1]*s + m[9]*c; out[10] = m[2]*s + m[10]*c; out[11] = m[3]*s + m[11]*c;
+                return out;
+            },
+            rotateZ: (m, rad) => {
+                let s = Math.sin(rad), c = Math.cos(rad), out = new Float32Array(m);
+                out[0] = m[0]*c + m[4]*s; out[1] = m[1]*c + m[5]*s; out[2] = m[2]*c + m[6]*s; out[3] = m[3]*c + m[7]*s;
+                out[4] = m[4]*c - m[0]*s; out[5] = m[5]*c - m[1]*s; out[6] = m[6]*c - m[2]*s; out[7] = m[7]*c - m[3]*s;
+                return out;
+            }
+        };
+
+        // --- SHADERS ---
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            attribute vec3 aNormal;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+            varying lowp vec3 vNormal;
+            varying lowp vec3 vPosition;
+            void main() {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                vNormal = aNormal;
+                vPosition = aVertexPosition.xyz;
+            }
+        `;
+        const fsSource = `
+            precision mediump float;
+            varying lowp vec3 vNormal;
+            varying lowp vec3 vPosition;
+            uniform vec3 uColor;
+            void main() {
+                vec3 normal = normalize(vNormal);
+                float light = max(dot(normal, normalize(vec3(0.5, 1.0, 0.5))), 0.3);
+                gl_FragColor = vec4(uColor * light, 1.0);
+            }
+        `;
+
+        function initShaderProgram(gl, vsSource, fsSource) {
+            const loadShader = (gl, type, source) => {
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                return shader;
+            };
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+            const program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+            gl.linkProgram(program);
+            return program;
+        }
+
+        const programInfo = {
+            program: initShaderProgram(gl, vsSource, fsSource),
+            attribLocations: {
+                vertexPosition: 0,
+                normal: 1,
+            },
+            uniformLocations: {
+                projectionMatrix: gl.getUniformLocation(programInfo.program, 'uProjectionMatrix'), // Wait, fix scope
+                modelViewMatrix: gl.getUniformLocation(programInfo.program, 'uModelViewMatrix'),
+                uColor: gl.getUniformLocation(programInfo.program, 'uColor'),
+            }
+        };
+        // Re-assigning because of scope issue in declaration
+        programInfo.uniformLocations.projectionMatrix = gl.getUniformLocation(programInfo.program, 'uProjectionMatrix');
+        programInfo.uniformLocations.modelViewMatrix = gl.getUniformLocation(programInfo.program, 'uModelViewMatrix');
+        programInfo.uniformLocations.uColor = gl.getUniformLocation(programInfo.program, 'uColor');
+
+        function createBuffer(gl, data, type) {
+            const buffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+            gl.bufferData(gl.ARRAY_BUFFER, data, type);
+            return buffer;
+        }
+
+        // --- GEOMETRY ---
+        function createCube(w, h, d) {
+            const positions = new Float32Array([
+                -w,h,d, w,h,d, w,-h,d, -w,-h,d, -w,h,d, w,h,d, w,-h,d, -w,-h,d, -w,h,d, -w,h,-d, -w,h,-d, w,h,-d, w,-h,-d, -w,h,-d, w,h,-d, w,-h,-d, -w,-h,-d, -w,h,-d, -w,-h,-d, w,-h,-d, w,-h,d, w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,-h,-d, -w,-h,-d, w,-h,-d, w,h,-d, -w,h,-d, -w,-h,-d, w,-h,-d, w,h,-d, -w,h,-d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,-h,-d, -w,-h,-d, w,-h,-d, w,h,-d, -w,h,-d, -w,-h,-d, -w,h,-d, -w,h,-d, w,h,-d, w,h,d, -w,h,d, -w,h,-d, w,h,-d, w,h,d, w,-h,d, -w,-h,d, -w,-h,-d, w,-h,-d, w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-he, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d, w,h,d, -w,h,d, -w,h,d, -w,-h,d, w,-h,d, w,h,d, w,-h,d, -w,-h,d, -w,-h,d, w,-h,d,

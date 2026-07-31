@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tiny Roguelike</title>
+    <style>
+        body { background: #111; color: #eee; font-family: monospace; margin: 0; padding: 20px; }
+        #game { display: flex; flex-direction: column; align-items: center; }
+        #grid { font-size: 16px; line-height: 16px; white-space: pre; }
+        #status { margin-top: 10px; }
+        .tile { display: inline-block; width: 16px; height: 16px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="game">
+        <div id="grid"></div>
+        <div id="status">Health: 10 | Messages: </div>
+    </div>
+
+    <script>
+        const GRID_WIDTH = 50;
+        const GRID_HEIGHT = 50;
+        const VIEWPORT_WIDTH = 21;
+        const VIEWPORT_HEIGHT = 21;
+        const WALL = '#';
+        const FLOOR = '.';
+        const PLAYER = '@';
+        const GOBLIN = 'g';
+        const STAIRS = '>';
+
+        let gameState = {
+            dungeon: [],
+            player: { x: 0, y: 0, health: 10 },
+            stairs: { x: 0, y: 0 },
+            entities: [],
+            messages: []
+        };
+
+        function generateDungeon() {
+            const grid = Array(GRID_HEIGHT).fill().map(() => Array(GRID_WIDTH).fill(WALL));
+            
+            // Random walk for cave generation
+            let x = Math.floor(GRID_WIDTH / 2);
+            let y = Math.floor(GRID_HEIGHT / 2);
+            
+            for (let i = 0; i < 1000; i++) {
+                grid[y][x] = FLOOR;
+                const dir = Math.floor(Math.random() * 4);
+                switch(dir) {
+                    case 0: y = Math.max(1, y - 1); break;
+                    case 1: x = Math.min(GRID_WIDTH - 2, x + 1); break;
+                    case 2: y = Math.min(GRID_HEIGHT - 2, y + 1); break;
+                    case 3: x = Math.max(1, x - 1); break;
+                }
+            }
+            
+            // Add some rooms
+            for (let i = 0; i < 5; i++) {
+                const roomX = Math.floor(Math.random() * (GRID_WIDTH - 10)) + 5;
+                const roomY = Math.floor(Math.random() * (GRID_HEIGHT - 10)) + 5;
+                const roomW = Math.floor(Math.random() * 5) + 3;
+                const roomH = Math.floor(Math.random() * 5) + 3;
+                
+                for (let ry = roomY; ry < roomY + roomH; ry++) {
+                    for (let rx = roomX; rx < roomX + roomW; rx++) {
+                        if (rx < GRID_WIDTH && ry < GRID_HEIGHT) {
+                            grid[ry][rx] = FLOOR;
+                        }
+                    }
+                }
+            }
+            
+            return grid;
+        }
+
+        function placeEntities() {
+            const floorTiles = [];
+            for (let y = 0; y < GRID_HEIGHT; y++) {
+                for (let x = 0; x < GRID_WIDTH; x++) {
+                    if (gameState.dungeon[y][x] === FLOOR) {
+                        floorTiles.push({x, y});
+                    }
+                }
+            }
+            
+            // Shuffle floor tiles
+            for (let i = floorTiles.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [floorTiles[i], floorTiles[j]] = [floorTiles[j], floorTiles[i]];
+            }
+            
+            // Place player
+            gameState.player.x = floorTiles[0].x;
+            gameState.player.y = floorTiles[0].y;
+            
+            // Place stairs
+            gameState.stairs.x = floorTiles[1].x;
+            gameState.stairs.y = floorTiles[1].y;
+            
+            // Place goblins
+            gameState.entities = [];
+            for (let i = 2; i < 12; i++) {
+                if (i < floorTiles.length) {
+                    gameState.entities.push({
+                        x: floorTiles[i].x,
+                        y: floorTiles[i].y,
+                        health: 1,
+                        type: 'goblin'
+                    });
+                }
+            }
+        }
+
+        function getViewport() {
+            const startX = Math.max(0, gameState.player.x - Math.floor(VIEWPORT_WIDTH / 2));
+            const startY = Math.max(0, gameState.player.y - Math.floor(VIEWPORT_HEIGHT / 2));
+            const endX = Math.min(GRID_WIDTH, startX + VIEWPORT_WIDTH);
+            const endY = Math.min(GRID_HEIGHT, startY + VIEWPORT_HEIGHT);
+            
+            return { startX, startY, endX, endY };
+        }
+
+        function render() {
+            const viewport = getViewport();
+            let gridHTML = '';
+            
+            for (let y = viewport.startY; y < viewport.endY; y++) {
+                for (let x = viewport.startX; x < viewport.endX; x++) {
+                    let char = gameState.dungeon[y][x];
+                    
+                    // Check entities
+                    const entity = gameState.entities.find(e => e.x === x && e.y === y);
+                    if (entity) {
+                        char = entity.type === 'goblin' ? GOBLIN : char;
+                    }
+                    
+                    // Check player
+                    if (x === gameState.player.x && y === gameState.player.y) {
+                        char = PLAYER;
+                    }
+                    
+                    // Check stairs
+                    if (x === gameState.stairs.x && y === gameState.stairs.y) {
+                        char = STAIRS;
+                    }
+                    
+                    gridHTML += `<span class="tile">${char}</span>`;
+                }
+                gridHTML += '<br>';
+            }
+            
+            document.getElementById('grid').innerHTML = gridHTML;
+            
+            // Update status
+            let statusHTML = `Health: ${gameState.player.health} | Messages: `;
+            for (let i = Math.max(0, gameState.messages.length - 3); i < gameState.messages.length; i++) {
+                statusHTML += gameState.messages[i] + ' ';
+            }
+            document.getElementById('status').innerHTML = statusHTML;
+        }
+
+        function movePlayer(dx, dy) {
+            const newX = gameState.player.x + dx;
+            const newY = gameState.player.y + dy;
+            
+            // Check boundaries
+            if (newX < 0 || newX >= GRID_WIDTH || newY < 0 || newY >= GRID_HEIGHT) {
+                return;
+            }
+            
+            // Check walls
+            if (gameState.dungeon[newY][newX] === WALL) {
+                return;
+            }
+            
+            // Check entities
+            const entityIndex = gameState.entities.findIndex(e => e.x === newX && e.y === newY);
+            if (entityIndex !== -1) {
+                gameState.entities.splice(entityIndex, 1);
+                gameState.player.health -= 1;
+                gameState.messages.push("You hit a goblin! You take 1 damage.");
+                if (gameState.player.health <= 0) {
+                    gameState.messages.push("You died!");
+                }
+            }
+            
+            // Check stairs
+            if (newX === gameState.stairs.x && newY === gameState.stairs.y) {
+                gameState.messages.push("You found the stairs! You win!");
+            }
+            
+            // Move player
+            gameState.player.x = newX;
+            gameState.player.y = newY;
+            
+            render();
+        }
+
+        // Initialize game
+        gameState.dungeon = generateDungeon();
+        placeEntities();
+        render();
+
+        // Keyboard controls
+        document.addEventListener('keydown', function(e) {
+            switch(e.key) {
+                case 'ArrowUp': movePlayer(0, -1); break;
+                case 'ArrowDown': movePlayer(0, 1); break;
+                case 'ArrowLeft': movePlayer(-1, 0); break;
+                case 'ArrowRight': movePlayer(1, 0); break;
+            }
+        });
+    </script>
+</body>
+</html>

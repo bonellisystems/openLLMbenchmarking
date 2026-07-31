@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#ccc;font-family:monospace;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{font-size:14px;line-height:14px;letter-spacing:2px;white-space:pre;user-select:none}
+#hud{margin-top:8px;font-size:13px;color:#aaa;text-align:center}
+#log{margin-top:6px;font-size:12px;color:#888;height:48px;overflow:hidden;text-align:center;width:640px}
+.w{color:#556}.f{color:#888}.p{color:#ff0}.g{color:#f44}.o{color:#4f4}.s{color:#ff8}.t{color:#4ff}.d{color:#f80}.v{color:#ccc}.x{color:#333}
+</style>
+</head>
+<body>
+<div id="game"><pre id="map"></pre><div id="hud"></div><div id="log"></div></div>
+<script>
+const W=80,H=24,MAXD=10;
+const T={WALL:0,FLOOR:1,DOOR:2};
+let map,rooms,player,enemies,level,log,seen,visible,turnCount,dead;
+
+function init(){
+  level=1;dead=false;turnCount=0;log=[];
+  player={x:0,y:0,hp:30,maxHp:30,atk:4,def:1,level:1,xp:0,xpNext:10};
+  genLevel();
+  render();
+}
+
+function genLevel(){
+  map=[];rooms=[];enemies=[];seen=[];visible=[];
+  for(let y=0;y<H;y++){map[y]=[];seen[y]=[];visible[y]=[];for(let x=0;x<W;x++){map[y][x]=T.WALL;seen[y][x]=false;visible[y][x]=false;}}
+  const numRooms=6+Math.floor(Math.random()*4);
+  for(let i=0;i<numRooms*10&&rooms.length<numRooms;i++){
+    const rw=4+Math.floor(Math.random()*6),rh=3+Math.floor(Math.random()*4);
+    const rx=1+Math.floor(Math.random()*(W-rw-2)),ry=1+Math.floor(Math.random()*(H-rh-2));
+    let ok=true;
+    for(const r of rooms){
+      if(rx<r.x+r.w+2&&rx+rw+2>r.x&&ry<r.y+r.h+2&&ry+rh+2>r.y){ok=false;break;}
+    }
+    if(ok){
+      rooms.push({x:rx,y:ry,w:rw,h:rh,cx:Math.floor(rx+rw/2),cy:Math.floor(ry+rh/2)});
+      for(let dy=0;dy<rh;dy++)for(let dx=0;dx<rw;dx++)map[ry+dy][rx+dx]=T.FLOOR;
+    }
+  }
+  for(let i=1;i<rooms.length;i++){
+    const a=rooms[i-1],b=rooms[i];
+    let cx=a.cx,cy=a.cy;
+    while(cx!==b.cx){map[cy][cx]=T.FLOOR;cx+=cx<b.cx?1:-1;}
+    while(cy!==b.cy){map[cy][cx]=T.FLOOR;cy+=cy<b.cy?1:-1;}
+  }
+  const sr=rooms[0];player.x=sr.cx;player.y=sr.cy;
+  const er=rooms[rooms.length-1];map[er.cy][er.cx]=T.DOOR;
+  const numE=3+level+Math.floor(Math.random()*3);
+  const types=[
+    {ch:'g',name:'Goblin',hp:6,atk:2,def:0,xp:3,col:'g'},
+    {ch:'o',name:'Orc',hp:10,atk:3,def:1,xp:5,col:'o'},
+    {ch:'d',name:'Dragon',hp:18,atk:5,def:2,xp:10,col:'d'},
+    {ch:'t',name:'Troll',hp:14,atk:4,def:1,xp:7,col:'t'},
+    {ch:'s',name:'Skeleton',hp:8,atk:3,def:0,xp:4,col:'v'},
+  ];
+  for(let i=0;i<numE;i++){
+    const ri=1+Math.floor(Math.random()*(rooms.length-1));
+    const r=rooms[ri];
+    const ex=r.x+1+Math.floor(Math.random()*(r.w-2));
+    const ey=r.y+1+Math.floor(Math.random()*(r.h-2));
+    if(map[ey][ex]===T.FLOOR&&!(ex===player.x&&ey===player.y)){
+      const ti=Math.min(types.length-1,Math.floor(Math.random()*Math.min(level+1,types.length)));
+      const t=types[ti];
+      enemies.push({x:ex,y:ey,hp:t.hp,maxHp:t.hp,atk:t.atk,def:t.def,xp:t.xp,ch:t.ch,name:t.name,col:t.col});
+    }
+  }
+  // Potions
+  const numP=1+Math.floor(Math.random()*2);
+  for(let i=0;i<numP;i++){
+    const ri=1+Math.floor(Math.random()*(rooms.length-1));
+    const r=rooms[ri];
+    const px=r.x+1+Math.floor(Math.random()*(r.w-2));
+    const py=r.y+1+Math.floor(Math.random()*(r.h-2));
+    if(map[py][px]===T.FLOOR&&!(px===player.x&&py===player.y)){
+      enemies.push({x:px,y:py,hp:0,maxHp:0,atk:0,def:0,xp:0,ch:'!',name:'Potion',col:'s',item:true});
+    }
+  }
+  computeVision();
+}
+
+function computeVision(){
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++)visible[y][x]=false;
+  const r=8;
+  for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+    const tx=player.x+dx,ty=player.y+dy;
+    if(tx<0||tx>=W||ty<0||ty>=H)continue;
+    if(dx*dx+dy*dy>r*r)continue;
+    if(los(player.x,player.y,tx,ty)){visible[ty][tx]=true;seen[ty][tx]=true;}
+  }
+}
+
+function los(x0,y0,x1,y1){
+  let dx=Math.abs(x1-x0),dy=Math.abs(y1-y0);
+  let sx=x0<x1?1:-1,sy=y0<y1?1:-1;
+  let err=dx-dy;
+  let cx=x0,cy=y0;
+  while(true){
+    if(cx===x1&&cy===y1)return true;
+    if(map[cy][cx]===T.WALL)return false;
+    let e2=2*err;
+    if(e2>-dy){err-=dy;cx+=sx;}
+    if(e2<dx){err+=dx;cy+=sy;}
+    if(cx<0||cx>=W||cy<0||cy>=H)return false;
+  }
+}
+
+function movePlayer(dx,dy){
+  if(dead)return;
+  const nx=player.x+dx,ny=player.y+dy;
+  if(nx<0||nx>=W||ny<0||ny>=H)return;
+  if(map[ny][nx]===T.WALL)return;
+  const e=enemies.find(e=>e.x===nx&&e.y===ny&&!e.dead);
+  if(e){
+    if(e.item){
+      player.hp=Math.min(player.maxHp,player.hp+10);
+      addMsg("You drink a potion. (+10 HP)");
+      e.dead=true;
+    }else{
+      const dmg=Math.max(1,player.atk-e.def+Math.floor(Math.random()*2));
+      e.hp-=dmg;
+      addMsg(`You hit ${e.name} for ${dmg} damage.`);
+      if(e.hp<=0){
+        addMsg(`${e.name} dies! (+${e.xp} XP)`);
+        player.xp+=e.xp;
+        while(player.xp>=player.xpNext){
+          player.xp-=player.xpNext;
+          player.level++;
+          player.maxHp+=5;player.hp=Math.min(player.maxHp,player.hp+5);
+          player.atk+=1;player.def+=1;
+          player.xpNext=Math.floor(player.xpNext*1.5);
+          addMsg(`Level up! You are now level ${player.level}!`);
+        }
+        e.dead=true;
+      }
+    }
+  }else{
+    player.x=nx;player.y=ny;
+    if(map[ny][nx]===T.DOOR){
+      level++;
+      addMsg(`You descend to level ${level}...`);
+      genLevel();
+    }
+  }
+  endTurn();
+}
+
+function endTurn(){
+  turnCount++;
+  enemies.forEach(e=>{
+    if(e.dead||e.item)return;
+    const dx=player.x-e.x,dy=player.y-e.y;
+    const dist=Math.abs(dx)+Math.abs(dy);
+    if(dist<=1){
+      const dmg=Math.max(1,e.atk-player.def+Math.floor(Math.random()*2));
+      player.hp-=dmg;
+      addMsg(`${e.name} hits you for ${dmg} damage.`);
+      if(player.hp<=0){dead=true;addMsg("You have died! Press R to restart.");}
+    }else if(dist<8&&visible[e.y][e.x]){
+      let mx=0,my=0;
+      if(Math.abs(dx)>Math.abs(dy))mx=dx>0?1:-1;else my=dy>0?1:-1;
+      const nx=e.x+mx,ny=e.y+my;
+      if(nx>=0&&nx<W&&ny>=0&&ny<H&&map[ny][nx]!==T.WALL){
+        const blocked=enemies.find(o=>!o.dead&&o!==e&&o.x===nx&&o.y===ny);
+        if(!blocked&&(player.x!==nx||player.y!==ny)){e.x=nx;e.y=ny;}
+      }
+    }
+  });
+  enemies=enemies.filter(e=>!e.dead);
+  computeVision();
+  render();
+}
+
+function addMsg(m){log.unshift(m);if(log.length>3)log.pop();}
+
+function render(){
+  let html='';
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      if(x===player.x&&y===player.y){html+='<span class="p">@</span>';}
+      else{
+        const e=enemies.find(e=>e.x===x&&e.y===y&&!e.dead);
+        if(e&&visible[y][x]){html+=`<span class="${e.col}">${e.ch}</span>`;}
+        else if(visible[y][x]){
+          if(map[y][x]===T.WALL)html+='<span class="w">#</span>';
+          else if(map[y][x]===T.FLOOR)html+='<span class="f">.</span>';
+          else if(map[y][x]===T.DOOR)html+='<span class="s">&gt;</span>';
+        }else if(seen[y][x]){
+          if(map[y][x]===T.WALL)html+='<span class="x">#</span>';
+          else html+='<span class="x">.</span>';
+        }else{html+=' ';}
+      }
+    }
+    html+='\n';
+  }
+  document.getElementById('map').innerHTML=html;
+  const hpPct=Math.max(0,player.hp/player.maxHp*100);
+  const hpBar='█'.repeat(Math.floor(hpPct/5))+'░'.repeat(20-Math.floor(hpPct/5));
+  document.getElementById('hud').innerHTML=
+    `Lvl ${level} | HP [${hpBar}] ${player.hp}/${player.maxHp} | ATK ${player.atk} DEF ${player.def} | XP ${player.xp}/${player.xpNext} | ${dead?'<span style="color:#f44">DEAD - Press R</span>':'Arrow keys / WASD to move'}`;
+  document.getElementById('log').innerHTML=log.map(l=>`<div>${l}</div>`).join('');
+}
+
+document.addEventListener('keydown',e=>{
+  if(dead&&e.key.toLowerCase()==='r'){init();return;}
+  let dx=0,dy=0;
+  if(e.key==='ArrowUp'||e.key==='w')dy=-1;
+  else if(e.key==='ArrowDown'||e.key==='s')dy=1;
+  else if(e.key==='ArrowLeft'||e.key==='a')dx=-1;
+  else if(e.key==='ArrowRight'||e.key==='d')dx=1;
+  else if(e.key===' '||e.key==='5'){/* wait */endTurn();return;}
+  else return;
+  e.preventDefault();
+  movePlayer(dx,dy);
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Flight Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: #000;
+            font-family: Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            cursor: none;
+        }
+        .controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-size: 12px;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div class="controls">
+        WASD: Move | QE: Roll | RF: Pitch | TG: Yaw | Space: Up | Shift: Down
+    </div>
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+        
+        const keys = {};
+        window.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
+        window.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+        
+        class Vector3 {
+            constructor(x = 0, y = 0, z = 0) {
+                this.x = x;
+                this.y = y;
+                this.z = z;
+            }
+            
+            add(v) {
+                return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
+            }
+            
+            subtract(v) {
+                return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+            }
+            
+            multiply(scalar) {
+                return new Vector3(this.x * scalar, this.y * scalar, this.z * scalar);
+            }
+            
+            normalize() {
+                const mag = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z);
+                if (mag === 0) return new Vector3();
+                return new Vector3(this.x / mag, this.y / mag, this.z / mag);
+            }
+            
+            cross(v) {
+                return new Vector3(
+                    this.y * v.z - this.z * v.y,
+                    this.z * v.x - this.x * v.z,
+                    this.x * v.y - this.y * v.x
+                );
+            }
+        }
+        
+        class Camera {
+            constructor() {
+                this.position = new Vector3(0, 5, 10);
+                this.rotation = new Vector3(0, 0, 0);
+                this.fov = 60;
+                this.near = 0.1;
+                this.far = 1000;
+            }
+            
+            project(point) {
+                const dx = point.x - this.position.x;
+                const dy = point.y - this.position.y;
+                const dz = point.z - this.position.z;
+                
+                const cosPitch = Math.cos(this.rotation.x);
+                const sinPitch = Math.sin(this.rotation.x);
+                const cosYaw = Math.cos(this.rotation.y);
+                const sinYaw = Math.sin(this.rotation.y);
+                
+                const x = dx * cosYaw - dz * sinYaw;
+                const z = dx * sinYaw + dz * cosYaw;
+                const y = dy * cosPitch - z * sinPitch;
+                const z2 = dy * sinPitch + z * cosPitch;
+                
+                if (z2 < this.near) return null;
+                
+                const scale = canvas.width / (2 * Math.tan(this.fov * Math.PI / 360));
+                const px = canvas.width / 2 + (x * scale) / z2;
+                const py = canvas.height / 2 - (y * scale) / z2;
+                
+                return { x: px, y: py, z: z2 };
+            }
+        }
+        
+        class Plane {
+            constructor() {
+                this.position = new Vector3(0, 5, 0);
+                this.rotation = new Vector3(0, 0, 0);
+                this.velocity = new Vector3(0, 0, 0);
+                this.size = 1;
+            }
+            
+            update(deltaTime) {
+                const speed = 10;
+                const rotSpeed = 2;
+                
+                if (keys['w']) this.velocity.z -= speed * deltaTime;
+                if (keys['s']) this.velocity.z += speed * deltaTime;
+                if (keys['a']) this.velocity.x -= speed * deltaTime;
+                if (keys['d']) this.velocity.x += speed * deltaTime;
+                if (keys[' ']) this.velocity.y += speed * deltaTime;
+                if (keys['shift']) this.velocity.y -= speed * deltaTime;
+                
+                if (keys['q']) this.rotation.z += rotSpeed * deltaTime;
+                if (keys['e']) this.rotation.z -= rotSpeed * deltaTime;
+                if (keys['r']) this.rotation.x += rotSpeed * deltaTime;
+                if (keys['f']) this.rotation.x -= rotSpeed * deltaTime;
+                if (keys['t']) this.rotation.y += rotSpeed * deltaTime;
+                if (keys['g']) this.rotation.y -= rotSpeed * deltaTime;
+                
+                this.position = this.position.add(this.velocity.multiply(deltaTime));
+                this.velocity = this.velocity.multiply(0.95);
+            }
+            
+            getVertices() {
+                const s = this.size;
+                const vertices = [
+                    new Vector3(-s, 0, -s),
+                    new Vector3(s, 0, -s),
+                    new Vector3(s, 0, s),
+                    new Vector3(-s, 0, s),
+                    new Vector3(0, s, 0)
+                ];
+                
+                return vertices.map(v => {
+                    const cosPitch = Math.cos(this.rotation.x);
+                    const sinPitch = Math.sin(this.rotation.x);
+                    const cosYaw = Math.cos(this.rotation.y);
+                    const sinYaw = Math.sin(this.rotation.y);
+                    const cosRoll = Math.cos(this.rotation.z);
+                    const sinRoll = Math.sin(this.rotation.z);
+                    
+                    let x = v.x;
+                    let y = v.y;
+                    let z = v.z;
+                    
+                    x = x * cosYaw - z * sinYaw;
+                    z = x * sinYaw + z * cosYaw;
+                    y = y * cosPitch - z * sinPitch;
+                    z = y * sinPitch + z * cosPitch;
+                    
+                    return new Vector3(
+                        x + this.position.x,
+                        y + this.position.y,
+                        z + this.position.z
+                    );
+                });
+            }
+        }
+        
+        class Building {
+            constructor(x, z, width, height, depth) {
+                this.x = x;
+                this.z = z;
+                this.width = width;
+                this.height = height;
+                this.depth = depth;
+            }
+            
+            getVertices() {
+                const vertices = [];
+                const hw = this.width / 2;
+                const hh = this.height;
+                const hd = this.depth / 2;
+                
+                vertices.push(
+                    new Vector3(this.x - hw, 0, this.z - hd),
+                    new Vector3(this.x + hw, 0, this.z - hd),
+                    new Vector3(this.x + hw, 0, this.z + hd),
+                    new Vector3(this.x - hw, 0, this.z + hd),
+                    new Vector3(this.x - hw, hh, this.z - hd),
+                    new Vector3(this.x + hw, hh, this.z - hd),
+                    new Vector3(this.x + hw, hh, this.z + hd),
+                    new Vector3(this.x - hw, hh, this.z + hd)
+                );
+                
+                return vertices;
+            }
+        }
+        
+        const camera = new Camera();
+        const plane = new Plane();
+        const buildings = [];
+        
+        function generateCity() {
+            const gridSize = 20;
+            const spacing = 15;
+            
+            for (let x = -gridSize; x <= gridSize; x++) {
+                for (let z = -gridSize; z <= gridSize; z++) {
+                    if (Math.random() > 0.3) {
+                        const width = 3 + Math.random() * 4;
+                        const depth = 3 + Math.random() * 4;
+                        const height = 5 + Math.random() * 30;
+                        buildings.push(new Building(
+                            x * spacing,
+                            z * spacing,
+                            width,
+                            height,
+                            depth
+                        ));
+                    }
+                }
+            }
+        }
+        
+        generateCity();
+        
+        function drawLine(p1, p2, color = '#fff') {
+            if (!p1 || !p2) return;
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+        }
+        
+        function drawPoint(p, color = '#fff') {
+            if (!p) return;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        function render() {
+            ctx.fillStyle = '#001122';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            camera.position = plane.position.add(new Vector3(0, 5, 10));
+            camera.rotation = plane.rotation;
+            
+            const allObjects = [
+                { vertices: plane.getVertices(), color: '#ff0000' },
+                ...buildings.map(b => ({ vertices: b.getVertices(), color: '#444444' }))
+            ];
+            
+            allObjects.forEach(obj => {
+                const projectedVertices = obj.vertices.map(v => camera.project(v));
+                
+                if (obj === allObjects[0]) {
+                    drawLine(projectedVertices[0], projectedVertices[1], obj.color);
+                    drawLine(projectedVertices[1], projectedVertices[2], obj.color);
+                    drawLine(projectedVertices[2], projectedVertices[3], obj.color);
+                    drawLine(projectedVertices[3], projectedVertices[0], obj.color);
+                    drawLine(projectedVertices[0], projectedVertices[4], obj.color);
+                    drawLine(projectedVertices[1], projectedVertices[4], obj.color);
+                    drawLine(projectedVertices[2], projectedVertices[4], obj.color);
+                    drawLine(projectedVertices[3], projectedVertices[4], obj.color);
+                } else {
+                    const building = obj.vertices;
+                    drawLine(projectedVertices[0], projectedVertices[1], obj.color);
+                    drawLine(projectedVertices[1], projectedVertices[2], obj.color);
+                    drawLine(projectedVertices[2], projectedVertices[3], obj.color);
+                    drawLine(projectedVertices[3], projectedVertices[0], obj.color);
+                    drawLine(projectedVertices[4], projectedVertices[5], obj.color);
+                    drawLine(projectedVertices[5], projectedVertices[6], obj.color);
+                    drawLine(projectedVertices[6], projectedVertices[7], obj.color);
+                    drawLine(projectedVertices[7], projectedVertices[4], obj.color);
+                    drawLine(projectedVertices[0], projectedVertices[4], obj.color);
+                    drawLine(projectedVertices[1], projectedVertices[5], obj.color);
+                    drawLine(projectedVertices[2], projectedVertices[6], obj.color);
+                    drawLine(projectedVertices[3], projectedVertices[7], obj.color);
+                }
+            });
+        }
+        
+        let lastTime = 0;
+        function gameLoop(currentTime) {
+            const deltaTime = (currentTime - lastTime) / 1000;
+            lastTime = currentTime;
+            
+            if (deltaTime < 0.1) {
+                plane.update(deltaTime);
+                render();
+            }
+            
+            requestAnimationFrame(gameLoop);
+        }
+        
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>
