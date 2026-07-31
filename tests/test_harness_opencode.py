@@ -20,6 +20,8 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+import os
+
 import pytest
 
 from llmtest.harness import opencode as oc
@@ -421,6 +423,17 @@ def test_version_falls_back_when_opencode_binary_missing(monkeypatch, tmp_path):
 # -- npm .cmd shim unwrap (the live-smoke-surfaced Windows bug) -------------
 
 
+# The npm shim these two tests exercise is a WINDOWS artifact: `npm install -g` writes a
+# .cmd whose body references "%dp0%\node_modules\...\bin\<entry>" with backslash
+# separators. On POSIX that group is one filename containing backslashes, not a nested
+# path, so `entry.exists()` is false and _unwrap_npm_cmd_shim correctly returns None -
+# the behaviour under test is unreachable, not broken. Marked rather than deleted because
+# the code path is live and load-bearing on the machine this suite is developed on.
+windows_only = pytest.mark.skipif(os.name != "nt",
+                                  reason="npm .cmd shim unwrapping is Windows-only")
+
+
+@windows_only
 def test_unwrap_npm_cmd_shim_finds_node_exe_and_entry(tmp_path):
     # Mirrors the real shim content read live from
     # C:\Users\...\AppData\Roaming\npm\opencode.cmd (the bug this fixes).
@@ -464,6 +477,7 @@ def test_unwrap_npm_cmd_shim_returns_none_for_non_cmd_extension(tmp_path):
     assert oc._unwrap_npm_cmd_shim(str(exe)) is None
 
 
+@windows_only
 def test_launch_uses_unwrapped_node_argv_not_the_cmd_shim(monkeypatch, tmp_path):
     # End-to-end through _launch (not just the parser): a multi-line
     # prompt must reach Popen as ONE argv element targeting node.exe

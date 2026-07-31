@@ -23,7 +23,35 @@ def _docker_available() -> bool:
         return False
 
 
-requires_docker = pytest.mark.skipif(not _docker_available(), reason="Docker not reachable")
+def _sandbox_image_available() -> bool:
+    """A reachable daemon is NOT enough: these tests run the PINNED image, and if it is
+    absent every container operation quietly yields nothing, so the assertions fail with
+    empty snapshots rather than skipping.
+
+    That is exactly what happened when this suite first ran on GitHub Actions - the
+    runners do have Docker, so the daemon check passed, the tests ran, and four of them
+    failed on `assert None == b'real\\n'` because `b8-sandbox:1` had never been built
+    there. Check for the image, not just the daemon.
+    """
+    if not _docker_available():
+        return False
+    # _image_ref is a PROPERTY. Calling it raises TypeError, and a bare `except: return
+    # False` here turned that into "no image" - which silently skipped 11 tests that had
+    # been passing. A guard that cannot tell "prerequisite missing" from "guard is broken"
+    # disables tests without telling anyone, so the resolution failure is left to raise.
+    from llmtest.harness.sandbox import Sandbox
+    ref = Sandbox(workspace=Path("."))._image_ref
+    try:
+        r = subprocess.run(["docker", "image", "inspect", ref],
+                           capture_output=True, text=True, timeout=20)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+requires_docker = pytest.mark.skipif(
+    not _sandbox_image_available(),
+    reason="Docker daemon or the pinned sandbox image is not available")
 
 
 def test_default_pin_loaded_from_runtime_pins_yaml():
