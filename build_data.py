@@ -179,6 +179,20 @@ GAMES_PLANNED = [
 # Known gaps - what the numbers on this page do NOT cover.
 # ---------------------------------------------------------------------------
 GAPS = [
+    {"sev": "high", "title": "B8 cannot be measured on a Docker-less box - five models' 0% was an artifact",
+     "detail": "B8's completion oracle (run_oracle) validates the agent's work inside a container. "
+               "vast.ai instances have no Docker, so the runs were made with b8.sandbox.enabled=false: "
+               "the AGENT runs fine on the host, but the ORACLE still shells out to a container, fails "
+               "setup, and completion is never credited. Every row measured that way carries "
+               "oracle.detail = \"hidden_validate setup failed: FileNotFoundError(...)\" instead of a "
+               "PASS/FAIL verdict with a stage. Scored naively this produced a flat 0% for all five "
+               "models run that way - abl-gemma-4-31b, abl-opus-35b-a3b, glm-4.5-air, gpt-oss-120b and "
+               "laguna-s-2.1 - including gpt-oss-120b, which every other signal says is among the "
+               "strongest agentic models in the roster. Those rows are now excluded as MISSING "
+               "measurements rather than failed ones, and the cells read untested.",
+     "fix": "Run B8 on a host with Docker (a -devel image plus dockerd, or a provider that exposes the "
+            "socket), or replace the container oracle with a host-mode equivalent. Until then B8 is "
+            "only comparable across the ten models measured under the real sandbox."},
     {"sev": "med", "title": "bonsai-ternary-27b B10/B11 cannot run on the standard image - not a model failure",
      "detail": "Its Q2_0 is a prism-ml custom quantization and only the prism llama.cpp fork has "
                "the kernels for it. On the official ggml image the server exits before serving: "
@@ -818,6 +832,18 @@ def compute_matrix():
         met = r.get("metrics") or {}
         if met.get("terminal_status") == "infra-error":
             return              # eligibility rule: infra errors are not model failures
+        # THE COMPLETION ORACLE NEEDS DOCKER, AND THE RENTED BOXES HAVE NONE.
+        # With b8.sandbox.enabled=false the agent runs on the host fine, but run_oracle
+        # still shells out to a container to validate the result, so it fails setup and
+        # completion is never credited. Those rows say so themselves -
+        #   oracle.detail = "hidden_validate setup failed: FileNotFoundError(...)"
+        # versus a real verdict's "PASS"/"FAIL" with a stage - and scoring them produced
+        # a flat 0% for all five models measured that way, including gpt-oss-120b, which
+        # is one of the strongest agentic models in the roster. A row whose oracle never
+        # ran is a MISSING measurement, not a failed one.
+        oracle = ((r.get("det_checks") or {}).get("oracle") or {})
+        if "setup failed" in str(oracle.get("detail", "")):
+            return
         mid = ARM_TO_ROSTER.get(r.get("model_id"), r.get("model_id"))
         rid = r.get("row_id")
         if rid and rid in b8_seen[mid]:
