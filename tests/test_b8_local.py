@@ -498,7 +498,33 @@ def test_runner_appends_last_infra_error_when_all_attempts_exhausted(monkeypatch
     out = capsys.readouterr().out
     assert "RETRY infra-error attempt 1/3" in out
     assert "RETRY infra-error attempt 2/3" in out
-    assert rc == 0                                    # infra-error is not an EXEC-ERROR
+    # An infra-error is still not an EXEC-ERROR - see the mixed-run test below, where
+    # infra-errors alongside eligible rows exit 0. But this run produced NO eligible row
+    # at all, so it measured nothing, and reporting success for it is how llama-4-scout's
+    # B8 came back "ok" after 115 of 115 runs infra-errored: an hour of a rented GPU and
+    # not one usable measurement. A run with nothing eligible is a harness failure.
+    assert rc == 1
+    assert "NO ELIGIBLE ROWS" in out
+
+
+def test_runner_exits_zero_when_infra_errors_sit_beside_eligible_rows(monkeypatch, capsys):
+    """The narrowed rule, pinned: an infra-error is NOT a run failure as long as the run
+    produced something measurable. Only a run with zero eligible rows exits non-zero.
+
+    Without this, tightening the all-infra case could quietly turn every run that happens
+    to contain one infra-error into a "failed" step, which would be its own kind of lie.
+    """
+    mod = _load_runner_module()
+    battery, appended = _install_runner_fakes(
+        mod, monkeypatch, ["completed", "infra-error", "infra-error", "infra-error"])
+
+    rc = mod.main(["--endpoint-url", "http://127.0.0.1:8080"])
+
+    statuses = [a["metrics"]["terminal_status"] for a in appended]
+    assert "completed" in statuses, statuses
+    out = capsys.readouterr().out
+    assert "NO ELIGIBLE ROWS" not in out
+    assert rc == 0
 
 
 def test_runner_does_not_retry_a_completed_row(monkeypatch, capsys):

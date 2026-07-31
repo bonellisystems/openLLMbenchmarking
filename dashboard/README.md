@@ -1,7 +1,7 @@
 # Local LLM Test Bench — coverage dashboard
 
 A single-file, dependency-free page that shows how a roster of **locally-servable LLMs**
-scored across eight evaluation batteries, what the numbers *don't* cover, and the
+scored across eleven evaluation batteries, what the numbers *don't* cover, and the
 speculative-decoding throughput that the battery suite itself under-reports.
 
 Open `index.html` in a browser. No build step, no server, no network calls — the data is
@@ -37,6 +37,9 @@ embedded in the file, so it works from `file://` and from GitHub Pages unchanged
 | B6 | Agentic Coding — 5 from-scratch + 5 planted-bug tasks | % | deterministic |
 | B7 | Reproducibility — signal agreement across a config matrix | % | deterministic |
 | B8 | Agentic Harness — real OpenCode agent in a container, 23 sealed tasks | % | deterministic |
+| B9 | Game Builds — one-shot browser games, scored by driving them in headless Chrome | % | deterministic |
+| B10 | Security Review — vulnerable/patched pairs, decoys, multi-defect chains | score | deterministic |
+| B11 | Tool Loop — can the model actually drive a harness end to end | % | deterministic |
 
 ## Three things that are easy to misread
 
@@ -91,14 +94,14 @@ python build_data.py           # rewrite data.json + re-embed into index.html
 python build_data.py --check   # report what would change, write nothing
 ```
 
-It expects the eval repo as a sibling directory:
+It finds the eval data by looking for the results tree, so both layouts work — as a
+subdirectory of the suite repo (how it is published) or as a sibling checkout:
 
 ```
-.
-├── llm-eval-dashboard/     <- this project
-└── llmtest-v2/
-    ├── results/rows-suite-v2.*.jsonl
-    └── results_b8_<model>/
+openLLMbenchmarking/          # published layout
+├── results/rows-suite-v2.*.jsonl
+├── results_b8_<model>/
+└── dashboard/                <- this project
 ```
 
 Recomputed from shards: B2/B3/B6 deterministic pass rates, B4 needle recall, B5 decode t/s

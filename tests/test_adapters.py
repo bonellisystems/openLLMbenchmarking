@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -389,7 +390,13 @@ def test_file_delivery_adapter_embeds_packet_path_in_instruction_no_stdin(monkey
     assert "input" not in captured["kwargs"]
     assert captured["kwargs"].get("stdin") == subprocess.DEVNULL
     argv = captured["argv"]
-    assert argv[0] == "agy"
+    # _resolve_argv0 deliberately runs the token through shutil.which() (Windows PATHEXT:
+    # a bare "agy" cannot be launched when the real binary is agy.CMD). So argv[0] is the
+    # bare name on a machine WITHOUT the CLI installed and an absolute path on one WITH
+    # it. Asserting the bare string made this test pass only while the tool was absent -
+    # it went green on CI and red on the developer's own machine the day agy was
+    # installed. Assert the identity instead of the spelling.
+    assert Path(argv[0]).stem.lower() == "agy", argv[0]
     instruction = argv[argv.index("--print") + 1]
     assert str(packet_path) in instruction           # packet path embedded in the instruction
     assert "Read the file at" in instruction
