@@ -105,44 +105,57 @@ def render_flags(agg: AggResult) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _current_rubric_sha(root: Path) -> dict:
-    """{unit: {acceptable rubric_sha, ...}} for every unit with a
-    grading/anchors/<unit>.md file CURRENTLY checked out (TESTPLAN 6.2:
-    aggregation selects judgments matching the checked-out rubric_sha).
-    Mirrors packets.py's own formula. A unit with no anchor file is simply
-    absent -- aggregate() treats an absent unit as "don't filter".
-
-    A SET, AND LINE-ENDING INDEPENDENT, because this hash is taken over FILE BYTES and
-    the anchors are ordinary text files. Git hands them to Windows as CRLF and to Linux
-    as LF, so the same rubric hashes differently per platform. The packets were built on
-    Windows, so on Linux every single one looked "superseded by a rubric change", every
-    judgment was dropped, and the whole B1 scorecard silently regenerated EMPTY - which is
-    what broke the CI byte-clean gate. It would equally have corrupted the flagship table
-    for anyone who cloned the repo on Linux.
-
-    Both spellings of the same content are therefore accepted: the LF-normalised form and
-    the CRLF form, each computed from normalised text so either can be derived on any
-    platform. That matches the existing packets without rewriting their recorded
-    provenance, and stays correct whichever way a future checkout lands.
-    """
+def _rubric_inputs(root: Path):
+    """(judge_prompt_bytes, [anchor paths]) or None when the grading tree is absent."""
     judge_prompt_path = root / "grading" / "judge_prompt.md"
     anchors_dir = root / "grading" / "anchors"
     if not judge_prompt_path.exists() or not anchors_dir.exists():
+        return None
+    return judge_prompt_path.read_bytes(), sorted(anchors_dir.glob("*.md"))
+
+
+def _current_rubric_sha(root: Path) -> dict:
+    """{unit: rubric_sha} for every unit with a grading/anchors/<unit>.md file CURRENTLY
+    checked out (TESTPLAN 6.2). Mirrors packets.py's own formula. One STRING per unit --
+    this is the value stamped into a packet when it is built, so it must stay a scalar.
+    Aggregation should use `_acceptable_rubric_shas`, which tolerates line endings.
+    """
+    got = _rubric_inputs(root)
+    if got is None:
         return {}
+    prompt, anchors = got
+    return {p.stem: hashlib.sha256(p.read_bytes() + prompt).hexdigest() for p in anchors}
 
-    def _both(anchor: bytes, prompt: bytes) -> set[str]:
-        lf_a = anchor.replace(b"\r\n", b"\n")
-        lf_p = prompt.replace(b"\r\n", b"\n")
+
+def _acceptable_rubric_shas(root: Path) -> dict:
+    """{unit: {sha, ...}} -- every spelling of the CURRENT rubric that aggregation should
+    treat as a match.
+
+    This hash is taken over FILE BYTES, and the anchors are ordinary text: git hands them
+    to Windows as CRLF and to Linux as LF, so the same rubric hashes differently per
+    platform. The packets were built on Windows, so on a Linux checkout every packet
+    compared as "superseded by a rubric change", every judgment was dropped, and the
+    flagship B1 scorecard silently regenerated EMPTY - all dashes, agreement 0.0%. It
+    broke CI's byte-clean gate, but worse, anyone cloning on Linux would have produced a
+    blank scorecard with no indication anything was wrong.
+
+    Both spellings are accepted, each derived from normalised text so either is computable
+    on any platform. That matches the existing packets without rewriting their recorded
+    provenance.
+    """
+    got = _rubric_inputs(root)
+    if got is None:
+        return {}
+    prompt, anchors = got
+    lf_p = prompt.replace(b"\r\n", b"\n")
+    crlf_p = lf_p.replace(b"\n", b"\r\n")
+    out = {}
+    for p in anchors:
+        lf_a = p.read_bytes().replace(b"\r\n", b"\n")
         crlf_a = lf_a.replace(b"\n", b"\r\n")
-        crlf_p = lf_p.replace(b"\n", b"\r\n")
-        return {hashlib.sha256(lf_a + lf_p).hexdigest(),
-                hashlib.sha256(crlf_a + crlf_p).hexdigest()}
-
-    judge_prompt_bytes = judge_prompt_path.read_bytes()
-    return {
-        anchor_path.stem: _both(anchor_path.read_bytes(), judge_prompt_bytes)
-        for anchor_path in sorted(anchors_dir.glob("*.md"))
-    }
+        out[p.stem] = {hashlib.sha256(lf_a + lf_p).hexdigest(),
+                       hashlib.sha256(crlf_a + crlf_p).hexdigest()}
+    return out
 
 
 def run_tables(root: str | Path = ".") -> int:
@@ -169,7 +182,7 @@ def run_tables(root: str | Path = ".") -> int:
     roster_filter = set(resolve_cohort_models(cfg))
 
     agg = aggregate(rows, judgments, maps, kin_map=kin_map, refscores=refscores,
-                     judge_ids=judge_ids, current_rubric_sha=_current_rubric_sha(root),
+                     judge_ids=judge_ids, current_rubric_sha=_acceptable_rubric_shas(root),
                      roster_filter=roster_filter)
 
     units = cfg.suite.get("b1", {}).get("units_tier1", [])
