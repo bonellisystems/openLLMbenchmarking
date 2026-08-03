@@ -35,16 +35,22 @@ PUBKEY = Path("C:/Users/Michael/.ssh/vast_laguna.pub")
 PRIVKEY = "C:/Users/Michael/.ssh/vast_laguna"
 
 REQUIRED_GPU = "RTX PRO 6000"
-# run_all.sh fetches each model immediately before running it and deletes it after, so
-# peak disk is the LARGEST SINGLE MODEL (qwen3-235b, 134GB) plus the container image and
-# results - not the 639GB corpus. The old 780GB floor disqualified 15 of the available
-# RTX PRO 6000 offers on disk alone, and at times left none at all.
-MIN_DISK_GB = 300
-# qwen3-235b is 134GB and does not fit the 96GB card, so --cpu-moe parks its expert
-# tensors in system RAM: ~120GB resident plus OS and page-cache headroom. 160GB clears
-# that. A 200GB floor disqualified 50 of the 54 available RTX PRO 6000 boxes (the
-# common configuration is 126GB) for headroom nothing in the plan uses.
-MIN_RAM_GB = 160
+# FLOORS MUST TRACK THE CAMPAIGN, NOT FOSSILIZE. Twice now a stale floor silently
+# rejected most of the market: 200GB RAM (for a model later excluded) cut 50 of 54
+# offers, and the 160GB/1500Mbps pair below was still excluding $0.80-1.06/h boxes -
+# Michael spotted a $1.06 PCIe-5.0 machine (m:144787) that the RAM floor would have
+# refused for headroom nothing in the current plan uses. Each floor states WHAT it
+# protects; when that thing leaves the plan, the floor goes with it.
+#
+# Disk: peak = largest single model (glm-4.5-air, ~68GB; qwen3-235b is EXCLUDED) + the
+# container image + results + fetch-ahead slack. Fetch->run->release keeps it flat.
+MIN_DISK_GB = 200
+# RAM: weights live in VRAM, not RAM - no --cpu-moe model remains in the plan. RAM is
+# page cache + aria2 buffers + the harness; 64GB is already generous.
+MIN_RAM_GB = 64
+# Inet: the on-box HF probe is the REAL gate (aborts below 25MB/s before any spend).
+# This floor only pre-screens hosts too slow to bother renting: 500Mbps ~= 60MB/s.
+MIN_INET_MBPS = 500
 
 SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
               "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=20",
@@ -111,7 +117,7 @@ def find_offers(v, limit=6):
         if (o.get("reliability2") or 0) < 0.98:
             why["reliability"] += 1
             continue
-        if (o.get("inet_down") or 0) < 1500:
+        if (o.get("inet_down") or 0) < MIN_INET_MBPS:
             why["slow net"] += 1
             continue
         ok.append(o)
