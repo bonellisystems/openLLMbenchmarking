@@ -889,17 +889,69 @@ def compute_matrix():
     return models, agg, b5_arms
 
 
+# Laguna's per-unit values are kept as CONSTANTS rather than read from scorecard.md:
+# it was judged in a small incremental wave where the panel runs ~0.9pt lenient, and
+# these are the CAL-rescaled values consistent with its rescaled overall (6.1). The
+# scorecard table holds its RAW column (overall 7.0), which must not be shown beside a
+# rescaled headline.
+_LAGUNA_UNITS = [("operations", 7.2), ("data_analytics", 7.1), ("hr_people_ops", 6.9),
+                 ("finance", 6.7), ("sales", 6.5), ("marketing", 6.4), ("seo", 6.3),
+                 ("helpdesk", 6.3), ("outreach", 6.1), ("knowledge_mgmt", 6.1),
+                 ("coding", 6.1), ("project_mgmt", 5.7), ("cybersecurity", 5.6),
+                 ("legal_compliance", 5.0), ("it_infra", 3.9)]
+
+
+def _load_scorecard_units():
+    """{model: [(unit, score), ...]} parsed from results/tables/scorecard.md.
+
+    That table is the committed output of `python -m llmtest tables` — a byte-
+    deterministic units × models aggregation whose regenerate-cleanliness is enforced
+    by CI — so it is the authoritative per-unit source without this script having to
+    re-run the judgment aggregation itself. Before this existed, per-unit B1 detail was
+    published for exactly ONE model (a hardcoded laguna list) and the other sixteen
+    B1-tested models silently had none, which read as "the breakdown doesn't exist".
+    """
+    p = REPO / "results" / "tables" / "scorecard.md"
+    out = {}
+    if not p.exists():
+        return out
+    header = None
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if header is None:
+            if cells and cells[0] == "Unit":
+                header = cells[1:]
+                for m in header:
+                    out[m] = []
+            continue
+        if not cells or set(cells[0]) <= {"-"} or cells[0] == "Overall":
+            continue
+        unit, vals = cells[0], cells[1:]
+        for m, v in zip(header, vals):
+            if v != "-":
+                try:
+                    out[m].append((unit, float(v)))
+                except ValueError:
+                    pass
+    return {m: units for m, units in out.items() if units}
+
+
+_SCORECARD_UNITS = None
+
+
 def b1_units_for(model, rows=None):
-    """Per-unit B1 detail is only published for Laguna (computed during its judging
-    wave); the frozen 16 keep the report's overall score."""
-    if model != "laguna-s-2.1":
-        return []
-    vals = [("operations", 7.2), ("data_analytics", 7.1), ("hr_people_ops", 6.9),
-            ("finance", 6.7), ("sales", 6.5), ("marketing", 6.4), ("seo", 6.3),
-            ("helpdesk", 6.3), ("outreach", 6.1), ("knowledge_mgmt", 6.1),
-            ("coding", 6.1), ("project_mgmt", 5.7), ("cybersecurity", 5.6),
-            ("legal_compliance", 5.0), ("it_infra", 3.9)]
-    return [{"name": u, "score": s, "display": f"{s}"} for u, s in vals]
+    """Per-unit B1 scores for ANY judged model (the 'how did each department do'
+    breakdown). laguna-s-2.1 keeps its CAL-rescaled constants; everyone else comes
+    from the scorecard table."""
+    global _SCORECARD_UNITS
+    if model == "laguna-s-2.1":
+        return [{"name": u, "score": s, "display": f"{s}"} for u, s in _LAGUNA_UNITS]
+    if _SCORECARD_UNITS is None:
+        _SCORECARD_UNITS = _load_scorecard_units()
+    return [{"name": u, "score": s, "display": f"{s:.1f}"}
+            for u, s in _SCORECARD_UNITS.get(model, [])]
 
 
 def main():

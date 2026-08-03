@@ -4,8 +4,10 @@ A single-file, dependency-free page that shows how a roster of **locally-servabl
 scored across eleven evaluation batteries, what the numbers *don't* cover, and the
 speculative-decoding throughput that the battery suite itself under-reports.
 
-Open `index.html` in a browser. No build step, no server, no network calls — the data is
-embedded in the file, so it works from `file://` and from GitHub Pages unchanged.
+Live at **<https://openllms.bonellisystems.com>** (explorer:
+<https://openllms.bonellisystems.com/explorer/index.html>), served by Netlify from this
+directory. Or open `index.html` in a browser — no build step, no server, no network
+calls; the data is embedded in the file, so it works from `file://` unchanged.
 
 ![preview](preview.png)
 

@@ -9,10 +9,13 @@ The point of this project is not another leaderboard. It is a harness that tries
 Every gap is listed with its cause and what it would cost to close. Several findings below
 exist only because the harness caught itself producing numbers that looked fine and weren't.
 
-**Start here:** open [`dashboard/index.html`](dashboard/index.html) in a browser — a
-single self-contained page, no build step, no server, no network calls. To check any score
-against the raw record, open [`dashboard/explorer/index.html`](dashboard/explorer/index.html)
-and read what the model actually wrote.
+**Start here: <https://openllms.bonellisystems.com>** — the live dashboard, a single
+self-contained page. To check any score against the raw record, open the explorer at
+<https://openllms.bonellisystems.com/explorer/index.html> and read what the model
+actually wrote. (Both also work straight from a checkout: open
+[`dashboard/index.html`](dashboard/index.html) or
+[`dashboard/explorer/index.html`](dashboard/explorer/index.html) in a browser — no build
+step, no server, no network calls.)
 
 ---
 
