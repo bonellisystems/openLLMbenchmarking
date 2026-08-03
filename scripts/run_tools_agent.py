@@ -118,8 +118,8 @@ TASKS = [
 ]
 
 
-def chat(url, messages, *, max_tokens, temperature, tools, timeout=1800, extra=None):
-    body = {"messages": messages, "max_tokens": max_tokens, "temperature": temperature,
+def chat(url, messages, *, model, max_tokens, temperature, tools, timeout=1800, extra=None):
+    body = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature,
             "stream": False, "tools": tools}
     if extra:
         body.update(extra)
@@ -172,7 +172,7 @@ def plant(ws: Path, files: dict):
         p.write_text(content, encoding="utf-8")
 
 
-def agent_loop(url, ws: Path, prompt: str, *, max_tokens, temperature):
+def agent_loop(url, ws: Path, prompt: str, *, model, max_tokens, temperature):
     """Advertise -> call -> execute -> feed back, until the model stops or we hit the
     step cap. Returns (steps, tool_names, transcript_tail, error)."""
     msgs = [{"role": "system",
@@ -183,7 +183,7 @@ def agent_loop(url, ws: Path, prompt: str, *, max_tokens, temperature):
     used, err = [], None
     for step in range(MAX_STEPS):
         try:
-            d = chat(url, msgs, max_tokens=max_tokens, temperature=temperature, tools=TOOLS)
+            d = chat(url, msgs, model=model, max_tokens=max_tokens, temperature=temperature, tools=TOOLS)
         except Exception as e:                                    # noqa: BLE001
             err = f"{type(e).__name__}: {e}"
             break
@@ -238,7 +238,7 @@ def main():
             t0 = time.time()
             n_calls, used, tail, err = agent_loop(
                 args.endpoint_url, ws, t["prompt"],
-                max_tokens=args.max_tokens, temperature=args.temperature)
+                max_tokens=args.max_tokens, temperature=args.temperature, model=args.model)
             secs = time.time() - t0
             try:
                 completed = bool(t["check"](ws))

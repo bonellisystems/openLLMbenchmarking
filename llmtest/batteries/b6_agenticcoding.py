@@ -198,7 +198,7 @@ class B6AgenticCoding(Battery):
         max_tokens = cfg.suite["b6"]["max_tokens_by_track"].get(track, 4000)
 
         response = endpoint.chat(messages, max_tokens=max_tokens, temperature=None)
-        text = response["choices"][0]["message"]["content"]
+        text = response["choices"][0]["message"]["content"] or ""  # null on reasoning models via proxies
 
         code = extract_code_block(text, language)
         code_for_checks = code if code is not None else ""

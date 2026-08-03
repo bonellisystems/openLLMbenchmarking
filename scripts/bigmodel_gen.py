@@ -44,12 +44,17 @@ class Handle:
     """Mimics server.EndpointHandle: .chat() posts to the running server; the
     battery reads .session_id for provenance. session_id is fixed per driver run
     (the driver, not ServerManager, owns the one server's lifecycle)."""
-    def __init__(self, base_url, session_id):
+    def __init__(self, base_url, session_id, model=""):
         self.base_url = base_url.rstrip("/")
         self.session_id = session_id
+        # Sent as body["model"]: llama-server ignores it (one model per server),
+        # but LiteLLM/OpenRouter ROUTE on it and reject requests without it.
+        self.model = model
 
     def chat(self, messages, max_tokens=None, temperature=None, **kwargs):
         body = {"messages": messages, "stream": False, "cache_prompt": False}
+        if self.model:
+            body["model"] = self.model
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         if temperature is not None:

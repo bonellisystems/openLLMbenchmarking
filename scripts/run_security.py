@@ -37,8 +37,8 @@ VERDICT = re.compile(r"^\s*VERDICT\s*:\s*(VULNERABLE|SAFE)\b", re.I | re.M)
 CWE_RE = re.compile(r"CWE[-\s]?(\d{1,4})", re.I)
 
 
-def chat(url, prompt, *, max_tokens, temperature, timeout=1800, extra=None):
-    body = {"messages": [{"role": "user", "content": prompt}],
+def chat(url, prompt, *, model, max_tokens, temperature, timeout=1800, extra=None):
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temperature, "stream": False}
     if extra:
         body.update(extra)
@@ -49,7 +49,7 @@ def chat(url, prompt, *, max_tokens, temperature, timeout=1800, extra=None):
         return json.loads(r.read().decode())
 
 
-def ask(url, prompt, *, max_tokens, temperature):
+def ask(url, prompt, *, model, max_tokens, temperature):
     """Same attempt ladder as the game battery: a reasoning model can burn its whole
     budget thinking and return nothing, which would score as a refusal/miss and be a
     harness artifact rather than a result."""
@@ -59,7 +59,7 @@ def ask(url, prompt, *, max_tokens, temperature):
     text, err, used = "", None, "base"
     for name, mt, extra in rungs:
         try:
-            d = chat(url, prompt, max_tokens=mt, temperature=temperature, extra=extra)
+            d = chat(url, prompt, model=model, max_tokens=mt, temperature=temperature, extra=extra)
             text = (d.get("choices") or [{}])[0].get("message", {}).get("content") or ""
             err = None
         except Exception as e:                                   # noqa: BLE001
@@ -177,7 +177,7 @@ def main():
                 prompt += ("\n\nThis file may contain MORE THAN ONE distinct defect. "
                            "List every one you find, each with its own CWE and location.")
             t0 = time.time()
-            text, err, rung = ask(args.endpoint_url, prompt,
+            text, err, rung = ask(args.endpoint_url, prompt, model=args.model,
                                   max_tokens=max(args.max_tokens, 3000),
                                   temperature=args.temperature)
             base = score(text, expect_vulnerable=expect_vuln, keywords=None, cwe=None)
@@ -219,7 +219,7 @@ def main():
                 continue
             prompt = tmpl.format(filename=fname, code=code)
             t0 = time.time()
-            text, err, rung = ask(args.endpoint_url, prompt,
+            text, err, rung = ask(args.endpoint_url, prompt, model=args.model,
                                   max_tokens=args.max_tokens, temperature=args.temperature)
             sc = score(text, expect_vulnerable=expect_vuln, keywords=kw, cwe=cwe,
                        accepted=accepted)

@@ -191,7 +191,7 @@ class B3Hallucination(Battery):
         for turn_prompt in turns:
             messages.append({"role": "user", "content": turn_prompt})
             response = endpoint.chat(messages, max_tokens=max_tokens, temperature=None)
-            last_text = response["choices"][0]["message"]["content"]
+            last_text = response["choices"][0]["message"]["content"] or ""  # null on reasoning models via proxies
             messages.append({"role": "assistant", "content": last_text})
             transcript_parts.append(f"USER: {turn_prompt}\n\nASSISTANT: {last_text}")
             last_response = response

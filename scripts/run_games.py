@@ -43,9 +43,11 @@ class Unreachable(Exception):
     """
 
 
-def chat(url: str, prompt: str, *, max_tokens: int, temperature: float, timeout=600,
-         extra: dict | None = None) -> dict:
-    body = {"messages": [{"role": "user", "content": prompt}],
+def chat(url: str, prompt: str, *, model: str, max_tokens: int, temperature: float,
+         timeout=600, extra: dict | None = None) -> dict:
+    # "model" is REQUIRED for any multi-model endpoint (LiteLLM/OpenRouter route on
+    # it and 400 without it); llama-server serves one model and ignores it.
+    body = {"model": model, "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens, "temperature": temperature, "stream": False}
     if extra:
         body.update(extra)
@@ -145,7 +147,7 @@ def main():
             text, usage, err, rung = "", {}, None, "base"
             for rung_name, mt, extra in attempts:
                 try:
-                    resp = chat(args.endpoint_url, prompt, max_tokens=mt,
+                    resp = chat(args.endpoint_url, prompt, model=args.model, max_tokens=mt,
                                 temperature=args.temperature, extra=extra,
                                 timeout=args.req_timeout)
                     text = (resp.get("choices") or [{}])[0].get("message", {}).get("content") or ""

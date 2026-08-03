@@ -284,7 +284,7 @@ class B4LongContext(Battery):
         max_tokens = b4cfg["max_tokens"]
         response = endpoint.chat([{"role": "user", "content": document}],
                                  max_tokens=max_tokens, temperature=None)
-        text = response["choices"][0]["message"]["content"]
+        text = response["choices"][0]["message"]["content"] or ""  # null on reasoning models via proxies
 
         det_checks = check_needle_signals(text, item.payload["signals"])
         n_signals = len(det_checks)

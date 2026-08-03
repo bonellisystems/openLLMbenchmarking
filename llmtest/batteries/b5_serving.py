@@ -75,6 +75,13 @@ class B5Serving(Battery):
                 continue
             if str(m.get("local_path", "")).startswith("TO-"):
                 continue                    # artifact not on disk yet
+            if m.get("role") == "api-reference":
+                # B5 is timing-authoritative on LOCAL serving. Pointed at an API
+                # (via a proxy) there are no llama timings, so peak_metrics would
+                # return zeros and the row would still be written with
+                # timing_authoritative=True - a fabricated benchmark number.
+                # Every other battery has a role skip; B5 had none.
+                continue
             for cond in _conditions(order, extra_runtimes=extra_runtimes):
                 if force:
                     existing = [r["run_n"] for r in store.iter_rows()
