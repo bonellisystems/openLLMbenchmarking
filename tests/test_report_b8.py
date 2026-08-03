@@ -419,21 +419,24 @@ def test_build_b8_section_labels_source_suite(tmp_path):
     assert "suite-v2.1.0" in section
 
 
-def test_build_b8_section_never_blends_two_source_suites(tmp_path):
-    """A (hypothetical) v2.0.0 B8 row and a v2.1.0 B8 row must render as
-    two separately-labeled sub-blocks, mirroring every other battery
-    section's _split_by_source_suite discipline -- never one combined
-    k/N across both suite versions."""
+def test_build_b8_section_latest_version_wins_never_blends(tmp_path):
+    """Supersede policy (2026-08-03, llmtest/rowselect): a v2.0.0 B8 row and a
+    v2.1.0 B8 row for the SAME (model, battery) cell are a re-measurement, not
+    two datasets -- only the newest version renders. The blended-2/2 failure
+    the old cross-labeling guarded against is now impossible one step earlier:
+    the superseded row never reaches the section at all. Distinct cells at
+    different versions still render, each under its own source_suite label."""
     caveats: list[str] = []
     _write_b8_row(tmp_path, "suite-v2.0.0", model_id="model-a", harness="opencode", run_n=1)
     _write_b8_row(tmp_path, "suite-v2.1.0", model_id="model-a", harness="opencode", run_n=1)
+    _write_b8_row(tmp_path, "suite-v2.0.0", model_id="model-b", harness="opencode", run_n=1)
     rows = p8_report.load_rows(tmp_path, "suite-v2.0.0", caveats)
 
     section = p8_report.build_b8_section(tmp_path, _cfg(), rows)
 
-    assert "suite-v2.0.0" in section
+    # model-a: only its v2.1.0 replacement row; model-b: its v2.0.0 row survives.
     assert "suite-v2.1.0" in section
-    # Each shard's group should show 1/1, never a blended 2/2.
+    assert "suite-v2.0.0" in section
     assert "1/1" in section
     assert "2/2" not in section
 

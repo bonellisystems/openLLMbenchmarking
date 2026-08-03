@@ -126,6 +126,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--endpoint-url", required=True)
     ap.add_argument("--model", required=True)
+    ap.add_argument("--suite-version", default="suite-v2.2.0",
+                    help="stamped into every row; rowselect uses it for latest-version-wins supersede")
+    ap.add_argument("--hardware-sku", default="",
+                    help="hardware SKU stamped into every row (e.g. rtx-pro-6000-vm). Legacy rows carry none, which is how 264 laptop B9 rows needed ledger archaeology to attribute - never again.")
     ap.add_argument("--out", default="results_security")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--max-tokens", type=int, default=2000)
@@ -179,7 +183,8 @@ def main():
             base = score(text, expect_vulnerable=expect_vuln, keywords=None, cwe=None)
             ch = score_chain(text, defects) if expect_vuln else None
             row = {
-                "battery": 10, "model_id": args.model, "task_id": task_id, "run_n": rep,
+                "battery": 10, "suite_version": args.suite_version,
+                "hardware_sku": args.hardware_sku, "model_id": args.model, "task_id": task_id, "run_n": rep,
                 "condition": f"cond=B10hard;expect={'vuln' if expect_vuln else 'safe'};temp={args.temperature}",
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "det_checks": {
@@ -219,7 +224,8 @@ def main():
             sc = score(text, expect_vulnerable=expect_vuln, keywords=kw, cwe=cwe,
                        accepted=accepted)
             row = {
-                "battery": 10, "model_id": args.model, "task_id": task_id, "run_n": rep,
+                "battery": 10, "suite_version": args.suite_version,
+                "hardware_sku": args.hardware_sku, "model_id": args.model, "task_id": task_id, "run_n": rep,
                 "condition": f"cond=B10;expect={'vuln' if expect_vuln else 'safe'};temp={args.temperature}",
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "det_checks": {

@@ -72,7 +72,7 @@ FULL_JUDGE_PANEL = ("claude", "codex", "gemini")
 # load_rows_for_suite) so the report can label every battery row group with
 # its source_suite and never silently blend the two. Only v2.0.0 exists on
 # disk today; v2.1.0 degrades to zero rows, no caveat, until it appears.
-KNOWN_SUITE_VERSIONS = ("suite-v2.0.0", "suite-v2.1.0")
+KNOWN_SUITE_VERSIONS = ("suite-v2.0.0", "suite-v2.1.0", "suite-v2.2.0")
 
 
 # --------------------------------------------------------------------------
@@ -130,7 +130,14 @@ def load_rows(root: Path, suite_version: str, caveats: list[str]) -> list[dict]:
         if other == suite_version:
             continue
         rows += load_rows_for_suite(root, other, caveats, required=False)
-    return rows
+    # CURRENT rows only: latest suite version per (model, battery), hardware-superseded
+    # cells withdrawn until their replacement lands (config/superseded.yaml). Without
+    # this the report would quote retired laptop/SETUPFAIL measurements alongside their
+    # re-runs. count_check off here: the shard-count asserts are enforced by
+    # dashboard/build_data.py, and this loader may legitimately see a partial set when
+    # invoked with a non-default root in tests.
+    from llmtest.rowselect import effective_suite_rows, load_superseded
+    return effective_suite_rows(rows, load_superseded(root), count_check=False)
 
 
 def load_baseline_maps(root: Path, judgments: list[dict] | None = None) -> dict[str, dict]:
@@ -1257,7 +1264,8 @@ def build_report(root: Path) -> tuple[str, str]:
     cfg = load_config(root)
     suite_version = cfg.suite["suite_version"]
     roster = resolve_cohort_models(cfg)
-    hardware_label = "2x RTX PRO 6000 (rented)"
+    hardware_label = ("RTX PRO 6000 Blackwell (rented; one model per card) - "
+                      "wrong-hardware cells withdrawn per config/superseded.yaml")
 
     caveats: list[str] = []
     rows = load_rows(root, suite_version, caveats)

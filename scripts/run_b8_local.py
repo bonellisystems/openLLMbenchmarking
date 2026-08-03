@@ -41,6 +41,7 @@ stamped only inside execute()), so omitting it here changes nothing.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import sys
 import time
 import uuid
@@ -142,6 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session-id", default=None,
                    help="Override the session_id stamped on emitted rows "
                         "(provenance only). Default: a fresh 'manual-<uuid8>'.")
+    p.add_argument("--hardware-sku", default="",
+                   help="When set, one provenance session row (session_id + "
+                        "hardware_sku) is appended to the store's sessions.jsonl. "
+                        "The hardware audit found this runner's manual-* session ids "
+                        "resolved to NOTHING - 1,749 B8 rows needed ledger archaeology "
+                        "to attribute to a machine. Always pass it on rented boxes "
+                        "(e.g. rtx-pro-6000-vm).")
     p.add_argument("--results-dir", default=None,
                    help="Store dir for the emitted rows shard (default: "
                         "<repo>/results). Set a SEPARATE dir per concurrent "
@@ -191,6 +199,16 @@ def main(argv=None) -> int:
                            "kv_dtype": b8cfg.get("kv"), "endpoint_url": base_url})
 
     store = Store(Path(args.results_dir) if args.results_dir else ROOT / "results")
+    if args.hardware_sku:
+        # Make the session_id on this run's rows RESOLVE to a machine. Minimal record,
+        # same shape as llmtest/server.py's session rows for the fields that matter.
+        store.append_session({
+            "schema_version": 1, "session_id": session_id,
+            "hardware_sku": args.hardware_sku, "runtime": "manual",
+            "normalized_config": endpoint.normalized_config,
+            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        })
+        print(f"run_b8_local: session {session_id} recorded as {args.hardware_sku}")
     ctx = RunContext(cfg=cfg, store=store, root=ROOT, keep_server=True, debug=False)
     ctx.b8_endpoint = endpoint   # the seam -- ctx.server_manager() is never called
 

@@ -57,7 +57,9 @@ calls; the data is embedded in the file, so it works from `file://` unchanged.
    only 35% of answers (mean spread 2.45). Read tiers, not positions.
 4. **Hardware is not interchangeable.** Re-running one model on an A100 instead of a
    Blackwell moved its deterministic scores by up to 13 points *at temperature 0*, because
-   batching and GPU numerics shift borderline outputs.
+   batching and GPU numerics shift borderline outputs. The page holds one standard —
+   RTX PRO 6000 (Blackwell) — and cells measured on anything else are withdrawn (shown
+   as *not run*) until re-measured; see `config/superseded.yaml`.
 
 ## The explorer — every question, answer and artefact
 
@@ -145,5 +147,5 @@ and greyscale reading. Speedup bars are single-hue, baseline-anchored, directly 
 
 ## Licence / provenance
 
-Results were produced by the `llmtest-v2` harness on an RTX 5090 Laptop (24 GB) and rented
-RTX PRO 6000 Blackwell instances. Model names are upstream Hugging Face repo identifiers.
+Published results are produced by the `llmtest-v2` harness on rented RTX PRO 6000
+(Blackwell) instances — the suite's single hardware standard. Model names are upstream Hugging Face repo identifiers.

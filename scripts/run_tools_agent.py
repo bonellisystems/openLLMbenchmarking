@@ -216,6 +216,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--endpoint-url", required=True)
     ap.add_argument("--model", required=True)
+    ap.add_argument("--suite-version", default="suite-v2.2.0",
+                    help="stamped into every row; rowselect uses it for latest-version-wins supersede")
+    ap.add_argument("--hardware-sku", default="",
+                    help="hardware SKU stamped into every row (e.g. rtx-pro-6000-vm). Legacy rows carry none, which is how 264 laptop B9 rows needed ledger archaeology to attribute - never again.")
     ap.add_argument("--workspace", required=True)
     ap.add_argument("--out", default="results_tools")
     ap.add_argument("--reps", type=int, default=3)
@@ -241,7 +245,8 @@ def main():
             except Exception:
                 completed = False
             row = {
-                "battery": 11, "model_id": args.model, "task_id": f"b11.{t['id']}",
+                "battery": 11, "suite_version": args.suite_version,
+                "hardware_sku": args.hardware_sku, "model_id": args.model, "task_id": f"b11.{t['id']}",
                 "run_n": rep,
                 "condition": f"cond=B11;harness=client-loop;steps<={MAX_STEPS};temp={args.temperature}",
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),

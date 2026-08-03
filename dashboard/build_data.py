@@ -34,6 +34,17 @@ ROOT = Path(__file__).resolve().parent
 # the parent. Resolved by looking for the results tree rather than by assuming a name, so
 # neither layout needs a code change.
 REPO = ROOT.parent / "llmtest-v2" if (ROOT.parent / "llmtest-v2" / "results").is_dir()     else ROOT.parent
+
+# Row selection policy: every aggregation goes through llmtest.rowselect so that
+# superseded (wrong-hardware) measurements read as gaps and re-runs at a bumped suite
+# version take over per cell. Aggregating raw shards here would resurrect laptop rows.
+import sys as _sys
+
+_sys.path.insert(0, str(REPO))
+from llmtest.rowselect import (effective_custom_rows, effective_suite_rows,  # noqa: E402
+                               load_superseded, suite_cell_allowed, version_tuple)
+
+SUPERSEDED = load_superseded(REPO)
 OUT = ROOT / "data.json"
 HTML = ROOT / "index.html"
 
@@ -303,12 +314,15 @@ GAPS = [
 ]
 
 CAVEATS = {
-    "hardware": "B1-B7 for the original 16 models ran on 2x RTX PRO 6000 (Blackwell). Laguna ran "
-                "on a single rented RTX PRO 6000 Blackwell. The B8 agentic sweep ran locally on an "
-                "RTX 5090 Laptop 24GB. Hardware is NOT interchangeable: re-running Laguna on an "
-                "A100 (Ampere) moved its deterministic scores by up to 13 points (B6 87 -> 100, "
-                "B2 97 -> 90) at temperature 0, because batching and GPU numerics shift borderline "
-                "outputs.",
+    "hardware": "ONE hardware standard: RTX PRO 6000 (Blackwell), one model per card. Hardware is "
+                "NOT interchangeable - re-running one model on an A100 (Ampere) moved its "
+                "deterministic scores by up to 13 points (B6 87 -> 100, B2 97 -> 90) at "
+                "temperature 0, because batching and GPU numerics shift borderline outputs. A "
+                "2026-08-03 provenance audit found cells measured elsewhere (an RTX 5090 Laptop; "
+                "one rented RTX 5090 32GB session) and every one of them has been WITHDRAWN from "
+                "this page pending PRO-6000 re-runs - they show as 'not run', never as a number "
+                "from the wrong machine. The withdrawal list is committed in "
+                "config/superseded.yaml; replacements land under suite-v2.2.0.",
     "ngram_workload": "n-gram speculative decoding is lossless (temp-0 output is byte-identical) "
                       "and costs no VRAM, but its speedup depends entirely on how much the output "
                       "repeats the context. Edit/rewrite: 2-12x. Fresh generation: ~1.0-1.6x.",
@@ -565,7 +579,8 @@ def compute_b9(matrix):
     hung and the box was torn down. The expected count is derived from the data itself
     (distinct tasks x max reps) so it cannot go stale when games are added.
     """
-    rows = _load("results_games/rows-games.jsonl")
+    rows = effective_custom_rows(_load("results_games/rows-games.jsonl"),
+                                 SUPERSEDED, "rows-games.jsonl")
     tally = collections.defaultdict(lambda: [0, 0])
     per_game = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
     for r in rows:
@@ -598,7 +613,8 @@ def compute_b10(matrix):
     """Security: headline is whole-chain recall x specificity - the two axes that decide
     whether a finding is usable. Sensitivity is a sub-score because it is ~100% for
     everything and therefore discriminates nothing."""
-    rows = _load("results_security/rows-security.jsonl")
+    rows = effective_custom_rows(_load("results_security/rows-security.jsonl"),
+                                 SUPERSEDED, "rows-security.jsonl")
     agg = collections.defaultdict(lambda: {"sens": [0, 0], "spec": [0, 0], "dec": [0, 0],
                                            "chain": [0, 0], "whole": [0, 0], "ref": 0, "n": 0})
     for r in rows:
@@ -664,7 +680,8 @@ def compute_b10(matrix):
 
 def compute_b11(matrix):
     """Tool loop: task completion, verified from the filesystem rather than narration."""
-    rows = _load("results_tools/rows-tools.jsonl")
+    rows = effective_custom_rows(_load("results_tools/rows-tools.jsonl"),
+                                 SUPERSEDED, "rows-tools.jsonl")
     tally = collections.defaultdict(lambda: [0, 0])
     per = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
     calls = collections.defaultdict(list)
@@ -700,7 +717,9 @@ def rows_from_shards():
                 out.append(json.loads(line))
             except Exception:
                 continue
-    return out
+    # CURRENT rows only: latest suite version per (model, battery), withdrawn cells
+    # excluded until their v2.2.0 replacement lands (config/superseded.yaml).
+    return effective_suite_rows(out, SUPERSEDED)
 
 
 def det_pass(row):
@@ -862,14 +881,50 @@ def compute_matrix():
         b8_cats[mid][cat][1] += 1
         b8_cats[mid][cat][0] += 1 if done else 0
 
+    # GATHER both sources first, then filter through the supersede policy. B8 is the one
+    # battery whose rows live in two places, so per-cell "has a v2.2.0 replacement
+    # landed?" can only be answered after seeing both — a streaming check against one
+    # source would flip a cell back on prematurely. NOTE: `rows` (the suite shard) has
+    # already been through effective_suite_rows, so shard-side laptop/SETUPFAIL copies
+    # are gone; this pass governs the results_b8_<model>/ directory scan, which is where
+    # the 07-23/24 laptop sweep (never merged) reaches the dashboard.
+    b8_candidates = []
     for f in sorted(REPO.glob("results_b8_*/*.jsonl")):
         for line in f.open(encoding="utf-8"):
             try:
-                take_b8(json.loads(line))
+                r = json.loads(line)
             except Exception:
                 continue
-    for r in rows:                                   # committed shard
+            if r.get("battery") == 8:
+                b8_candidates.append(r)
+    b8_candidates += [r for r in rows if r.get("battery") == 8]
+
+    cell_max = {}
+    for r in b8_candidates:
+        raw = r.get("model_id")
+        v = version_tuple(r.get("suite_version"))
+        if v > cell_max.get(raw, (-1,)):
+            cell_max[raw] = v
+
+    b8_dropped = collections.Counter()
+    for r in b8_candidates:
+        raw = r.get("model_id")
+        if not suite_cell_allowed(SUPERSEDED, raw, 8, cell_max.get(raw)):
+            b8_dropped[raw] += 1
+            continue
         take_b8(r)
+
+    # n_expected assertion for the dirs-sourced sweep cells (their rows exist ONLY in
+    # the directories, so no other consumer can check them). A drifted count means the
+    # dirs changed under config/superseded.yaml — fail loudly, never reshape silently.
+    for c in SUPERSEDED.get("cells", []):
+        if c.get("battery") == 8 and c.get("source") == "dirs":
+            got = b8_dropped.get(c["model"], 0)
+            if got != c.get("n_expected"):
+                raise RuntimeError(
+                    f"superseded B8 cell {c['model']}: dropped {got} dir rows, "
+                    f"n_expected {c.get('n_expected')} — results_b8_* changed under "
+                    f"config/superseded.yaml")
 
     for mid, (p, n) in b8_tally.items():
         if not n or mid not in agg:

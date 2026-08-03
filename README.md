@@ -21,7 +21,10 @@ step, no server, no network calls.)
 
 ## Coverage
 
-**204 of 220 cells (92.7%)**, 12,134 rows, schema-validated clean.
+**176 of 220 cells (80.0%)** under the single-hardware standard, ~12,700 rows,
+schema-validated clean. (Coverage dropped from 92.7% on 2026-08-03 when the
+provenance audit withdrew every wrong-hardware cell — the number got smaller
+because it got honest.)
 
 | Battery | Measures | Unit | Kind |
 |---|---|---|---|
@@ -67,17 +70,24 @@ step, no server, no network calls.)
 
 Re-running one model on an A100 instead of a Blackwell card moved its deterministic scores
 by up to **13 points at temperature 0** — batching and GPU numerics shift borderline
-outputs. Every run in this repo records its serving configuration
-(`results/sessions.jsonl`), and the roster is pinned to RTX PRO 6000 Blackwell for
-comparability. Local development targets an RTX 5090 Laptop (24 GB).
+outputs. The suite therefore holds ONE hardware standard: **RTX PRO 6000 (Blackwell), one
+model per card**. A 2026-08-03 provenance audit found cells that had been measured
+elsewhere (a local RTX 5090 Laptop; one rented RTX 5090 32GB session); every such cell is
+**withdrawn** — it reads "not run" on the dashboard rather than showing a number from the
+wrong machine — until its RTX PRO 6000 re-run lands. The store is append-only: withdrawn
+rows are never deleted, they are out-versioned (`config/superseded.yaml` +
+`llmtest/rowselect.py`, "latest suite version wins per cell"). Serving configurations are
+recorded per session (`results/sessions.jsonl`).
 
 ## Known gaps — and why they exist
 
-All 16 open cells have a stated cause. None is a hidden failure.
+All 44 open cells have a stated cause. None is a hidden failure.
 
 | Gap | Cells | Cause |
 |---|---|---|
-| **B8 on six models** | 6 | B8's completion oracle validates inside a **container**, and the rented boxes have no Docker. Running with the sandbox disabled lets the *agent* run but the *oracle* fails setup, so completion is never credited. Those rows record `oracle.detail = "hidden_validate setup failed"` and are excluded as **missing** measurements — scoring them naively produced a flat 0% for five models including `gpt-oss-120b`, which every other signal says is among the strongest here. |
+| **B8 on all models** | 18 | ZERO oracle-valid RTX PRO 6000 B8 rows exist. The valid rows came from the laptop (wrong hardware, withdrawn); the PRO-6000 attempts ran without Docker, so the completion oracle failed setup on every row (`oracle.detail = "hidden_validate setup failed"`) — a missing measurement, not a model failure. The re-run needs a VM-class box with Docker. |
+| **B9 on twelve models** | 12 | Withdrawn: measured on the RTX 5090 Laptop (fully, 9 models; partially, 3). Re-run whole cells on RTX PRO 6000. |
+| **abl-qwen3.6-27b B2/B3/B6/B11** | 4 | Withdrawn: measured on a rented RTX 5090 32GB — Blackwell, but not the standard card. Its B4/B5/B7 ran on RTX PRO 6000 and stand. |
 | **B1 on three models** | 3 | Needs a judging pass, not GPU time. The matrix keys B1 on a *judged score*, so generating rows leaves the cell grey. |
 | **`bonsai-ternary-27b` B10/B11** | 2 | Its `Q2_0` is a prism-ml custom quantization; the official llama.cpp image cannot load the file at all. Needs the prism fork built on-box. |
 | **`qwen3-235b` B8–B11** | 4 | Deliberately held out pending a large-model pass. At 134 GB it needs `--cpu-moe`, which streams experts over PCIe at ~8× the cost per row. Recorded in `scripts/build_run_manifest.py` (`EXCLUDED`) and reversible by deleting one entry. |
@@ -132,5 +142,7 @@ those rules exists because its absence cost something real.
 
 ## Licence / provenance
 
-Model names are upstream Hugging Face repo identifiers. Results were produced by this
-harness on an RTX 5090 Laptop (24 GB) and rented RTX PRO 6000 Blackwell instances.
+Model names are upstream Hugging Face repo identifiers. Published results are produced
+by this harness on rented RTX PRO 6000 (Blackwell) instances — the suite's single
+hardware standard. Development happens on an RTX 5090 Laptop (24 GB); anything it
+measured is withdrawn from the published numbers (see Hardware section).

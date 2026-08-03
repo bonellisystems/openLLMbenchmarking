@@ -27,7 +27,14 @@ ROOT = Path(__file__).resolve().parent
 # the parent. Resolved by looking for the results tree rather than by assuming a name, so
 # neither layout needs a code change.
 REPO = ROOT.parent / "llmtest-v2" if (ROOT.parent / "llmtest-v2" / "results").is_dir()     else ROOT.parent
-GAMES_SRC = ROOT.parent / "michael"
+# Ad-hoc playable game builds live in the WORKSPACE (D:\...\LLMtesting\michael), which
+# sits beside the suite repo — one level up in the sibling layout, two in the published
+# layout. On a fresh clone of the public repo neither exists, and then the games already
+# COMMITTED under explorer/games/ are the only source; the emit step below must never
+# destroy them (it did once: rmtree(OUT) wiped all 19 and an absent GAMES_SRC restored
+# nothing).
+_GAMES_CANDIDATES = (ROOT.parent / "michael", ROOT.parent.parent / "michael")
+GAMES_SRC = next((p for p in _GAMES_CANDIDATES if p.is_dir()), _GAMES_CANDIDATES[0])
 OUT = ROOT / "explorer"
 DATA = OUT / "data"
 
@@ -49,31 +56,60 @@ def read_text(p: Path, cap=MAX_ANSWER):
 
 
 def load_rows():
-    rows = []
+    """Every CURRENT row across all sources, selected through llmtest.rowselect so the
+    explorer never shows superseded wrong-hardware runs beside their replacements.
+    Withdrawn cells simply have no runs listed until their v2.2.0 re-run lands —
+    exactly matching what the dashboard's matrix says about them."""
+    import sys
+    sys.path.insert(0, str(REPO))
+    from llmtest.rowselect import (effective_custom_rows, effective_suite_rows,
+                                   load_superseded, suite_cell_allowed, version_tuple)
+    sup = load_superseded(REPO)
+
+    suite = []
     for p in sorted((REPO / "results").glob("rows-suite-v2.*.jsonl")):
         if "shakedown" in p.name:
             continue
         for line in p.open(encoding="utf-8"):
             try:
-                rows.append(json.loads(line))
+                suite.append(json.loads(line))
             except Exception:
                 continue
-    # the newer batteries live in their own shards
-    for extra in ("results_games/rows-games.jsonl", "results_security/rows-security.jsonl",
-                  "results_tools/rows-tools.jsonl"):
-        p = REPO / extra
-        if p.exists():
-            for line in p.open(encoding="utf-8"):
-                try:
-                    rows.append(json.loads(line))
-                except Exception:
-                    continue
+    # B8 dir rows join the suite pool BEFORE selection so per-cell max-version is
+    # computed across both of B8's sources (same reasoning as build_data's take_b8).
     for p in sorted(REPO.glob("results_b8_*/*.jsonl")):
         for line in p.open(encoding="utf-8"):
             try:
-                rows.append(json.loads(line))
+                suite.append(json.loads(line))
             except Exception:
                 continue
+    cell_max = {}
+    for r in suite:
+        key = (r.get("model_id"), r.get("battery"))
+        v = version_tuple(r.get("suite_version"))
+        if v > cell_max.get(key, (-1,)):
+            cell_max[key] = v
+    # count_check off: this pool mixes shard + dirs copies of the same rows, so the
+    # per-source n_expected bookkeeping lives with build_data; drift still fails the
+    # build there before the explorer would ship anything stale.
+    rows = [r for r in effective_suite_rows(suite, sup, count_check=False)
+            if suite_cell_allowed(sup, r.get("model_id"), r.get("battery") or 0,
+                                  cell_max.get((r.get("model_id"), r.get("battery"))))]
+
+    # the newer batteries live in their own shards
+    for extra, name in (("results_games/rows-games.jsonl", "rows-games.jsonl"),
+                        ("results_security/rows-security.jsonl", "rows-security.jsonl"),
+                        ("results_tools/rows-tools.jsonl", "rows-tools.jsonl")):
+        p = REPO / extra
+        if not p.exists():
+            continue
+        got = []
+        for line in p.open(encoding="utf-8"):
+            try:
+                got.append(json.loads(line))
+            except Exception:
+                continue
+        rows.extend(effective_custom_rows(got, sup, name, count_check=False))
     return rows
 
 
@@ -254,8 +290,11 @@ def main():
         by_model[mid].append(item)
 
     # ---- emit ----
-    if OUT.exists():
-        shutil.rmtree(OUT)
+    # Wipe ONLY the generated data dir. explorer/games/ holds committed artifacts that
+    # can only be re-sourced on machines that have the workspace dir — an rmtree(OUT)
+    # here once destroyed all 19 playable games on a checkout without it.
+    if DATA.exists():
+        shutil.rmtree(DATA)
     DATA.mkdir(parents=True)
     (OUT / "games").mkdir(parents=True, exist_ok=True)
 

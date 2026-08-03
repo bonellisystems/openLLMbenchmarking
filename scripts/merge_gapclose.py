@@ -33,8 +33,13 @@ sys.path.insert(0, str(ROOT))
 
 from llmtest.store import Store  # noqa: E402
 
-# (battery, model_id, task_id, run_n, condition) identifies one B9/B10/B11 row.
-KEY = ("battery", "model_id", "task_id", "run_n", "condition")
+# Identity of one B9/B10/B11 row. suite_version is IN the key: a v2.2.0 re-run row
+# shares (battery, model, task, run_n, condition) with the laptop row it supersedes, and
+# without the version here merge_custom would silently drop every replacement against
+# the very row it replaces — the whole hardware-consistency campaign would merge zero
+# rows while reporting success. Legacy rows have no suite_version (None on both sides),
+# so their dedupe behaviour is unchanged.
+KEY = ("battery", "suite_version", "model_id", "task_id", "run_n", "condition")
 
 # (model_id, battery) pairs whose rows must NOT enter the store, with the reason. For
 # rows that were produced successfully but describe a serving config that did not run -

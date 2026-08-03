@@ -71,20 +71,28 @@ def test_load_rows_degrades_cleanly_when_v21_shard_absent(tmp_path):
     assert not any("v2.1.0" in c for c in caveats)
 
 
-def test_load_rows_reads_both_shards_and_never_blends_source_suite(tmp_path):
-    """A synthetic v2.1.0 shard alongside the real v2.0.0 shard: both are
-    read, and every row keeps its OWN shard's source_suite -- proving rows
-    from the two suite versions are never silently merged into one
-    unlabeled pool."""
+def test_load_rows_latest_version_wins_within_a_cell_across_shards(tmp_path):
+    """Supersede policy (2026-08-03, llmtest/rowselect): when the SAME
+    (model, battery) cell has rows at two suite versions, only the newest
+    version's rows are current -- the older row was re-measured and its
+    replacement wins. Rows in DIFFERENT cells are unaffected: each keeps its
+    own shard's source_suite, so distinct-cell rows from different versions
+    still coexist labeled, never blended."""
+    # same cell, two versions -> v2.1.0 wins
     _write_row(tmp_path, "suite-v2.0.0", battery=2, model_id="model-a",
                 task_id="b2.error-recovery-01")
     _write_row(tmp_path, "suite-v2.1.0", battery=2, model_id="model-a",
                 task_id="b2.error-recovery-01", run_n=2)
+    # different cell, old version only -> survives untouched
+    _write_row(tmp_path, "suite-v2.0.0", battery=3, model_id="model-b",
+                task_id="b3.unanswerable-01")
     caveats: list[str] = []
     rows = p8_report.load_rows(tmp_path, "suite-v2.0.0", caveats)
 
-    by_suite = {r["source_suite"] for r in rows}
-    assert by_suite == {"suite-v2.0.0", "suite-v2.1.0"}
+    cell_a = [r for r in rows if r["model_id"] == "model-a"]
+    assert [r["source_suite"] for r in cell_a] == ["suite-v2.1.0"]
+    cell_b = [r for r in rows if r["model_id"] == "model-b"]
+    assert [r["source_suite"] for r in cell_b] == ["suite-v2.0.0"]
     assert len(rows) == 2
 
 

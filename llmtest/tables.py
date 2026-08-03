@@ -161,7 +161,12 @@ def _acceptable_rubric_shas(root: Path) -> dict:
 def run_tables(root: str | Path = ".") -> int:
     root = Path(root).resolve()
     store = Store(root / "results")
-    rows = list(store.iter_rows())
+    # CURRENT rows only (latest suite version per cell; hardware-superseded cells
+    # withdrawn until replaced) — otherwise serving.md would keep quoting timings from
+    # retired measurements. Store.iter_rows also reads the shakedown shard; rowselect
+    # excludes it by version-string.
+    from llmtest.rowselect import effective_suite_rows, load_superseded
+    rows = effective_suite_rows(list(store.iter_rows()), load_superseded(root))
     out = root / "results" / "tables"
     out.mkdir(parents=True, exist_ok=True)
     (out / "serving.md").write_text(render_serving_table(rows),

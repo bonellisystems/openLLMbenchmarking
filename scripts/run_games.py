@@ -84,6 +84,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--endpoint-url", required=True)
     ap.add_argument("--model", required=True)
+    ap.add_argument("--suite-version", default="suite-v2.2.0",
+                    help="stamped into every row; rowselect uses it for latest-version-wins supersede")
+    ap.add_argument("--hardware-sku", default="",
+                    help="hardware SKU stamped into every row (e.g. rtx-pro-6000-vm). Legacy rows carry none, which is how 264 laptop B9 rows needed ledger archaeology to attribute - never again.")
     ap.add_argument("--out", default="results_games")
     ap.add_argument("--task", default=None, help="single game id")
     ap.add_argument("--reps", type=int, default=3)
@@ -186,7 +190,8 @@ def main():
                 detail, score, clean = {"no_html": True}, 0, False
 
             row = {
-                "battery": 9, "model_id": args.model, "task_id": f"b9.{t['id']}",
+                "battery": 9, "suite_version": args.suite_version,
+                "hardware_sku": args.hardware_sku, "model_id": args.model, "task_id": f"b9.{t['id']}",
                 "run_n": rep, "condition": f"cond=B9;game={t['id']};temp={args.temperature}",
                 "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "det_checks": checks,
