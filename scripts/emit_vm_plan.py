@@ -69,6 +69,13 @@ cd "$REPO"
 
 echo "== base packages the KVM image may lack =="
 export DEBIAN_FRONTEND=noninteractive
+# unattended-upgrades stole the dpkg lock and killed this very apt call on the
+# Korea box (2026-08-04); a benchmark box wants no background apt churn at all.
+systemctl mask --now unattended-upgrades >/dev/null 2>&1 || true
+for _ in $(seq 1 60); do
+  fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+  sleep 5
+done
 apt-get update -qq
 apt-get install -y --no-install-recommends aria2 tmux curl jq >/dev/null
 
