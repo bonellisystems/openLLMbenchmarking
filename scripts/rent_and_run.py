@@ -49,8 +49,9 @@ MIN_DISK_GB = 200
 # page cache + aria2 buffers + the harness; 64GB is already generous.
 MIN_RAM_GB = 64
 # Inet: the on-box HF probe is the REAL gate (aborts below 25MB/s before any spend).
-# This floor only pre-screens hosts too slow to bother renting: 500Mbps ~= 60MB/s.
-MIN_INET_MBPS = 500
+# Michael's 2026-08-03 spec raised the pre-screen to 2Gbps: 504GB of fetches at
+# 2Gbps ~= 34min total, so downloads never dominate the meter.
+MIN_INET_MBPS = 2000
 
 SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
               "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=20",
@@ -100,11 +101,18 @@ def find_offers(v, limit=6, vm=False):
     """Qualifying RTX PRO 6000 offers, cheapest first, plus a per-constraint tally of
     the rejects. "No offer" on its own is a dead end; knowing WHICH filter bound is
     what tells you whether to wait for capacity or relax a number."""
-    res = v.search_offers(query="gpu_ram>=90 gpu_ram<100 num_gpus=1 rentable=true",
-                          order="dph+")
+    # verified=any is ESSENTIAL for the VM path: vast's default query returns only
+    # host-verified machines, and on 2026-08-03 ZERO VM-capable PRO 6000 offers were
+    # verified - the filter silently emptied the market. Unverified is acceptable here
+    # because every host-quality failure is gated downstream (Docker gate, HF throughput
+    # probe, stall watcher, low-credit destroy); worst case is ~1-2 dollars of discovery.
+    q = "gpu_ram>=90 gpu_ram<100 num_gpus=1 rentable=true"
+    if vm:
+        q += " verified=any"
+    res = v.search_offers(query=q, order="dph+")
     rows = res if isinstance(res, list) else res.get("offers", [])
     ok, why = [], {"wrong card": 0, "not a VM host": 0, "disk": 0, "ram": 0,
-                   "reliability": 0, "slow net": 0}
+                   "reliability": 0, "slow net": 0, "not pcie5": 0, "slow disk": 0}
     for o in rows:
         if norm(REQUIRED_GPU) not in norm(o.get("gpu_name")):
             why["wrong card"] += 1
@@ -123,6 +131,14 @@ def find_offers(v, limit=6, vm=False):
             continue
         if (o.get("inet_down") or 0) < MIN_INET_MBPS:
             why["slow net"] += 1
+            continue
+        # Michael's 2026-08-03 host spec for the campaign box: PCIe 5.0, NVMe-class
+        # disk, 2 Gbps+ inet so 504GB of model fetches never dominate wall-clock.
+        if vm and (o.get("pci_gen") or 0) < 5.0:
+            why["not pcie5"] += 1
+            continue
+        if vm and (o.get("disk_bw") or 0) < 1500:
+            why["slow disk"] += 1
             continue
         ok.append(o)
     return ok[:limit], why
