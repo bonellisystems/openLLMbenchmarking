@@ -49,9 +49,10 @@ MIN_DISK_GB = 200
 # page cache + aria2 buffers + the harness; 64GB is already generous.
 MIN_RAM_GB = 64
 # Inet: the on-box HF probe is the REAL gate (aborts below 25MB/s before any spend).
-# Michael relaxed the pre-screen to ~1Gbps on 2026-08-04 (~100MB/s each way is good
-# enough; 504GB of fetches at 1Gbps ~= 68min total).
-MIN_INET_MBPS = 1000
+# Michael's bar (2026-08-04) is "~100MB/s each way is good enough" - that's 800Mbps,
+# not a literal 1000: the verified Korea box reads 820Mbps (~102MB/s) and a 1000
+# floor was rejecting it. 504GB of fetches at 820Mbps ~= 84min, interleaved per model.
+MIN_INET_MBPS = 800
 # The only two VM-capable RTX PRO 6000 machines on vast, specs verified by hand on
 # 2026-08-03/04 (both meet Michael's PCIe 5.0 / NVMe / 2Gbps+ spec):
 #   143544 Tennessee US  $1.068/h  pcie5 11.5GB/s NVMe  7.7/6.1Gbps  94GB  rel 0.9835
