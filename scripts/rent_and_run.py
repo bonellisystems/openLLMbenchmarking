@@ -104,6 +104,18 @@ def onstart(pub: str) -> str:
             "echo DONE > /tmp/onstart_done")
 
 
+def endpoint_of(d, vm):
+    """SSH endpoint for an instance dict. VMs: vast's proxy (ssh_host/ssh_port) can
+    refuse connections while the guest sshd is perfectly reachable on the DIRECT
+    public ip via the 22/tcp port mapping - learned on instance 46796446 (proxy:
+    'Connection refused'; direct 202.x.x.x:56876 answered as root)."""
+    if vm:
+        p22 = (d.get("ports") or {}).get("22/tcp") or []
+        if d.get("public_ipaddr") and p22:
+            return "root@" + d["public_ipaddr"], int(p22[0]["HostPort"])
+    return "root@" + d["ssh_host"], d["ssh_port"]
+
+
 def read_cooldowns(plan_dir):
     """Machines that fatally failed a recent boot (BLACKLIST lines: 'machine_id ts').
     Entries expire after 45 minutes - a 'GPU error' often clears once the host frees
@@ -191,6 +203,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--go", action="store_true")
+    ap.add_argument("--attach", type=int, default=None,
+                    help="Resume with an ALREADY-RENTED instance id: skip offer search, "
+                         "create and boot-wait, and enter directly at the SSH/card/"
+                         "Docker gates and ship+launch. For a box left up after a "
+                         "gate failure that was fixed by hand (e.g. the Blackwell "
+                         "driver upgrade on 46796446).")
     ap.add_argument("--est-hours", type=float, default=22.0)
     # Parameterised rather than duplicated: every rule in this file was learned the hard
     # way (card gate, 0700 on /root/.ssh, separate ssh -p / scp -P, destroy-on-complete),
@@ -207,13 +225,18 @@ def main():
                          "B8 campaign: the completion oracle shells out to Docker, and "
                          "container instances have none - that exact gap poisoned 554 "
                          "rows. Filters offers to vms_enabled=true, launches "
-                         "docker.io/vastai/kvm:ubuntu_terminal, verifies `docker info` "
+                         "docker.io/vastai/kvm:cuda-12.9.1-auto, verifies `docker info` "
                          "on-box, and ships to the /opt/b8 layout "
                          "(deploy/blackwell/RUN_ON_BLACKWELL.md).")
     args = ap.parse_args()
     if args.vm and args.image == "ghcr.io/ggml-org/llama.cpp:server-cuda":
         # VM instances boot a vastai/kvm image; llama.cpp runs INSIDE it via Docker.
-        args.image = "docker.io/vastai/kvm:ubuntu_terminal"
+        # cuda-12.9.1-auto, NOT ubuntu_terminal: the terminal image ships driver 535,
+        # which cannot init Blackwell (2bb1) - and even a hand-installed 580-open hit
+        # 'RmFetchGspRmImages: No firmware image found' on its minimal -kvm kernel
+        # (instance 46796446, ~$1 of diagnosis). The cuda-*-auto images set up a
+        # working driver themselves; Blackwell needs CUDA >= 12.8.
+        args.image = "docker.io/vastai/kvm:cuda-12.9.1-auto"
 
     global MIN_DISK_GB
     if args.min_disk:
@@ -234,83 +257,94 @@ def main():
             return 2
 
     v = api()
-    credit = v.show_user().get("credit", 0)
-    offers, why = find_offers(v, vm=args.vm, cooldown=read_cooldowns(plan_dir))
-
-    print(f"plan      : {man['totals']['models']} models, {man['totals']['missing_cells']} cells, "
-          f"{man['totals']['download_gb']} GB")
-    print(f"credit    : ${credit:.2f}")
-    print(f"card gate : {REQUIRED_GPU} ONLY{', VM hosts only (Docker for the B8 oracle)' if args.vm else ''}, "
-          f">={MIN_DISK_GB}GB disk, >={MIN_RAM_GB}GB RAM")
-    if not offers:
-        print("NO QUALIFYING RTX PRO 6000 OFFER - refusing to rent anything else")
-        print("  rejected by: " + ", ".join(f"{k}={n}" for k, n in why.items() if n))
-        return 2
-    for o in offers:
-        print(f"  id={o['id']} {o.get('gpu_name')} {o.get('gpu_ram',0)/1024:.0f}GB "
-              f"${o.get('dph_total',0):.3f}/h disk={o.get('disk_space',0):.0f}GB "
-              f"ram={(o.get('cpu_ram') or 0)/1024:.0f}GB rel={o.get('reliability2',0):.3f} "
-              f"{o.get('geolocation')}")
-
-    pick = offers[0]
-    est = pick["dph_total"] * args.est_hours
-    print(f"\npick      : {pick['id']} @ ${pick['dph_total']:.3f}/h")
-    print(f"estimate  : ~{args.est_hours:.0f}h -> ${est:.2f} "
-          f"({'affordable' if est < credit else 'OVER BUDGET'})")
-
-    if not args.go:
-        print("\n--check only: nothing rented.")
-        return 0
-    if est > credit:
-        print("refusing to start: estimate exceeds credit")
-        return 2
-
-    # VM instances: NO onstart ssh-hygiene - the KVM image's sshd is vast-managed and
-    # keyed from the ACCOUNT (keys cannot be changed on a running VM), and the login
-    # user is not guaranteed to be root. The container-mode hygiene stays as-is.
-    kw = dict(id=pick["id"], image=args.image, disk=MIN_DISK_GB, label=args.label,
-              runtype="ssh")
-    if not args.vm:
-        kw["onstart_cmd"] = onstart(PUBKEY.read_text().strip())
-    inst = v.create_instance(**kw)
-    cid = inst.get("new_contract")
-    print(f"created   : {cid}  (success={inst.get('success')})")
-    (plan_dir / "INSTANCE").write_text(str(cid), encoding="utf-8")
-
-    host = port = None
-    last_msg = ""
-    # VMs need more patience than containers: the host pulls a multi-GB KVM image and
-    # boots a full OS before "running" appears. The first VM attempt (46762229) was
-    # destroyed by the old blind 20-minute window with no clue why - so this loop now
-    # surfaces vast's status_msg and gives VMs 35 minutes.
-    for i in range(140 if args.vm else 80):
+    if args.attach:
+        cid = args.attach
+        (plan_dir / "INSTANCE").write_text(str(cid), encoding="utf-8")
         d = v.show_instance(id=cid)
-        if d.get("actual_status") == "running" and d.get("ssh_host"):
-            host, port = "root@" + d["ssh_host"], d["ssh_port"]
-            break
-        smsg = (d.get("status_msg") or "").strip()
-        # A fatal host error ("Error: GPU error, unable to start instance.") never
-        # self-heals within this boot - waiting out the full window just runs the
-        # meter on a corpse. Destroy now, cool the machine down for 45 min (the
-        # error often clears once the host frees the GPU), and signal RETRYABLE.
-        if smsg.lower().startswith("error"):
-            print(f"  FATAL at boot: {smsg[:120]} - destroying, cooling down "
-                  f"machine {pick['machine_id']}")
+        if d.get("actual_status") != "running":
+            print(f"attach: instance {cid} is {d.get('actual_status')!r} - not running")
+            return 1
+        host, port = endpoint_of(d, args.vm)
+        ssh_users = ("root", "ubuntu") if args.vm else ("root",)
+        print(f"attach    : instance {cid} at {host} port {port} (skipping rent+boot)")
+    else:
+        credit = v.show_user().get("credit", 0)
+        offers, why = find_offers(v, vm=args.vm, cooldown=read_cooldowns(plan_dir))
+
+        print(f"plan      : {man['totals']['models']} models, {man['totals']['missing_cells']} cells, "
+              f"{man['totals']['download_gb']} GB")
+        print(f"credit    : ${credit:.2f}")
+        print(f"card gate : {REQUIRED_GPU} ONLY{', VM hosts only (Docker for the B8 oracle)' if args.vm else ''}, "
+              f">={MIN_DISK_GB}GB disk, >={MIN_RAM_GB}GB RAM")
+        if not offers:
+            print("NO QUALIFYING RTX PRO 6000 OFFER - refusing to rent anything else")
+            print("  rejected by: " + ", ".join(f"{k}={n}" for k, n in why.items() if n))
+            return 2
+        for o in offers:
+            print(f"  id={o['id']} {o.get('gpu_name')} {o.get('gpu_ram',0)/1024:.0f}GB "
+                  f"${o.get('dph_total',0):.3f}/h disk={o.get('disk_space',0):.0f}GB "
+                  f"ram={(o.get('cpu_ram') or 0)/1024:.0f}GB rel={o.get('reliability2',0):.3f} "
+                  f"{o.get('geolocation')}")
+
+        pick = offers[0]
+        est = pick["dph_total"] * args.est_hours
+        print(f"\npick      : {pick['id']} @ ${pick['dph_total']:.3f}/h")
+        print(f"estimate  : ~{args.est_hours:.0f}h -> ${est:.2f} "
+              f"({'affordable' if est < credit else 'OVER BUDGET'})")
+
+        if not args.go:
+            print("\n--check only: nothing rented.")
+            return 0
+        if est > credit:
+            print("refusing to start: estimate exceeds credit")
+            return 2
+
+        # VM instances: NO onstart ssh-hygiene - the KVM image's sshd is vast-managed and
+        # keyed from the ACCOUNT (keys cannot be changed on a running VM), and the login
+        # user is not guaranteed to be root. The container-mode hygiene stays as-is.
+        kw = dict(id=pick["id"], image=args.image, disk=MIN_DISK_GB, label=args.label,
+                  runtype="ssh")
+        if not args.vm:
+            kw["onstart_cmd"] = onstart(PUBKEY.read_text().strip())
+        inst = v.create_instance(**kw)
+        cid = inst.get("new_contract")
+        print(f"created   : {cid}  (success={inst.get('success')})")
+        (plan_dir / "INSTANCE").write_text(str(cid), encoding="utf-8")
+
+        host = port = None
+        last_msg = ""
+        # VMs need more patience than containers: the host pulls a multi-GB KVM image and
+        # boots a full OS before "running" appears. The first VM attempt (46762229) was
+        # destroyed by the old blind 20-minute window with no clue why - so this loop now
+        # surfaces vast's status_msg and gives VMs 35 minutes.
+        for i in range(140 if args.vm else 80):
+            d = v.show_instance(id=cid)
+            if d.get("actual_status") == "running" and d.get("ssh_host"):
+                host, port = endpoint_of(d, args.vm)
+                break
+            smsg = (d.get("status_msg") or "").strip()
+            # A fatal host error ("Error: GPU error, unable to start instance.") never
+            # self-heals within this boot - waiting out the full window just runs the
+            # meter on a corpse. Destroy now, cool the machine down for 45 min (the
+            # error often clears once the host frees the GPU), and signal RETRYABLE.
+            if smsg.lower().startswith("error"):
+                print(f"  FATAL at boot: {smsg[:120]} - destroying, cooling down "
+                      f"machine {pick['machine_id']}")
+                v.destroy_instance(id=cid)
+                with (plan_dir / "BLACKLIST").open("a", encoding="utf-8") as f:
+                    f.write(f"{pick['machine_id']} {time.time()}\n")
+                return 4
+            msg = f"{d.get('actual_status')} | {smsg[:100]}"
+            if msg != last_msg or (i and i % 8 == 0):
+                print(f"  boot wait {i*15//60}m: {msg}", flush=True)
+                last_msg = msg
+            time.sleep(15)
+        # KVM images may log in as ubuntu rather than root - resolved at gate time below.
+        ssh_users = ("root", "ubuntu") if args.vm else ("root",)
+        if not host:
+            print(f"box never came up - destroying (last status: {last_msg})")
             v.destroy_instance(id=cid)
-            with (plan_dir / "BLACKLIST").open("a", encoding="utf-8") as f:
-                f.write(f"{pick['machine_id']} {time.time()}\n")
-            return 4
-        msg = f"{d.get('actual_status')} | {smsg[:100]}"
-        if msg != last_msg or (i and i % 8 == 0):
-            print(f"  boot wait {i*15//60}m: {msg}", flush=True)
-            last_msg = msg
-        time.sleep(15)
-    # KVM images may log in as ubuntu rather than root - resolved at gate time below.
-    ssh_users = ("root", "ubuntu") if args.vm else ("root",)
-    if not host:
-        print(f"box never came up - destroying (last status: {last_msg})")
-        v.destroy_instance(id=cid)
-        return 1
+            return 1
     (plan_dir / "ENDPOINT").write_text(f"{host} {port}", encoding="utf-8")
 
     # onstart installs sshd via apt, which can take 10-20 minutes on a slow host.
