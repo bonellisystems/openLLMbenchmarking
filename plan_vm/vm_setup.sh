@@ -26,7 +26,18 @@ echo "== B9 needs a browser: playwright chromium into the venv =="
 "$VENV/bin/python" -m playwright install --with-deps chromium >/dev/null
 
 echo "== prism image for bonsai-ternary-27b (Q2_0 refuses the official image) =="
-docker build -q -t prism-llama:1 -f deploy/blackwell/Dockerfile.prism deploy/blackwell
+# NON-FATAL: only bonsai (1 of 19 models, last in the run order) needs this image,
+# and its first build attempt died compiling on the Korea box - a prism failure must
+# not hold the other 18 models hostage. run_all's serve step fails loudly for bonsai
+# if the image is still missing when its turn comes, and the flag file makes the
+# situation visible to the watcher.
+if docker build -q -t prism-llama:1 -f deploy/blackwell/Dockerfile.prism deploy/blackwell      > $B8_ROOT/prism_build.log 2>&1; then
+  rm -f $B8_ROOT/prism_missing
+else
+  echo "PRISM BUILD FAILED (non-fatal) - bonsai will fail its serve unless the image"
+  echo "is built by hand before its turn; full log: $B8_ROOT/prism_build.log"
+  touch $B8_ROOT/prism_missing
+fi
 
 echo "== capability probe: ngram spec-decode in the official image =="
 # LESSON ENCODED: probe INSIDE the runtime that will serve, and treat a failed probe as
