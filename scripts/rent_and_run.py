@@ -52,6 +52,12 @@ MIN_RAM_GB = 64
 # Michael's 2026-08-03 spec raised the pre-screen to 2Gbps: 504GB of fetches at
 # 2Gbps ~= 34min total, so downloads never dominate the meter.
 MIN_INET_MBPS = 2000
+# The only two VM-capable RTX PRO 6000 machines on vast, specs verified by hand on
+# 2026-08-03/04 (both meet Michael's PCIe 5.0 / NVMe / 2Gbps+ spec):
+#   143544 Tennessee US  $1.068/h  pcie5 11.5GB/s NVMe  7.7/6.1Gbps  94GB  rel 0.9835
+#   54800  Japan (vfd)   $1.268/h  pcie5  9.2GB/s NVMe  5.7/4.4Gbps 157GB  rel 0.9984
+# Listed here so their FLAPPING live telemetry can't reject a box we know is good.
+KNOWN_GOOD_MACHINES = {143544, 54800}
 
 SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
               "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=20",
@@ -126,20 +132,27 @@ def find_offers(v, limit=6, vm=False):
         if (o.get("cpu_ram") or 0) / 1024 < MIN_RAM_GB:
             why["ram"] += 1
             continue
-        if (o.get("reliability2") or 0) < 0.98:
-            why["reliability"] += 1
-            continue
-        if (o.get("inet_down") or 0) < MIN_INET_MBPS:
-            why["slow net"] += 1
-            continue
-        # Michael's 2026-08-03 host spec for the campaign box: PCIe 5.0, NVMe-class
-        # disk, 2 Gbps+ inet so 504GB of model fetches never dominate wall-clock.
-        if vm and (o.get("pci_gen") or 0) < 5.0:
-            why["not pcie5"] += 1
-            continue
-        if vm and (o.get("disk_bw") or 0) < 1500:
-            why["slow disk"] += 1
-            continue
+        # The telemetry floors below (reliability, inet, pcie, disk_bw) are re-measured
+        # by vast continuously and FLAP: on 2026-08-04 a box that reads 7.7Gbps one poll
+        # reads under 2Gbps the next, and 0.9835 reliability dips under 0.98. Machines in
+        # KNOWN_GOOD skip them - their real specs were verified by hand and recorded
+        # above; only the structural gates (card, VM, disk size, RAM) still apply. The
+        # on-box HF throughput probe remains the authoritative network gate either way.
+        if o.get("machine_id") not in KNOWN_GOOD_MACHINES:
+            if (o.get("reliability2") or 0) < 0.98:
+                why["reliability"] += 1
+                continue
+            if (o.get("inet_down") or 0) < MIN_INET_MBPS:
+                why["slow net"] += 1
+                continue
+            # Michael's 2026-08-03 host spec for the campaign box: PCIe 5.0, NVMe-class
+            # disk, 2 Gbps+ inet so 504GB of model fetches never dominate wall-clock.
+            if vm and (o.get("pci_gen") or 0) < 5.0:
+                why["not pcie5"] += 1
+                continue
+            if vm and (o.get("disk_bw") or 0) < 1500:
+                why["slow disk"] += 1
+                continue
         ok.append(o)
     return ok[:limit], why
 
