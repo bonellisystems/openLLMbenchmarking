@@ -245,16 +245,25 @@ def main():
     (plan_dir / "INSTANCE").write_text(str(cid), encoding="utf-8")
 
     host = port = None
-    for _ in range(80):
+    last_msg = ""
+    # VMs need more patience than containers: the host pulls a multi-GB KVM image and
+    # boots a full OS before "running" appears. The first VM attempt (46762229) was
+    # destroyed by the old blind 20-minute window with no clue why - so this loop now
+    # surfaces vast's status_msg and gives VMs 35 minutes.
+    for i in range(140 if args.vm else 80):
         d = v.show_instance(id=cid)
         if d.get("actual_status") == "running" and d.get("ssh_host"):
             host, port = "root@" + d["ssh_host"], d["ssh_port"]
             break
+        msg = f"{d.get('actual_status')} | {(d.get('status_msg') or '').strip()[:100]}"
+        if msg != last_msg or (i and i % 8 == 0):
+            print(f"  boot wait {i*15//60}m: {msg}", flush=True)
+            last_msg = msg
         time.sleep(15)
     # KVM images may log in as ubuntu rather than root - resolved at gate time below.
     ssh_users = ("root", "ubuntu") if args.vm else ("root",)
     if not host:
-        print("box never came up - destroying")
+        print(f"box never came up - destroying (last status: {last_msg})")
         v.destroy_instance(id=cid)
         return 1
     (plan_dir / "ENDPOINT").write_text(f"{host} {port}", encoding="utf-8")
