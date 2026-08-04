@@ -257,6 +257,19 @@ def main():
             return 2
 
     v = api()
+    # ORPHAN GUARD: killing the retry loop between create and the gates left instance
+    # 46795896 billing invisibly for ~50 min on 2026-08-04 (the next attempt's create
+    # overwrote the INSTANCE file, so nothing pointed at the orphan). Never rent while
+    # an instance with this label is already up - attach or destroy it first.
+    if args.go and not args.attach:
+        cur = v.show_instances()
+        cur = cur if isinstance(cur, list) else cur.get("instances", [])
+        mine = [i for i in cur if i.get("label") == args.label]
+        if mine:
+            print(f"REFUSING to rent: instance {mine[0]['id']} labeled '{args.label}' "
+                  f"already exists ({mine[0].get('actual_status')}). Use --attach "
+                  f"{mine[0]['id']} or destroy it first.")
+            return 5
     if args.attach:
         cid = args.attach
         (plan_dir / "INSTANCE").write_text(str(cid), encoding="utf-8")
