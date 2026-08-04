@@ -103,7 +103,22 @@ def onstart(pub: str) -> str:
             "echo DONE > /tmp/onstart_done")
 
 
-def find_offers(v, limit=6, vm=False):
+def read_cooldowns(plan_dir):
+    """Machines that fatally failed a recent boot (BLACKLIST lines: 'machine_id ts').
+    Entries expire after 45 minutes - a 'GPU error' often clears once the host frees
+    the card from the previous tenant, so a permanent ban would shrink an already
+    tiny market."""
+    out = set()
+    f = plan_dir / "BLACKLIST"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) == 2 and time.time() - float(parts[1]) < 45 * 60:
+                out.add(int(parts[0]))
+    return out
+
+
+def find_offers(v, limit=6, vm=False, cooldown=frozenset()):
     """Qualifying RTX PRO 6000 offers, cheapest first, plus a per-constraint tally of
     the rejects. "No offer" on its own is a dead end; knowing WHICH filter bound is
     what tells you whether to wait for capacity or relax a number."""
@@ -118,13 +133,17 @@ def find_offers(v, limit=6, vm=False):
     res = v.search_offers(query=q, order="dph+")
     rows = res if isinstance(res, list) else res.get("offers", [])
     ok, why = [], {"wrong card": 0, "not a VM host": 0, "disk": 0, "ram": 0,
-                   "reliability": 0, "slow net": 0, "not pcie5": 0, "slow disk": 0}
+                   "reliability": 0, "slow net": 0, "not pcie5": 0, "slow disk": 0,
+                   "cooldown": 0}
     for o in rows:
         if norm(REQUIRED_GPU) not in norm(o.get("gpu_name")):
             why["wrong card"] += 1
             continue
         if vm and not o.get("vms_enabled"):
             why["not a VM host"] += 1
+            continue
+        if o.get("machine_id") in cooldown:
+            why["cooldown"] += 1
             continue
         if (o.get("disk_space") or 0) < MIN_DISK_GB:
             why["disk"] += 1
@@ -215,7 +234,7 @@ def main():
 
     v = api()
     credit = v.show_user().get("credit", 0)
-    offers, why = find_offers(v, vm=args.vm)
+    offers, why = find_offers(v, vm=args.vm, cooldown=read_cooldowns(plan_dir))
 
     print(f"plan      : {man['totals']['models']} models, {man['totals']['missing_cells']} cells, "
           f"{man['totals']['download_gb']} GB")
@@ -268,7 +287,19 @@ def main():
         if d.get("actual_status") == "running" and d.get("ssh_host"):
             host, port = "root@" + d["ssh_host"], d["ssh_port"]
             break
-        msg = f"{d.get('actual_status')} | {(d.get('status_msg') or '').strip()[:100]}"
+        smsg = (d.get("status_msg") or "").strip()
+        # A fatal host error ("Error: GPU error, unable to start instance.") never
+        # self-heals within this boot - waiting out the full window just runs the
+        # meter on a corpse. Destroy now, cool the machine down for 45 min (the
+        # error often clears once the host frees the GPU), and signal RETRYABLE.
+        if smsg.lower().startswith("error"):
+            print(f"  FATAL at boot: {smsg[:120]} - destroying, cooling down "
+                  f"machine {pick['machine_id']}")
+            v.destroy_instance(id=cid)
+            with (plan_dir / "BLACKLIST").open("a", encoding="utf-8") as f:
+                f.write(f"{pick['machine_id']} {time.time()}\n")
+            return 4
+        msg = f"{d.get('actual_status')} | {smsg[:100]}"
         if msg != last_msg or (i and i % 8 == 0):
             print(f"  boot wait {i*15//60}m: {msg}", flush=True)
             last_msg = msg
