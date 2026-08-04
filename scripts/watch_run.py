@@ -23,7 +23,12 @@ PRIVKEY = "C:/Users/Michael/.ssh/vast_laguna"
 SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
               "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=20",
               "-o", "LogLevel=ERROR"]
+# Layout globals - reassigned from CLI args in main() so one watcher serves both
+# the container gap-close layout (/root -> results_gapclose) and the VM campaign
+# (/opt/b8 -> results_vm2200).
 DEST = ROOT / "results_gapclose"
+RROOT = "/root"
+PLAN_DIR = ROOT / "plan"
 
 
 def api():
@@ -43,7 +48,7 @@ def wait_for_ssh(host, port, tries=60, delay=20):
 
 
 def endpoint():
-    host, port = (ROOT / "plan" / "ENDPOINT").read_text(encoding="utf-8").split()
+    host, port = (PLAN_DIR / "ENDPOINT").read_text(encoding="utf-8").split()
     return host, int(port)
 
 
@@ -63,11 +68,11 @@ def pull(host, port):
     batteries actually succeeded was lost when the box was destroyed.
     """
     DEST.mkdir(parents=True, exist_ok=True)
-    r = sshx(host, port, "cd /root && tar czf out.tgz out run.log models_done failures "
+    r = sshx(host, port, f"cd {RROOT} && tar czf out.tgz out run.log models_done failures "
                          "steps step_failures.log caps dl_fail 2>/dev/null; echo ok")
     if "ok" not in r.stdout:
         return False
-    got = subprocess.run(["scp", *SSH_COMMON, "-P", str(port), f"{host}:/root/out.tgz",
+    got = subprocess.run(["scp", *SSH_COMMON, "-P", str(port), f"{host}:{RROOT}/out.tgz",
                           str(DEST / "out.tgz")], capture_output=True, text=True)
     if got.returncode != 0:
         return False
@@ -96,6 +101,12 @@ def main():
                          "118B model can legitimately take this long per row.")
     ap.add_argument("--floor", type=float, default=1.50)
     ap.add_argument("--no-destroy", action="store_true")
+    ap.add_argument("--plan-dir", default="plan",
+                    help="where INSTANCE/ENDPOINT live (plan_vm for the VM campaign)")
+    ap.add_argument("--remote-root", default="/root",
+                    help="box-side root holding out/, steps, run.log (/opt/b8 on the VM)")
+    ap.add_argument("--dest", default="results_gapclose",
+                    help="local pull dir (results_vm2200 for the VM campaign)")
     ap.add_argument("--once", action="store_true",
                     help="pull results, print one status line, exit. The long-running "
                          "watcher keeps getting reaped by the host, and a killed watcher "
@@ -104,7 +115,12 @@ def main():
                          "separately by deploy/shutdown_guard.sh on the box.")
     args = ap.parse_args()
 
-    cid = int((ROOT / "plan" / "INSTANCE").read_text(encoding="utf-8").strip())
+    global DEST, RROOT, PLAN_DIR
+    PLAN_DIR = ROOT / args.plan_dir
+    RROOT = args.remote_root
+    DEST = ROOT / args.dest
+
+    cid = int((PLAN_DIR / "INSTANCE").read_text(encoding="utf-8").strip())
     host, port = endpoint()
     v = api()
     log = DEST / "watch.log"
@@ -113,12 +129,12 @@ def main():
     if args.once:
         ok = pull(host, port)
         stage = sshx(host, port,
-                     "test -f /root/run_all_done && echo done || "
-                     "(test -f /root/dl_done && echo running || echo setup)").stdout.strip()
+                     f"test -f {RROOT}/run_all_done && echo done || "
+                     f"(test -f {RROOT}/dl_done && echo running || echo setup)").stdout.strip()
         done_models = sshx(host, port,
-                           "wc -l < /root/models_done 2>/dev/null || echo 0").stdout.strip()
-        steps = sshx(host, port, "cat /root/steps 2>/dev/null | tr '\\n' ';'").stdout.strip()
-        fails = sshx(host, port, "cat /root/failures 2>/dev/null | tr '\\n' ';'").stdout.strip()
+                           f"wc -l < {RROOT}/models_done 2>/dev/null || echo 0").stdout.strip()
+        steps = sshx(host, port, f"cat {RROOT}/steps 2>/dev/null | tr '\\n' ';'").stdout.strip()
+        fails = sshx(host, port, f"cat {RROOT}/failures 2>/dev/null | tr '\\n' ';'").stdout.strip()
         try:
             bal = round(v.show_user().get("credit", 0), 2)
         except Exception:
@@ -144,15 +160,15 @@ def main():
         miss = 0
 
         stage = sshx(host, port,
-                     "test -f /root/run_all_done && echo done || "
-                     "(test -f /root/dl_done && echo running || "
-                     "(test -f /root/setup_done && echo downloading || echo setup))").stdout.strip()
-        done_models = sshx(host, port, "wc -l < /root/models_done 2>/dev/null || echo 0").stdout.strip()
-        fails = sshx(host, port, "cat /root/failures 2>/dev/null | tr '\\n' ';'").stdout.strip()
+                     f"test -f {RROOT}/run_all_done && echo done || "
+                     f"(test -f {RROOT}/dl_done && echo running || "
+                     f"(test -f {RROOT}/setup_done && echo downloading || echo setup))").stdout.strip()
+        done_models = sshx(host, port, f"wc -l < {RROOT}/models_done 2>/dev/null || echo 0").stdout.strip()
+        fails = sshx(host, port, f"cat {RROOT}/failures 2>/dev/null | tr '\\n' ';'").stdout.strip()
 
         # The download script refuses to run on a host Hugging Face serves too slowly.
         # That box can never finish inside the budget, so stop paying for it now.
-        if sshx(host, port, "test -f /root/dl_abort && cat /root/dl_abort || true").stdout.strip():
+        if sshx(host, port, f"test -f {RROOT}/dl_abort && cat {RROOT}/dl_abort || true").stdout.strip():
             reason = "DL_ABORT (Hugging Face throughput below floor - rent another host)"
             break
 
@@ -166,11 +182,11 @@ def main():
         # stall. cumulative_dl is monotonic across models even though `release` deletes
         # each model's weights after it runs.
         got = sshx(host, port,
-                   "cat /root/dl_*.log 2>/dev/null | grep -c 'download completed' || echo 0"
+                   f"cat {RROOT}/dl_*.log 2>/dev/null | grep -c 'download completed' || echo 0"
                    ).stdout.strip().splitlines()
         files_done = int(got[0]) if got and got[0].strip().isdigit() else 0
         cur = sshx(host, port,
-                   "du -sb /root/models 2>/dev/null | cut -f1 || echo 0").stdout.strip()
+                   f"du -sb {RROOT}/models 2>/dev/null | cut -f1 || echo 0").stdout.strip()
         cur_gb = (int(cur) / 1e9) if cur.isdigit() else 0.0
         progress = rows * 1000 + files_done          # either advancing breaks a stall
         # LIVENESS, NOT JUST ROW COUNT. The first run of this watcher declared a stall
@@ -182,7 +198,7 @@ def main():
         # being written to, the box is working and it is NOT a stall no matter how flat
         # the row count is.
         idle = sshx(host, port,
-                    "now=$(date +%s); f=/root/last_step.log; "
+                    f"now=$(date +%s); f={RROOT}/last_step.log; "
                     "if [ -f $f ]; then echo $(( now - $(stat -c %Y $f) )); else echo 99999; fi"
                     ).stdout.strip()
         idle_s = int(idle) if idle.isdigit() else 99999

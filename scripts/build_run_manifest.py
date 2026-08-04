@@ -21,7 +21,11 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DASH = ROOT.parent / "llm-eval-dashboard"
+# The dashboard moved INTO this repo (dashboard/); the old sibling checkout is retired
+# and its data.json goes stale - reading it silently shrank the work-list to 12 cells
+# when the honest matrix had 35. Prefer the in-repo copy; fall back to the sibling
+# only if the in-repo one is absent.
+DASH = ROOT / "dashboard" if (ROOT / "dashboard" / "data.json").exists() else ROOT.parent / "llm-eval-dashboard"
 sys.path.insert(0, str(ROOT))
 
 import yaml  # noqa: E402

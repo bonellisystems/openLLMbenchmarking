@@ -1,0 +1,25 @@
+# prism-ml llama.cpp fork, built for Blackwell (compute 12.0), served like the official
+# image. Exists for ONE model: bonsai-ternary-27b's Q2_0 is a prism custom quantization
+# the official ggml image refuses outright ("failed to load model" - measured 2026-07-30,
+# 14 minutes of a rented box). Built as an image, not a host binary, because the vast KVM
+# VM ships no CUDA toolchain and bootstrap.sh already provides Docker + nvidia runtime.
+#
+#   docker build -f deploy/blackwell/Dockerfile.prism -t prism-llama:1 deploy/blackwell
+#   LLAMA_IMAGE=prism-llama:1 bash deploy/blackwell/serve.sh <bonsai.gguf>
+FROM nvidia/cuda:12.6.2-devel-ubuntu24.04 AS build
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends git cmake build-essential ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 -b prism https://github.com/PrismML-Eng/llama.cpp /src
+# 120 = Blackwell. Pinned, never guessed: a mismatched arch produces a binary that loads
+# and silently runs on the CPU, which reads as a slow model instead of a broken build.
+RUN cmake -S /src -B /src/build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES=120 -DLLAMA_CURL=OFF \
+    && cmake --build /src/build --config Release -j"$(nproc)" --target llama-server
+
+FROM nvidia/cuda:12.6.2-runtime-ubuntu24.04
+COPY --from=build /src/build/bin/ /app/
+ENV LD_LIBRARY_PATH=/app
+# Same entry contract as ghcr.io/ggml-org/llama.cpp:server-cuda, so serve.sh can swap
+# images via $LLAMA_IMAGE with no other change.
+ENTRYPOINT ["/app/llama-server"]

@@ -16,11 +16,11 @@
 set -u
 GRACE=900
 while true; do
-  if [ -f /root/run_all_done ]; then
+  if [ -f ${B8_ROOT:-/root}/run_all_done ]; then
     echo "$(date -u +%H:%M:%S) shutdown-guard: run complete, ${GRACE}s grace for the final pull" \
-      >> /root/shutdown_guard.log
+      >> ${B8_ROOT:-/root}/shutdown_guard.log
     sleep "$GRACE"
-    echo "$(date -u +%H:%M:%S) shutdown-guard: powering off" >> /root/shutdown_guard.log
+    echo "$(date -u +%H:%M:%S) shutdown-guard: powering off" >> ${B8_ROOT:-/root}/shutdown_guard.log
     sync
     poweroff -f 2>/dev/null || shutdown -h now 2>/dev/null || halt -f
     exit 0

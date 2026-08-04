@@ -33,12 +33,17 @@ NAME="llama-b8-$PORT"
 if [ "$GPU" = "all" ]; then GPUFLAG=(--gpus all); else GPUFLAG=(--gpus "device=$GPU"); fi
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
+# EXTRA_FLAGS: capability-gated additions from the caller (the campaign runner sets
+# "--spec-type ngram-mod --spec-ngram-mod-n-match 32" iff the image's --help advertises
+# ngram-mod - it landed upstream, the old "prism-fork-only" note here was stale). Lossless
+# at temp 0; affects decode SPEED only, never completion/oracle outcome.
+# shellcheck disable=SC2086
 docker run -d --name "$NAME" "${GPUFLAG[@]}" --network host \
     -v "$MODELS":/models:ro \
     "$LLAMA_IMAGE" \
     --model "/models/$GGUF" -ngl 99 -c "$CTX" --jinja -fa on \
     --ctx-checkpoints 0 --parallel 1 \
-    --cache-type-k q8_0 --cache-type-v q8_0 \
+    --cache-type-k q8_0 --cache-type-v q8_0 ${EXTRA_FLAGS:-} \
     --host 0.0.0.0 --port "$PORT" >/dev/null
 
 echo -n "waiting for $GGUF (gpu=$GPU port=$PORT) to load"
