@@ -170,8 +170,12 @@ JOBS=4
 gate(){ while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do sleep 3; done; }
 get(){ # dir repo path
   mkdir -p "$M/$1"
+  # --lowest-speed-limit: abandon a WEDGED connection instead of crawling on it.
+  # abl-gemma-4-31b's fetch collapsed to 894 KiB/s on one stuck CDN edge while fresh
+  # curls to the same repo pulled 16 MB/s - 40 minutes of rented GPU idling for 2 GB.
   aria2c -x8 -s8 -k1M --continue=true --file-allocation=none --console-log-level=warn \\
-    --retry-wait=5 --max-tries=5 --auto-file-renaming=false \\
+    --lowest-speed-limit=2M \\
+    --retry-wait=5 --max-tries=10 --auto-file-renaming=false \\
     -d "$M/$1" -o "$(basename "$3")" \\
     "https://huggingface.co/$2/resolve/main/$3" >> "$B8_ROOT/dl_$1.log" 2>&1 \\
     || echo "FAIL $1 $3" >> $B8_ROOT/dl_fail
