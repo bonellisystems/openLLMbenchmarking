@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -29,6 +30,21 @@ SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChe
 DEST = ROOT / "results_gapclose"
 RROOT = "/root"
 PLAN_DIR = ROOT / "plan"
+
+
+def unmangle(p):
+    """Undo Git Bash's MSYS path conversion.
+
+    Running `watch_run.py --remote-root /opt/b8` from Git Bash delivers
+    `C:/Program Files/Git/opt/b8` to argv - the shell "helpfully" rewrites
+    POSIX-looking arguments into Windows paths. The watcher then probed a
+    directory that cannot exist on the box and reported "nothing yet" about a
+    campaign that was healthily writing rows. Silent wrong answers are worse
+    than errors, so the REMOTE path is repaired here rather than trusted.
+    """
+    m = re.match(r"^[A-Za-z]:[\/].*?(/(?:opt|root|home|mnt|srv|var|tmp)(?:/.*)?)$",
+                 str(p).replace("\\", "/"))
+    return m.group(1) if m else p
 
 
 def api():
@@ -68,8 +84,15 @@ def pull(host, port):
     batteries actually succeeded was lost when the box was destroyed.
     """
     DEST.mkdir(parents=True, exist_ok=True)
+    # "nothing yet" is not a failure. Before the first rows exist NONE of these paths
+    # are present, GNU tar refuses to create an empty archive, and the old code
+    # reported a bare pull=FAILED - which reads like a broken box during the exact
+    # minutes when a healthy run is still fetching its first model.
     r = sshx(host, port, f"cd {RROOT} && tar czf out.tgz out run.log models_done failures "
-                         "steps step_failures.log caps dl_fail 2>/dev/null; echo ok")
+                         "steps step_failures.log caps dl_fail 2>/dev/null; "
+                         "test -f out.tgz && echo ok || echo nothing-to-pull")
+    if "nothing-to-pull" in r.stdout:
+        return None
     if "ok" not in r.stdout:
         return False
     got = subprocess.run(["scp", *SSH_COMMON, "-P", str(port), f"{host}:{RROOT}/out.tgz",
@@ -117,11 +140,15 @@ def main():
 
     global DEST, RROOT, PLAN_DIR
     PLAN_DIR = ROOT / args.plan_dir
-    RROOT = args.remote_root
+    RROOT = unmangle(args.remote_root)
     DEST = ROOT / args.dest
 
     cid = int((PLAN_DIR / "INSTANCE").read_text(encoding="utf-8").strip())
     host, port = endpoint()
+    # Print the resolved layout on every run. A watcher silently pointed at the WRONG
+    # remote root or plan dir reports "nothing yet" about a box that is actually
+    # working - indistinguishable from a stalled campaign until you look at the box.
+    print(f"watching   : instance {cid} at {host}:{port}  remote={RROOT}  ->  {DEST.name}")
     v = api()
     log = DEST / "watch.log"
     DEST.mkdir(parents=True, exist_ok=True)
@@ -139,7 +166,8 @@ def main():
             bal = round(v.show_user().get("credit", 0), 2)
         except Exception:
             bal = None
-        print(f"pull={'ok' if ok else 'FAILED'} stage={stage} models_done={done_models} "
+        pull_word = {True: "ok", None: "nothing-yet", False: "FAILED"}[ok]
+        print(f"pull={pull_word} stage={stage} models_done={done_models} "
               f"rows={rows_local()} bal={bal}")
         if steps:
             print("steps:", steps)
