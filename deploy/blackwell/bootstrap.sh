@@ -48,6 +48,17 @@ if ! command -v nvidia-ctk >/dev/null 2>&1; then
      | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
      > /etc/apt/sources.list.d/nvidia-container-toolkit.list
   apt-get update -qq && apt-get install -y nvidia-container-toolkit
+  # The toolkit drags the whole nvidia driver stack forward as a dependency (on the
+  # Korea box: 580.95.05 -> 580.173.02) while the OLD kernel module stays resident.
+  # nvidia-smi then dies with "Driver/library version mismatch" the next time the
+  # modules are touched, and every serve after that fails. Reload now, while no
+  # process holds the GPU - this is the only moment in the run when that is true.
+  if ! nvidia-smi -L >/dev/null 2>&1; then
+    echo "   driver/library mismatch after toolkit install - reloading modules"
+    modprobe -r nvidia_uvm nvidia_drm nvidia_modeset nvidia 2>/dev/null || true
+    modprobe nvidia && modprobe nvidia_uvm || true
+    nvidia-smi -L || echo "   WARNING: GPU still unavailable - a reboot is required"
+  fi
 fi
 nvidia-ctk runtime configure --runtime=docker >/dev/null 2>&1 || true
 systemctl restart docker 2>/dev/null || service docker restart 2>/dev/null || true
