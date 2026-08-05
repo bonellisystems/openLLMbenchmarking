@@ -119,7 +119,11 @@ cat $B8_ROOT/caps
 echo "== hard preconditions (fail setup, not hour 6 of the sweep) =="
 docker info >/dev/null                                  # a real VM, not a container
 docker image inspect b8-sandbox:1 >/dev/null            # oracle containment image
-docker image inspect prism-llama:1 >/dev/null
+# prism-llama:1 is only asserted when its build claims success - when the build
+# already failed (prism_missing flag), bonsai is the accepted casualty, not setup.
+if [ ! -f $B8_ROOT/prism_missing ]; then
+  docker image inspect prism-llama:1 >/dev/null
+fi
 "$VENV/bin/python" - <<'PY'
 import yaml, io, sys
 d = yaml.safe_load(io.open("config/suite.yaml", encoding="utf-8").read())
