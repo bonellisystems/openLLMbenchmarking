@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import signal
 import json
 import re
 import sys
@@ -30,6 +31,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from llmtest.harness.game_oracle import det_checks_for, run_game_checks  # noqa: E402
+
+
+class ProbeHung(Exception):
+    """The browser stopped answering. Generated game code can spin the renderer
+    thread forever (a `while(true)` in the game loop), and once that happens the
+    page cannot service CDP messages - so Playwright's own per-call timeouts never
+    fire and the whole run blocks. nemotron-3-nano-30b did exactly this on
+    2026-08-05 and idled a rented box for 59 minutes. SIGALRM is the only thing
+    that reliably breaks it: it interrupts the blocked select() in the main
+    thread. A hung probe is scored as a failed game (which it is - a page that
+    wedges a browser is not a working game), never as a missing row."""
+
+
+def _alarm(_sig, _frm):
+    raise ProbeHung("browser did not respond within the probe budget")
 
 import yaml  # noqa: E402
 
@@ -95,6 +111,10 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--max-tokens", type=int, default=16000)
     ap.add_argument("--temperature", type=float, default=0.0)
+    ap.add_argument("--probe-timeout", type=int, default=240,
+                    help="hard wall-clock cap on ONE browser probe. Playwright's "
+                         "per-call timeouts do not fire when generated JS wedges "
+                         "the renderer, so this SIGALRM is the real backstop.")
     ap.add_argument("--req-timeout", type=int, default=600,
                     help="seconds to wait for one generation. Was 1800 and unbounded by "
                          "any per-model budget: 24 games x 3 ladder rungs meant a stalled "
@@ -177,7 +197,22 @@ def main():
                 hp.write_text(html, encoding="utf-8")
 
             if html:
-                res = run_game_checks(hp, chrome_path=chrome, keys=t.get("keys"))
+                signal.signal(signal.SIGALRM, _alarm)
+                signal.alarm(args.probe_timeout)
+                try:
+                    res = run_game_checks(hp, chrome_path=chrome, keys=t.get("keys"))
+                except ProbeHung as e:
+                    print(f"    PROBE HUNG after {args.probe_timeout}s -> scored as a "
+                          f"failed game ({e})", flush=True)
+                    res = None
+                finally:
+                    signal.alarm(0)
+            if html and res is None:
+                checks = {k: {"pass": False} for k in
+                          ("loads", "surface", "paints", "loop", "keys_wired", "input_safe")}
+                checks["runs_clean"] = {"pass": False, "detail": "probe hung - browser wedged"}
+                detail, score, clean = "probe hung - browser wedged", 0, False
+            elif html:
                 checks = det_checks_for(res)
                 if res.screenshot_b64:
                     (out / "builds" / f"{stem}.png").write_bytes(
