@@ -112,7 +112,7 @@ if [ -f "$M/$GG" ]; then
   if serve_model "$GG" "ghcr.io/ggml-org/llama.cpp:server-cuda"; then
     # llama-4-scout went 100%% infra-error in every prior B8 attempt: probe ONE task
     # with the real sandbox before paying for the full 115-run sweep.
-    if ! run_step "llama-4-scout" B8-probe "$PY" scripts/run_b8_local.py $EP --model "llama-4-scout" --task py-bugfix-01 --limit 1 --hardware-sku rtx-pro-6000-vm --results-dir $OUT/b8_probe_llama-4-scout; then
+    if ! run_step "llama-4-scout" B8-probe "$PY" scripts/run_b8_local.py $EP --model "llama-4-scout" --task b8.py-brk-01 --limit 1 --hardware-sku rtx-pro-6000-vm --results-dir $OUT/b8_probe_llama-4-scout; then
       log "  llama-4-scout B8 SKIPPED: probe produced no eligible row - harness cannot drive this model; documented exclusion, not a model score"
       echo "llama-4-scout B8 skip probe-failed" >> $B8_ROOT/steps
     else
@@ -435,7 +435,7 @@ if [ -f "$M/$GG" ]; then
     run_step "abl-qwen3.6-27b" B6 "$PY" scripts/bigmodel_gen.py --model "abl-qwen3.6-27b" --batteries 6 $EP --results-dir $OUT/suite
     # abl-qwen3.6-27b went 100%% infra-error in every prior B8 attempt: probe ONE task
     # with the real sandbox before paying for the full 115-run sweep.
-    if ! run_step "abl-qwen3.6-27b" B8-probe "$PY" scripts/run_b8_local.py $EP --model "abl-qwen3.6-27b" --task py-bugfix-01 --limit 1 --hardware-sku rtx-pro-6000-vm --results-dir $OUT/b8_probe_abl-qwen3.6-27b; then
+    if ! run_step "abl-qwen3.6-27b" B8-probe "$PY" scripts/run_b8_local.py $EP --model "abl-qwen3.6-27b" --task b8.py-brk-01 --limit 1 --hardware-sku rtx-pro-6000-vm --results-dir $OUT/b8_probe_abl-qwen3.6-27b; then
       log "  abl-qwen3.6-27b B8 SKIPPED: probe produced no eligible row - harness cannot drive this model; documented exclusion, not a model score"
       echo "abl-qwen3.6-27b B8 skip probe-failed" >> $B8_ROOT/steps
     else

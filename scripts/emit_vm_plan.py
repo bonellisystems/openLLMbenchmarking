@@ -255,7 +255,13 @@ def steps_for(mid: str, bats: list[str]) -> str:
                     f'    # {mid} went 100%% infra-error in every prior B8 attempt: probe ONE task\n'
                     f'    # with the real sandbox before paying for the full 115-run sweep.\n'
                     f'    if ! run_step "{mid}" B8-probe "$PY" scripts/run_b8_local.py $EP '
-                    f'--model "{mid}" --task py-bugfix-01 --limit 1 {hw} '
+                    f'--model "{mid}" --task b8.py-brk-01 --limit 1 {hw} '
+                    # Task ids are namespaced "b8.*" - the old bare "py-bugfix-01"
+                    # matched NOTHING, so the probe exited 0 having planned zero
+                    # work items and the gate waved a broken model through. The
+                    # 8-infra-error abort inside run_b8_local caught it instead
+                    # (~2.5 min, not an hour), but a gate that passes by doing
+                    # nothing is worse than no gate.
                     f'--results-dir $OUT/b8_probe_{mid}; then\n'
                     f'      log "  {mid} B8 SKIPPED: probe produced no eligible row - harness '
                     f'cannot drive this model; documented exclusion, not a model score"\n'
