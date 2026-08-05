@@ -92,7 +92,7 @@ echo "== prism image for bonsai-ternary-27b (Q2_0 refuses the official image) ==
 # not hold the other 18 models hostage. run_all's serve step fails loudly for bonsai
 # if the image is still missing when its turn comes, and the flag file makes the
 # situation visible to the watcher.
-if docker build -q -t prism-llama:1 -f deploy/blackwell/Dockerfile.prism deploy/blackwell \
+if timeout 2700 docker build -t prism-llama:1 -f deploy/blackwell/Dockerfile.prism deploy/blackwell \
      > $B8_ROOT/prism_build.log 2>&1; then
   rm -f $B8_ROOT/prism_missing
 else
