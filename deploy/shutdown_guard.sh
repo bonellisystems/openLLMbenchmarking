@@ -13,10 +13,14 @@
 #
 # GRACE exists so the watcher gets at least two more 5-minute polls to pull the final
 # rows before the machine goes away.
+# DONE_FLAG is parameterised because work can legitimately continue AFTER the main
+# sweep writes run_all_done (a follow-on queue: an extra model, a re-run, a deferred
+# build). Hard-coding run_all_done would power the box off in the middle of that.
 set -u
 GRACE=900
+DONE_FLAG="${DONE_FLAG:-run_all_done}"
 while true; do
-  if [ -f ${B8_ROOT:-/root}/run_all_done ]; then
+  if [ -f ${B8_ROOT:-/root}/$DONE_FLAG ]; then
     echo "$(date -u +%H:%M:%S) shutdown-guard: run complete, ${GRACE}s grace for the final pull" \
       >> ${B8_ROOT:-/root}/shutdown_guard.log
     sleep "$GRACE"
