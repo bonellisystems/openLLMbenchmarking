@@ -284,6 +284,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", default="plan/manifest.json")
     ap.add_argument("--out", default="plan_vm")
+    ap.add_argument("--only", default="",
+                    help="comma-separated model ids: emit a runner for JUST these, as "
+                         "<out>/run_only.sh. Used to rescue the highest-value cells when "
+                         "credit will not cover the whole sweep - abl-qwen3.6-27b carries "
+                         "the campaign's only non-B8 cells and is scheduled last.")
+    ap.add_argument("--runner-name", default="run_all.sh")
     args = ap.parse_args()
 
     man = json.loads((ROOT / args.manifest).read_text(encoding="utf-8"))
@@ -298,6 +304,15 @@ def main() -> int:
         m["batteries"] = [b for b in m["batteries"] if b != "B1"]
         dropped_b1 += n0 - len(m["batteries"])
     man["models"] = [m for m in man["models"] if m["batteries"]]
+
+    if args.only:
+        want = {x.strip() for x in args.only.split(",") if x.strip()}
+        missing = want - {m["id"] for m in man["models"]}
+        if missing:
+            print(f"--only: unknown model id(s): {sorted(missing)}")
+            return 2
+        man["models"] = [m for m in man["models"] if m["id"] in want]
+        args.runner_name = args.runner_name if args.runner_name != "run_all.sh" else "run_only.sh"
 
     blocks, nfiles = [], 0
     ordered = sorted(man["models"], key=lambda x: est_seconds(x, reg))
@@ -318,7 +333,7 @@ def main() -> int:
 
     probe_m = min((m for m in man["models"] if m["files"]), key=lambda x: x["gb"])
     write_sh(outdir / "vm_setup.sh", SETUP % {"b8_root": B8_ROOT})
-    write_sh(outdir / "run_all.sh",
+    write_sh(outdir / args.runner_name,
              (RUNNER_HEAD % {"b8_root": B8_ROOT,
                              "probe_repo": probe_m["repo"],
                              "probe_file": probe_m["files"][0]["path"]})
