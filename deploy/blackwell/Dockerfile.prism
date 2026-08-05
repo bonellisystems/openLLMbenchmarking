@@ -6,7 +6,10 @@
 #
 #   docker build -f deploy/blackwell/Dockerfile.prism -t prism-llama:1 deploy/blackwell
 #   LLAMA_IMAGE=prism-llama:1 bash deploy/blackwell/serve.sh <bonsai.gguf>
-FROM nvidia/cuda:12.6.2-devel-ubuntu24.04 AS build
+# CUDA 12.8 is the FIRST toolkit that knows sm_120 (Blackwell). 12.6 was here
+# originally and cannot compile the arch pinned below - that is the prime
+# suspect for the build that failed on the Korea box.
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS build
 RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends git cmake build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -15,9 +18,12 @@ RUN git clone --depth 1 -b prism https://github.com/PrismML-Eng/llama.cpp /src
 # and silently runs on the CPU, which reads as a slow model instead of a broken build.
 RUN cmake -S /src -B /src/build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_CUDA_ARCHITECTURES=120 -DLLAMA_CURL=OFF \
-    && cmake --build /src/build --config Release -j"$(nproc)" --target llama-server
+    && cmake --build /src/build --config Release -j8 --target llama-server   # bounded: -j$(nproc) on a 32-core box
+#   thrashes RAM on ggml-cuda translation units and is the other suspect for
+#   the 8-hour build. Never build this while a battery is running - B8 has a
+#   180s per-run wall-clock budget and CPU starvation would fake budget_exceeded.
 
-FROM nvidia/cuda:12.6.2-runtime-ubuntu24.04
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 COPY --from=build /src/build/bin/ /app/
 ENV LD_LIBRARY_PATH=/app
 # Same entry contract as ghcr.io/ggml-org/llama.cpp:server-cuda, so serve.sh can swap
