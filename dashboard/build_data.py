@@ -909,7 +909,8 @@ def compute_matrix():
     b8_dropped = collections.Counter()
     for r in b8_candidates:
         raw = r.get("model_id")
-        if not suite_cell_allowed(SUPERSEDED, raw, 8, cell_max.get(raw)):
+        if not suite_cell_allowed(SUPERSEDED, raw, 8, cell_max.get(raw),
+                                  version_tuple(r.get("suite_version"))):
             b8_dropped[raw] += 1
             continue
         take_b8(r)

@@ -116,11 +116,26 @@ def effective_suite_rows(rows, superseded: dict, count_check: bool = True) -> li
 
 
 def suite_cell_allowed(superseded: dict, model_id: str, battery: int,
-                       cell_max_version: tuple | None = None) -> bool:
+                       cell_max_version: tuple | None = None,
+                       row_version: tuple | None = None) -> bool:
     """Streaming-friendly variant for consumers that read a cell from MULTIPLE sources
     (build_data's take_b8 reads results_b8_<model>/ dirs AND the suite shard).
     ``cell_max_version`` is the highest suite version the caller has observed for the
-    cell across all its sources ((0,) or None when every row is legacy)."""
+    cell across all its sources ((0,) or None when every row is legacy); ``row_version``
+    is THIS row's version.
+
+    Two independent rules, both required:
+
+    1. Latest version wins WITHIN a cell. Without this, a replaced cell re-admitted its
+       superseded rows the moment the replacement arrived: after the 2026-08-05 campaign
+       merged 115 fresh rows next to 69 old laptop rows, agents-a1-35b would have scored
+       on all 184 - blending the two hardware generations this whole exercise exists to
+       separate. The n_expected drift assert in build_data caught it.
+    2. A withdrawn cell stays withdrawn until its replacement version actually exists.
+    """
+    if (row_version is not None and cell_max_version is not None
+            and row_version < cell_max_version):
+        return False
     rule = _withdrawn_cells(superseded).get((model_id, int(battery)))
     if rule is None:
         return True

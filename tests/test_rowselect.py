@@ -95,3 +95,20 @@ def test_custom_count_drift_fails_loudly():
 def test_unlisted_shard_and_models_pass_through():
     rows = [_r("other", 10, ts="2026-07-20T00:00:00")]
     assert effective_custom_rows(rows, SUP, "rows-security.jsonl") == rows
+
+
+def test_replaced_cell_does_not_readmit_its_superseded_rows():
+    """The 2026-08-05 regression: once a withdrawn cell gained v2.2.0 rows, the
+    cell-level gate opened and the OLD laptop rows were scored alongside the new ones -
+    184 rows blending two hardware generations. A row older than its cell's max is
+    dropped regardless of whether the cell was ever withdrawn."""
+    new = version_tuple("suite-v2.2.0")
+    old = version_tuple("suite-v2.1.0")
+    # withdrawn cell, now replaced: new rows in, old rows out
+    assert suite_cell_allowed(SUP, "m-dirs", 8, new, new) is True
+    assert suite_cell_allowed(SUP, "m-dirs", 8, new, old) is False
+    # cell never withdrawn but re-measured: latest still wins
+    assert suite_cell_allowed(SUP, "unlisted", 8, new, new) is True
+    assert suite_cell_allowed(SUP, "unlisted", 8, new, old) is False
+    # withdrawn and NOT yet replaced: nothing is admitted
+    assert suite_cell_allowed(SUP, "m-dirs", 8, old, old) is False

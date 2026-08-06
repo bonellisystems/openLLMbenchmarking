@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#ccc;font-family:monospace;font-size:16px;overflow:hidden;display:flex;justify-content:center;align-items:center;height:100vh}
+#game{display:flex;flex-direction:column;align-items:center}
+#map{white-space:pre;line-height:1.1;letter-spacing:1px}
+#ui{margin-top:8px;font-size:14px;color:#aaa}
+#log{margin-top:4px;height:60px;overflow:hidden;font-size:12px;color:#888;text-align:left;width:640px}
+#log div{margin:1px 0}
+</style>
+</head>
+<body>
+<div id="game">
+<div id="map"></div>
+<div id="ui"></div>
+<div id="log"></div>
+</div>
+<script>
+const W=80,H=24;
+let map,player,enemies,items,level,logMsgs,gameOver;
+const T_WALL='#',T_FLOOR='.',T_STAIRS='>';
+const COLORS={
+'@':'#0f0','#':'444','.':'333','>':'#ff0',
+'g':'#f80','o':'#f44','t':'#f0f','D':'#a0f',
+'!':'#f00','*':'#ff0','/':'#0ff','s':'#fa0'
+};
+
+function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+function shuffle(a){for(let i=a.length-1;i>0;i--){let j=rand(0,i);[a[i],a[j]]=[a[j],a[i]]}return a}
+
+function genDungeon(){
+map=[];
+for(let y=0;y<H;y++)map[y]=Array(W).fill(T_WALL);
+let rooms=[];
+for(let i=0;i<15;i++){
+let w=rand(4,9),h=rand(3,6),x=rand(1,W-w-1),y=rand(1,H-h-1);
+let overlap=false;
+for(let r of rooms){
+if(x<r.x+r.w+1&&x+w+1>r.x&&y<r.y+r.h+1&&y+h+1>r.y)overlap=true;
+}
+if(!overlap){
+rooms.push({x,y,w,h,cx:x+Math.floor(w/2),cy:y+Math.floor(h/2)});
+for(let ry=y;ry<y+h;ry++)for(let rx=x;rx<x+w;rx++)map[ry][rx]=T_FLOOR;
+}
+}
+for(let i=1;i<rooms.length;i++){
+let a=rooms[i-1],b=rooms[i];
+if(rand(0,1)){
+for(let x=Math.min(a.cx,b.cx);x<=Math.max(a.cx,b.cx);x++)map[a.cy][x]=T_FLOOR;
+for(let y=Math.min(a.cy,b.cy);y<=Math.max(a.cy,b.cy);y++)map[y][b.cx]=T_FLOOR;
+}else{
+for(let y=Math.min(a.cy,b.cy);y<=Math.max(a.cy,b.cy);y++)map[y][a.cx]=T_FLOOR;
+for(let x=Math.min(a.cx,b.cx);x<=Math.max(a.cx,b.cx);x++)map[b.cy][x]=T_FLOOR;
+}
+}
+let last=rooms[rooms.length-1];
+map[last.cy][last.cx]=T_STAIRS;
+return rooms;
+}
+
+function spawnEntities(rooms){
+enemies=[];items=[];
+let types=[{ch:'g',name:'goblin',hp:8,atk:2,color:'#f80'},{ch:'o',name:'orc',hp:14,atk:4,color:'#f44'},{ch:'t',name:'troll',hp:22,atk:6,color:'#f0f'}];
+for(let r=1;r<rooms.length;r++){
+let room=rooms[r];
+let ex=rand(room.x+1,room.x+room.w-2),ey=rand(room.y+1,room.y+room.h-2);
+if(map[ey][ex]===T_FLOOR){
+let t=types[Math.min(rand(0,2),Math.floor(level/3))];
+enemies.push({x:ex,y:ey,...JSON.parse(JSON.stringify(t)),maxHp:t.hp});
+}
+if(rand(0,100)<30){
+let ix=rand(room.x+1,room.x+room.w-2),iy=rand(room.y+1,room.y+room.h-2);
+if(map[iy][ix]===T_FLOOR){
+let roll=rand(0,100);
+if(roll<50)items.push({x:ix,y:iy,ch:'!',name:'health potion',type:'potion'});
+else if(roll<75)items.push({x:ix,y:iy,ch:'*',name:'gold',type:'gold',val:rand(5,20)});
+else if(roll<90)items.push({x:ix,y:iy,ch:'/',name:'sword',type:'weapon',atk:rand(1,3)});
+else items.push({x:ix,y:iy,ch:'s',name:'strength potion',type:'strpot'});
+}
+}
+}
+}
+
+function init(){
+level=1;gameOver=false;logMsgs=[];
+player={x:0,y:0,hp:30,maxHp:30,atk:3,def:0,gold:0,str:0};
+let rooms=genDungeon();
+let first=rooms[0];
+player.x=first.cx;player.y=first.cy;
+spawnEntities(rooms);
+addLog('Welcome to the dungeon! Use arrow keys or WASD to move.');
+addLog('Bump into enemies to attack. > are stairs down.');
+render();
+}
+
+function addLog(msg){
+logMsgs.push(msg);
+if(logMsgs.length>5)logMsgs.shift();
+let el=document.getElementById('log');
+el.innerHTML=logMsgs.map(m=>'<div>'+m+'</div>').join('');
+}
+
+function visible(x,y){
+let dx=Math.abs(x-player.x),dy=Math.abs(y-player.y);
+return dx+dy<=8;
+}
+
+function moveEnemy(e){
+if(!visible(e.x,e.y))return;
+let dx=player.x-e.x,dy=player.y-e.y;
+let moves=[];
+if(dx!==0)moves.push({x:e.x+Math.sign(dx),y:e.y});
+if(dy!==0)moves.push({x:e.x,y:e.y+Math.sign(dy)});
+shuffle(moves);
+for(let m of moves){
+if(m.x<0||m.x>=W||m.y<0||m.y>=H)continue;
+if(map[m.y][m.x]!==T_FLOOR&&map[m.y][m.x]!==T_STAIRS)continue;
+if(m.x===player.x&&m.y===player.y){
+let dmg=Math.max(1,e.atk-player.def+rand(-1,1));
+player.hp-=dmg;
+addLog(e.name+' hits you for '+dmg+' damage!');
+if(player.hp<=0){gameOver=true;addLog('You died! Refresh to restart.');}
+return;
+}
+let occ=enemies.find(o=>o!==e&&o.x===m.x&&o.y===m.y);
+if(!occ){e.x=m.x;e.y=m.y;return;}
+}
+}
+
+function takeTurn(){
+for(let e of enemies)moveEnemy(e);
+}
+
+function move(dx,dy){
+if(gameOver)return;
+let nx=player.x+dx,ny=player.y+dy;
+if(nx<0||nx>=W||ny<0||ny>=H)return;
+if(map[ny][nx]===T_WALL)return;
+let enemy=enemies.find(e=>e.x===nx&&e.y===ny);
+if(enemy){
+let dmg=Math.max(1,player.atk+player.str+rand(-1,2));
+enemy.hp-=dmg;
+addLog('You hit '+enemy.name+' for '+dmg+' damage.');
+if(enemy.hp<=0){
+addLog(enemy.name+' dies!');
+enemies=enemies.filter(e=>e!==enemy);
+}
+takeTurn();
+}else{
+player.x=nx;player.y=ny;
+let item=items.find(i=>i.x===nx&&i.y===ny);
+if(item){
+if(item.type==='potion'){
+let heal=rand(8,15);player.hp=Math.min(player.maxHp,player.hp+heal);
+addLog('You drink a health potion. Healed '+heal+' HP.');
+}else if(item.type==='gold'){
+player.gold+=item.val;addLog('You found '+item.val+' gold.');
+}else if(item.type==='weapon'){
+player.atk+=item.atk;addLog('You equip a sword. +'+item.atk+' attack.');
+}else if(item.type==='strpot'){
+player.str+=1;addLog('You feel stronger! +1 strength.');
+}
+items=items.filter(i=>i!==item);
+}
+if(map[ny][nx]===T_STAIRS){
+level++;
+addLog('You descend to level '+level+'...');
+let rooms=genDungeon();
+let first=rooms[0];
+player.x=first.cx;player.y=first.cy;
+spawnEntities(rooms);
+}
+takeTurn();
+}
+render();
+}
+
+function render(){
+let html='';
+for(let y=0;y<H;y++){
+let line='';
+for(let x=0;x<W;x++){
+let ch=map[y][x];
+let color=COLORS[ch]||'#ccc';
+if(x===player.x&&y===player.y){ch='@';color=COLORS['@'];}
+else{
+let e=enemies.find(e=>e.x===x&&e.y===y);
+if(e&&visible(x,y)){ch=e.ch;color=e.color;}
+else{
+let i=items.find(i=>i.x===x&&i.y===y);
+if(i&&visible(x,y)){ch=i.ch;color=COLORS[i.ch]||'#ff0';}
+}
+}
+if(!visible(x,y)&&!(x===player.x&&y===player.y))ch=' ';
+line+='<span style="color:'+color+'">'+ch+'</span>';
+}
+html+=line+'\n';
+}
+document.getElementById('map').innerHTML=html;
+document.getElementById('ui').innerHTML=
+'Level:'+level+' HP:'+player.hp+'/'+player.maxHp+' ATK:'+player.atk+' DEF:'+player.def+' STR:'+player.str+' Gold:'+player.gold;
+}
+
+document.addEventListener('keydown',e=>{
+let handled=true;
+switch(e.key){
+case'ArrowUp':case'w':case'W':move(0,-1);break;
+case'ArrowDown':case's':case'S':move(0,1);break;
+case'ArrowLeft':case'a':case'A':move(-1,0);break;
+case'ArrowRight':case'd':case'D':move(1,0);break;
+default:handled=false;break;
+}
+if(handled)e.preventDefault();
+});
+
+init();
+</script>
+</body>
+</html>

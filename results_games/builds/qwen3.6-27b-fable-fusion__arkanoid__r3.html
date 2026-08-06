@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arkanoid</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #0a0a1a;
+display: flex;
+justify-content: center;
+align-items: center;
+height: 100vh;
+overflow: hidden;
+font-family: 'Courier New', monospace;
+}
+canvas {
+border: 3px solid #333;
+border-radius: 4px;
+box-shadow: 0 0 40px rgba(0, 100, 255, 0.3);
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+canvas.width = 800;
+canvas.height = 600;
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+function playSound(freq, duration, type = 'square', volume = 0.15) {
+const osc = audioCtx.createOscillator();
+const gain = audioCtx.createGain();
+osc.type = type;
+osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+osc.connect(gain);
+gain.connect(audioCtx.destination);
+osc.start();
+osc.stop(audioCtx.currentTime + duration);
+}
+
+function playBrickSound() { playSound(440 + Math.random() * 200, 0.08, 'square', 0.1); }
+function playPaddleSound() { playSound(220, 0.1, 'triangle', 0.12); }
+function playWallSound() { playSound(180, 0.06, 'sine', 0.08); }
+function playLoseSound() { playSound(150, 0.4, 'sawtooth', 0.15); }
+function playWinSound() {
+[523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playSound(f, 0.2, 'square', 0.1), i * 100));
+}
+
+const keys = {};
+document.addEventListener('keydown', e => {
+keys[e.code] = true;
+if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+let gameState = 'start';
+let score = 0;
+let lives = 3;
+let level = 1;
+let highScore = parseInt(localStorage.getItem('arkanoidHighScore')) || 0;
+
+const paddle = {
+width: 120,
+height: 14,
+x: 0,
+y: canvas.height - 40,
+speed: 8,
+color: '#00ccff'
+};
+
+const ball = {
+x: 0,
+y: 0,
+radius: 7,
+speedX: 0,
+speedY: 0,
+baseSpeed: 5,
+color: '#ffffff',
+trail: []
+};
+
+const brickRows = 7;
+const brickCols = 12;
+const brickWidth = 58;
+const brickHeight = 20;
+const brickPadding = 4;
+const brickOffsetX = 22;
+const brickOffsetY = 50;
+
+let bricks = [];
+let particles = [];
+let powerUps = [];
+
+const brickColors = [
+'#ff3366', '#ff6633', '#ffcc00', '#33ff66',
+'#33ccff', '#6666ff', '#cc33ff'
+];
+
+function createBricks() {
+bricks = [];
+for (let r = 0; r < brickRows; r++) {
+for (let c = 0; c < brickCols; c++) {
+let hp = 1;
+if (level >= 2 && r < 2) hp = 2;
+if (level >= 3 && r < 1) hp = 3;
+bricks.push({
+x: brickOffsetX + c * (brickWidth + brickPadding),
+y: brickOffsetY + r * (brickHeight + brickPadding),
+width: brickWidth,
+height: brickHeight,
+color: brickColors[r],
+hp: hp,
+maxHp: hp,
+alive: true
+});
+}
+}
+}
+
+function resetBall() {
+ball.x = paddle.x + paddle.width / 2;
+ball.y = paddle.y - ball.radius - 2;
+ball.speedX = 0;
+ball.speedY = 0;
+ball.trail = [];
+}
+
+function launchBall() {
+const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.8;
+const speed = ball.baseSpeed + (level - 1) * 0.5;
+ball.speedX = Math.cos(angle) * speed;
+ball.speedY = Math.sin(angle) * speed;
+}
+
+function createParticles(x, y, color, count = 8) {
+for (let i = 0; i < count; i++) {
+const angle = Math.random() * Math.PI * 2;
+const speed = 1 + Math.random() * 3;
+particles.push({
+x, y,
+vx: Math.cos(angle) * speed,
+vy: Math.sin(angle) * speed,
+life: 1,
+decay: 0.02 + Math.random() * 0.03,
+color,
+size: 2 + Math.random() * 3
+});
+}
+}
+
+function spawnPowerUp(x, y) {
+if (Math.random() < 0.15) {
+const types = ['wide', 'fast', 'slow', 'life'];
+const type = types[Math.floor(Math.random() * types.length)];
+powerUps.push({ x, y, type, vy: 2, width: 24, height: 14 });
+}
+}
+
+function applyPowerUp(type) {
+switch (type) {
+case 'wide':
+paddle.width = Math.min(paddle.width + 40, 200);
+setTimeout(() => { paddle.width = Math.max(paddle.width - 40, 120); }, 10000);
+break;
+case 'fast':
+const s = Math.sqrt(ball.speedX * ball.speedX + ball.speedY * ball.speedY);
+const a = Math.atan2(ball.speedY, ball.speedX);
+ball.speedX = Math.cos(a) * (s + 2);
+ball.speedY = Math.sin(a) * (s + 2);
+break;
+case 'slow':
+const s2 = Math.sqrt(ball.speedX * ball.speedX + ball.speedY * ball.speedY);
+const a2 = Math.atan2(ball.speedY, ball.speedX);
+ball.speedX = Math.cos(a2) * Math.max(s2 - 1.5, 3);
+ball.speedY = Math.sin(a2) * Math.max(s2 - 1.5, 3);
+break;
+case 'life':
+lives = Math.min(lives + 1, 5);
+break;
+}
+}
+
+function update() {
+if (gameState === 'start') {
+if (keys['Space'] || keys['Enter']) {
+gameState = 'playing';
+score = 0;
+lives = 3;
+level = 1;
+createBricks();
+resetBall();
+setTimeout(launchBall, 500);
+}
+return;
+}
+
+if (gameState === 'gameover' || gameState === 'win') {
+if (keys['Space'] || keys['Enter']) {
+gameState = 'start';
+}
+return;
+}
+
+// Paddle movement
+if (keys['ArrowLeft'] || keys['KeyA']) {
+paddle.x -= paddle.speed;
+}
+if (keys['ArrowRight'] || keys['KeyD']) {
+paddle.x += paddle.speed;
+}
+paddle.x = Math.max(0, Math.min(canvas.width - paddle.width, paddle.x));
+
+// Ball on paddle (not launched yet)
+if (ball.speedX === 0 && ball.speedY === 0) {
+ball.x = paddle.x + paddle.width / 2;
+if (keys['Space'] || keys['Enter']) {
+launchBall();
+}
+return;
+}
+
+// Ball trail
+ball.trail.push({ x: ball.x, y: ball.y });
+if (ball.trail.length > 10) ball.trail.shift();
+
+// Move ball
+ball.x += ball.speedX;
+ball.y += ball.speedY;
+
+// Wall collisions
+if (ball.x - ball.radius < 0) {
+ball.x = ball.radius;
+ball.speedX = -ball.speedX;
+playWallSound();
+}
+if (ball.x + ball.radius > canvas.width) {
+ball.x = canvas.width - ball.radius;
+ball.speedX = -ball.speedX;
+playWallSound();
+}
+if (ball.y - ball.radius < 0) {
+ball.y = ball.radius;
+ball.speedY = -ball.speedY;
+playWallSound();
+}
+
+// Bottom - lose life
+if (ball.y - ball.radius > canvas.height) {
+lives--;
+playLoseSound();
+if (lives <= 0) {
+gameState = 'gameover';
+if (score > highScore) {
+highScore = score;
+localStorage.setItem('arkanoidHighScore', highScore);
+}
+} else {
+resetBall();
+setTimeout(launchBall, 500);
+}
+return;
+}
+
+// Paddle collision
+if (ball.y + ball.radius >= paddle.y &&
+ball.y - ball.radius <= paddle.y + paddle.height &&
+ball.x >= paddle.x &&
+ball.x <= paddle.x + paddle.width &&
+ball.speedY > 0) {
+
+const hitPos = (ball.x - paddle.x) / paddle.width;
+const angle = (hitPos - 0.5) * Math.PI * 0.7;
+const speed = Math.sqrt(ball.speedX * ball.speedX + ball.speedY * ball.speedY);
+ball.speedX = Math.sin(angle) * speed;
+ball.speedY = -Math.cos(angle) * speed;
+ball.y = paddle.y - ball.radius;
+playPaddleSound();
+createParticles(ball.x, paddle.y, '#00ccff', 5);
+}
+
+// Brick collision
+for (let brick of bricks) {
+if (!brick.alive) continue;
+
+const closestX = Math.max(brick.x, Math.min(ball.x, brick.x + brick.width));
+const closestY = Math.max(brick.y, Math.min(ball.y, brick.y + brick.height));
+const dx = ball.x - closestX;
+const dy = ball.y - closestY;
+const dist = Math.sqrt(dx * dx + dy * dy);
+
+if (dist < ball.radius) {
+brick.hp--;
+if (brick.hp <= 0) {
+brick.alive = false;
+score += 10 * level;
+createParticles(brick.x + brick.width / 2, brick.y + brick.height / 2, brick.color, 12);
+spawnPowerUp(brick.x + brick.width / 2, brick.y + brick.height / 2);
+} else {
+score += 5;
+createParticles(closestX, closestY, brick.color, 4);
+}
+playBrickSound();
+
+// Determine bounce direction
+const overlapX = ball.radius - Math.abs(dx);
+const overlapY = ball.radius - Math.abs(dy);
+
+if (overlapX < overlapY) {
+ball.speedX = -ball.speedX;
+} else {
+ball.speedY = -ball.speedY;
+}
+break;
+}
+}
+
+// Power-up collision
+for (let i = powerUps.length - 1; i >= 0; i--) {
+const p = powerUps[i];
+p.y += p.vy;
+if (p.y > canvas.height) {
+powerUps.splice(i, 1);
+continue;
+}
+if (p.y + p.height >= paddle.y &&
+p.y <= paddle.y + paddle.height &&
+p.x + p.width >= paddle.x &&
+p.x <= paddle.x + paddle.width) {
+applyPowerUp(p.type);
+playSound(600, 0.15, 'sine', 0.1);
+powerUps.splice(i, 1);
+}
+}
+
+// Particles update
+for (let i = particles.length - 1; i >= 0; i--) {
+const p = particles[i];
+p.x += p.vx;
+p.y += p.vy;
+p.vy += 0.05;
+p.life -= p.decay;
+if (p.life <= 0) particles.splice(i, 1);
+}
+
+// Check win
+if (bricks.every(b => !b.alive)) {
+level++;
+if (level > 5) {
+gameState = 'win';
+playWinSound();
+if (score > highScore) {
+highScore = score;
+localStorage.setItem('arkanoidHighScore', highScore);
+}
+} else {
+createBricks();
+resetBall();
+setTimeout(launchBall, 500);
+}
+}
+}
+
+function draw() {
+ctx.fillStyle = '#0a0a1a';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+// Background grid
+ctx.strokeStyle = 'rgba(30, 40, 80, 0.3)';
+ctx.lineWidth = 1;
+for (let x = 0; x < canvas.width; x += 40) {
+ctx.beginPath();
+ctx.moveTo(x, 0);
+ctx.lineTo(x, canvas.height);
+ctx.stroke();
+}
+for (let y = 0; y < canvas.height; y += 40) {
+ctx.beginPath();
+ctx.moveTo(0, y);
+ctx.lineTo(canvas.width, y);
+ctx.stroke();
+}
+
+if (gameState === 'start') {
+drawStartScreen();
+return;
+}
+
+// Bricks
+for (let brick of bricks) {
+if (!brick.alive) continue;
+const alpha = brick.hp / brick.maxHp;
+ctx.fillStyle = brick.color;
+ctx.globalAlpha = 0.5 + alpha * 0.5;
+ctx.fillRect(brick.x, brick.y, brick.width, brick.height);
+ctx.globalAlpha = 1;
+
+// Brick highlight
+ctx.fillStyle = 'rgba(255,255,255,0.2)';
+ctx.fillRect(brick.x, brick.y, brick.width, brick.height / 2);
+
+// Brick border
+ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+ctx.lineWidth = 1;
+ctx.strokeRect(brick.x, brick.y, brick.width, brick.height);
+
+// HP indicator for multi-hit bricks
+if (brick.maxHp > 1) {
+ctx.fillStyle = '#fff';
+ctx.font = '10px monospace';
+ctx.textAlign = 'center';
+ctx.fillText(brick.hp, brick.x + brick.width / 2, brick.y + brick.height / 2 + 4);
+}
+}
+
+// Power-ups
+const puColors = { wide: '#00ff88', fast: '#ff4444', slow: '#4488ff', life: '#ff44ff' };
+const puLabels = { wide: 'W', fast: 'F', slow: 'S', life: '+' };
+for (let p of powerUps) {
+ctx.fillStyle = puColors[p.type];
+ctx.fillRect(p.x, p.y, p.width, p.height);
+ctx.fillStyle = '#000';
+ctx.font = 'bold 10px monospace';
+ctx.textAlign = 'center';
+ctx.fillText(puLabels[p.type], p.x + p.width / 2, p.y + p.height / 2 + 4);
+}
+
+// Particles
+for (let p of particles) {
+ctx.globalAlpha = p.life;
+ctx.fillStyle = p.color;
+ctx.beginPath();
+ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+ctx.fill();
+}
+ctx.globalAlpha = 1;
+
+// Ball trail
+for (let i = 0; i < ball.trail.length; i++) {
+const t = ball.trail[i];
+const alpha = (i / ball.trail.length) * 0.4;
+const size = ball.radius * (i / ball.trail.length);
+ctx.fillStyle = `rgba(100, 200, 255, ${alpha})`;
+ctx.beginPath();
+ctx.arc(t.x, t.y, size, 0, Math.PI * 2);
+ctx.fill();
+}
+
+// Ball
+ctx.fillStyle = ball.color;
+ctx.shadowColor = '#00ccff';
+ctx.shadowBlur = 15;
+ctx.beginPath();
+ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+ctx.fill();
+ctx.shadowBlur = 0;
+
+// Ball highlight
+ctx.fillStyle = 'rgba(255,255,255,0.6)';
+ctx.beginPath();
+ctx.arc(ball.x - 2, ball.y - 2, ball.radius * 0.4, 0, Math.PI * 2);
+ctx.fill();
+
+// Paddle
+const gradient = ctx.createLinearGradient(paddle.x, paddle.y, paddle.x, paddle.y + paddle.height);
+gradient.addColorStop(0, '#00eeff');
+gradient.addColorStop(1, '#0066aa');
+ctx.fillStyle = gradient;
+ctx.shadowColor = '#00ccff';
+ctx.shadowBlur = 10;
+ctx.beginPath();
+ctx.roundRect(paddle.x, paddle.y, paddle.width, paddle.height, 4);
+ctx.fill();
+ctx.shadowBlur = 0;
+
+// Paddle highlight
+ctx.fillStyle = 'rgba(255,255,255,0.3)';
+ctx.beginPath();
+ctx.roundRect(paddle.x + 2, paddle.y + 1, paddle.width - 4, paddle.height / 2 - 1, 3);
+ctx.fill();
+
+// HUD
+ctx.fillStyle = '#ffffff';
+ctx.font = '16px "Courier New", monospace';
+ctx.textAlign = 'left';
+ctx.fillText(`SCORE: ${score}`, 15, 25);
+ctx.textAlign = 'center';
+ctx.fillText(`LEVEL ${level}`, canvas.width / 2, 25);
+ctx.textAlign = 'right';
+ctx.fillText(`LIVES: ${'♥'.repeat(lives)}`, canvas.width - 15, 25);
+ctx.textAlign = 'left';
+ctx.fillStyle = '#666';
+ctx.font = '12px "Courier New", monospace';
+ctx.fillText(`HI: ${highScore}`, 15, 45);
+
+if (gameState === 'gameover') {
+drawOverlay('GAME OVER', `Final Score: ${score}`, 'Press SPACE to continue');
+}
+
+if (gameState === 'win') {
+drawOverlay('YOU WIN!', `Final Score: ${score}`, 'Press SPACE to continue');
+}
+}
+
+function drawStartScreen() {
+ctx.fillStyle = '#ffffff';
+ctx.font = 'bold 48px "Courier New", monospace';
+ctx.textAlign = 'center';
+ctx.shadowColor = '#00ccff';
+ctx.shadowBlur = 20;
+ctx.fillText('ARKANOID', canvas.width / 2, canvas.height / 2 - 60);
+ctx.shadowBlur = 0;
+
+ctx.fillStyle = '#00ccff';
+ctx.font = '20px "Courier New", monospace';
+ctx.fillText('Press SPACE to start', canvas.width / 2, canvas.height / 2 + 10);
+
+ctx.fillStyle = '#888';
+ctx.font = '14px "Courier New", monospace';
+ctx.fillText('← → or A D to move paddle', canvas.width / 2, canvas.height / 2 + 50);
+ctx.fillText('SPACE to launch ball', canvas.width / 2, canvas.height / 2 + 75);
+
+if (highScore > 0) {
+ctx.fillStyle = '#ffcc00';
+ctx.font = '16px "Courier New", monospace';
+ctx.fillText(`High Score: ${highScore}`, canvas.width / 2, canvas.height / 2 + 120);
+}
+
+// Decorative bricks
+const demoBricks = [
+{ x: canvas.width / 2 - 120, y: canvas.height / 2 - 120, color: '#ff3366' },
+{ x: canvas.width / 2 - 60, y: canvas.height / 2 - 120, color: '#ff6633' },
+{ x: canvas.width / 2, y: canvas.height / 2 - 120, color: '#ffcc00' },
+{ x: canvas.width / 2 + 60, y: canvas.height / 2 - 120, color: '#33ff66' },
+{ x: canvas.width / 2 + 120, y: canvas.height / 2 - 120, color: '#33ccff' },
+];
+for (let b of demoBricks) {
+ctx.fillStyle = b.color;
+ctx.fillRect(b.x, b.y, 50, 16);
+}
+}
+
+function drawOverlay(title, subtitle, prompt) {
+ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+ctx.fillStyle = '#ffffff';
+ctx.font = 'bold 48px "Courier New", monospace';
+ctx.textAlign = 'center';
+ctx.shadowColor = '#ff3366';
+ctx.shadowBlur = 20;
+ctx.fillText(title, canvas.width / 2, canvas.height / 2 - 30);
+ctx.shadowBlur = 0;
+
+ctx.fillStyle = '#00ccff';
+ctx.font = '22px "Courier New", monospace';
+ctx.fillText(subtitle, canvas.width / 2, canvas.height / 2 + 20);
+
+ctx.fillStyle = '#888';
+ctx.font = '16px "Courier New", monospace';
+ctx.fillText(prompt, canvas.width / 2, canvas.height / 2 + 70);
+}
+
+function gameLoop() {
+update();
+draw();
+requestAnimationFrame(gameLoop);
+}
+
+createBricks();
+resetBall();
+gameLoop();
+</script>
+</body>
+</html>

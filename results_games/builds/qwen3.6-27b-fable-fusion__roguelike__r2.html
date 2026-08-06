@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Tiny Roguelike</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#ccc;font-family:monospace;font-size:14px;overflow:hidden;display:flex;flex-direction:column;height:100vh}
+#game{flex:1;display:flex;justify-content:center;align-items:center}
+#screen{white-space:pre;line-height:1.1;letter-spacing:1px}
+#ui{background:#111;padding:8px 12px;display:flex;gap:24px;font-size:13px;border-top:1px solid #333}
+#ui span{color:#888}
+#ui b{color:#fff}
+#log{height:60px;overflow:hidden;background:#0a0a0a;padding:4px 8px;font-size:12px;color:#666;border-top:1px solid #222}
+#log div{margin:1px 0}
+</style>
+</head>
+<body>
+<div id="game"><div id="screen"></div></div>
+<div id="ui">
+<span>HP: <b id="hp">30</b>/<b id="maxhp">30</b></span>
+<span>LVL: <b id="lvl">1</b></span>
+<span>XP: <b id="xp">0</b>/<b id="nxp">20</b></span>
+<span>Floor: <b id="floor">1</b></span>
+<span>ATK: <b id="atk">3</b></span>
+</div>
+<div id="log"></div>
+<script>
+const W=60,H=25,FOV=7;
+let map,rooms,player,enemies,items,stairs,level,logMsgs,explored,visible;
+const T_WALL='#',T_FLOOR='.',T_STAIRS='>',T_PLAYER='@';
+const COLORS={
+[T_WALL]:'#444',T_FLOOR:'#222',T_STAIRS:'#ff0',
+[T_PLAYER]:'#0f0',
+'g':'#0a0','o':'#a50','d':'#a0a','w':'#0af',
+'!':'#f44','$':'#ff0','s':'#f80'
+};
+const ENEMY_TYPES=[
+{name:'goblin',ch:'g',hp:8,atk:2,xp:5,minLvl:1},
+{name:'orc',ch:'o',hp:15,atk:4,xp:10,minLvl:2},
+{name:'demon',ch:'d',hp:25,atk:6,xp:20,minLvl:4},
+{name:'wraith',ch:'w',hp:12,atk:5,xp:15,minLvl:3}
+];
+function rand(a,b){return Math.floor(Math.random()*(b-a+1))+a}
+function dist(a,b){return Math.abs(a.x-b.x)+Math.abs(a.y-b.y)}
+function logMsg(m){logMsgs.unshift(m);if(logMsgs.length>50)logMsgs.pop();renderLog()}
+function renderLog(){const el=document.getElementById('log');el.innerHTML=logMsgs.map(m=>'<div>'+m+'</div>').join('')}
+function generateDungeon(){
+map=[];rooms=[];
+for(let y=0;y<H;y++){map[y]=[];for(let x=0;x<W;x++)map[y][x]=T_WALL}
+const numRooms=rand(5,9);
+for(let i=0;i<numRooms;i++){
+const w=rand(4,9),h=rand(3,6);
+const x=rand(1,W-w-1),y=rand(1,H-h-1);
+let overlap=false;
+for(const r of rooms){
+if(x<r.x+r.w+1&&x+w+1>r.x&&y<r.y+r.h+1&&y+h+1>r.y)overlap=true;
+}
+if(!overlap){
+const room={x,y,w,h,cx:Math.floor(x+w/2),cy:Math.floor(y+h/2)};
+for(let ry=y;ry<y+h;ry++)for(let rx=x;rx<x+w;rx++)map[ry][rx]=T_FLOOR;
+if(rooms.length>0){
+const prev=rooms[rooms.length-1];
+if(rand(0,1)){
+for(let rx=Math.min(prev.cx,room.cx);rx<=Math.max(prev.cx,room.cx);rx++)map[prev.cy][rx]=T_FLOOR;
+for(let ry=Math.min(prev.cy,room.cy);ry<=Math.max(prev.cy,room.cy);ry++)map[ry][room.cx]=T_FLOOR;
+}else{
+for(let ry=Math.min(prev.cy,room.cy);ry<=Math.max(prev.cy,room.cy);ry++)map[ry][prev.cx]=T_FLOOR;
+for(let rx=Math.min(prev.cx,room.cx);rx<=Math.max(prev.cx,room.cx);rx++)map[room.cy][rx]=T_FLOOR;
+}
+}
+rooms.push(room);
+}
+}
+}
+function placeEntities(){
+const startRoom=rooms[0],endRoom=rooms[rooms.length-1];
+player={x:startRoom.cx,y:startRoom.cy,hp:30,maxHp:30,lvl:1,xp:0,nxp:20,atk:3};
+enemies=[];items=[];
+for(let i=1;i<rooms.length-1;i++){
+const r=rooms[i];
+const numE=rand(1,2+Math.floor(level/3));
+for(let j=0;j<numE;j++){
+const ex=rand(r.x+1,r.x+r.w-2),ey=rand(r.y+1,r.y+r.h-2);
+if(map[ey][ex]===T_FLOOR&&!(ex===player.x&&ey===player.y)){
+const types=ENEMY_TYPES.filter(t=>t.minLvl<=level);
+const t=types[rand(0,types.length-1)];
+enemies.push({x:ex,y:ey,hp:t.hp+level,atk:t.atk+Math.floor(level/2),xp:t.xp,ch:t.ch,name:t.name});
+}
+}
+if(rand(0,1)){
+const ix=rand(r.x+1,r.x+r.w-2),iy=rand(r.y+1,r.y+r.h-2);
+if(map[iy][ix]===T_FLOOR&&!(ix===player.x&&iy===player.y)){
+items.push({x:ix,y:iy,ch:'!',type:'potion'});
+}
+}
+if(rand(0,2)){
+const ix=rand(r.x+1,r.x+r.w-2),iy=rand(r.y+1,r.y+r.h-2);
+if(map[iy][ix]===T_FLOOR&&!(ix===player.x&&iy===player.y)){
+items.push({x:ix,y:iy,ch:'$',type:'gold'});
+}
+}
+}
+stairs={x:endRoom.cx,y:endRoom.cy};
+}
+function computeFOV(){
+visible=[];explored=[];
+for(let y=0;y<H;y++){visible[y]=[];explored[y]=[];for(let x=0;x<W;x++){visible[y][x]=false;explored[y][x]=false}}
+for(let a=0;a<360;a+=2){
+const rad=a*Math.PI/180;
+let dx=Math.cos(rad),dy=Math.sin(rad);
+let x=player.x+0.5,y=player.y+0.5;
+for(let d=0;d<FOV;d++){
+const gx=Math.floor(x),gy=Math.floor(y);
+if(gx>=0&&gx<W&&gy>=0&&gy<H){
+visible[gy][gx]=true;explored[gy][gx]=true;
+if(map[gy][gx]===T_WALL)break;
+}
+x+=dx;y+=dy;
+}
+}
+}
+function moveEnemy(e){
+const dx=player.x-e.x,dy=player.y-e.y;
+if(Math.abs(dx)<=1&&Math.abs(dy)<=1){
+const dmg=Math.max(1,e.atk-rand(0,1));
+player.hp-=dmg;
+logMsg(e.name+' hits you for '+dmg+' damage!');
+if(player.hp<=0){logMsg('You have died! Refresh to restart.');return false}
+return true;
+}
+let nx=e.x,ny=e.y;
+if(Math.abs(dx)>Math.abs(dy)){nx+=dx>0?1:-1}else{ny+=dy>0?1:-1}
+if(map[ny][nx]===T_FLOOR&&!isEnemyAt(nx,ny)&&!(nx===player.x&&ny===player.y)){
+e.x=nx;e.y=ny;
+}
+return true;
+}
+function isEnemyAt(x,y){return enemies.some(e=>e.x===x&&e.y===y)}
+function takeTurn(dx,dy){
+if(dx===0&&dy===0)return;
+const nx=player.x+dx,ny=player.y+dy;
+if(nx<0||nx>=W||ny<0||ny>=H||map[ny][nx]===T_WALL)return;
+const enemy=enemies.find(e=>e.x===nx&&e.y===ny);
+if(enemy){
+const dmg=Math.max(1,player.atk-rand(0,1));
+enemy.hp-=dmg;
+logMsg('You hit '+enemy.name+' for '+dmg+' damage.');
+if(enemy.hp<=0){
+player.xp+=enemy.xp;
+logMsg(enemy.name+' dies! (+'+enemy.xp+' XP)');
+enemies=enemies.filter(e=>e!==enemy);
+if(player.xp>=player.nxp){
+player.lvl++;player.nxp=Math.floor(player.nxp*1.5);
+player.maxHp+=5;player.hp=player.maxHp;player.atk+=1;
+logMsg('Level up! You are now level '+player.lvl+'!');
+}
+}
+}else{
+player.x=nx;player.y=ny;
+const item=items.find(i=>i.x===nx&&i.y===ny);
+if(item){
+if(item.type==='potion'){
+const heal=10+level*2;player.hp=Math.min(player.maxHp,player.hp+heal);
+logMsg('You drink a potion. Healed '+heal+' HP.');
+}else if(item.type==='gold'){
+logMsg('You pick up some gold.');
+}
+items=items.filter(i=>i!==item);
+}
+if(nx===stairs.x&&ny===stairs.y){
+level++;logMsg('You descend to floor '+level+'...');
+generateDungeon();placeEntities();
+}
+}
+for(const e of enemies)if(!moveEnemy(e))return;
+computeFOV();render();updateUI();
+}
+function render(){
+computeFOV();
+let out='';
+for(let y=0;y<H;y++){
+for(let x=0;x<W;x++){
+let ch='.',color='#000';
+if(!explored[y][x]){out+='<span style="color:#000"> </span>';continue}
+const vis=visible[y][x];
+if(map[y][x]===T_WALL){ch=T_WALL;color=vis?COLORS[T_WALL]:'#111'}
+else if(map[y][x]===T_FLOOR){ch=T_FLOOR;color=vis?COLORS[T_FLOOR]:'#111'}
+else{ch=map[y][x];color=COLORS[ch]}
+const enemy=enemies.find(e=>e.x===x&&e.y===y);
+if(enemy&&vis){ch=enemy.ch;color=COLORS[enemy.ch]}
+if(x===player.x&&y===player.y){ch=T_PLAYER;color=COLORS[T_PLAYER]}
+if(x===stairs.x&&y===stairs.y&&vis){ch=T_STAIRS;color=COLORS[T_STAIRS]}
+const item=items.find(i=>i.x===x&&i.y===y);
+if(item&&vis){ch=item.ch;color=COLORS[item.ch]}
+if(!vis&&explored[y][x]&&map[y][x]!==T_WALL){ch='·';color='#1a1a1a'}
+out+='<span style="color:'+color+'">'+ch+'</span>';
+}
+out+='\n';
+}
+document.getElementById('screen').innerHTML=out;
+}
+function updateUI(){
+document.getElementById('hp').textContent=player.hp;
+document.getElementById('maxhp').textContent=player.maxHp;
+document.getElementById('lvl').textContent=player.lvl;
+document.getElementById('xp').textContent=player.xp;
+document.getElementById('nxp').textContent=player.nxp;
+document.getElementById('floor').textContent=level;
+document.getElementById('atk').textContent=player.atk;
+}
+document.addEventListener('keydown',e=>{
+let dx=0,dy=0;
+if(e.key==='ArrowUp'||e.key==='w'||e.key==='W')dy=-1;
+else if(e.key==='ArrowDown'||e.key==='s'||e.key==='S')dy=1;
+else if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A')dx=-1;
+else if(e.key==='ArrowRight'||e.key==='d'||e.key==='D')dx=1;
+else if(e.key===' '||e.key==='.'||e.key==='/'){/* wait */}
+else return;
+e.preventDefault();
+if(player.hp>0)takeTurn(dx,dy);
+});
+level=1;logMsgs=[];
+generateDungeon();placeEntities();
+computeFOV();render();updateUI();
+logMsg('Welcome to the dungeon! Find the stairs (>) to descend.');
+logMsg('Use arrow keys or WASD to move. Bump enemies to attack.');
+</script>
+</body>
+</html>

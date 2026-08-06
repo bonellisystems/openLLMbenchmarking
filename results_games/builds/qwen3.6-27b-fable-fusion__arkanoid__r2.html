@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arkanoid</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #0a0a1a;
+display: flex;
+justify-content: center;
+align-items: center;
+height: 100vh;
+overflow: hidden;
+font-family: 'Courier New', monospace;
+}
+canvas {
+border: 3px solid #333;
+border-radius: 4px;
+box-shadow: 0 0 40px rgba(0, 100, 255, 0.3);
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+canvas.width = 800;
+canvas.height = 600;
+
+const AUDIO_CTX = new (window.AudioContext || window.webkitAudioContext)();
+
+function playSound(freq, duration, type = 'square', volume = 0.15) {
+const osc = AUDIO_CTX.createOscillator();
+const gain = AUDIO_CTX.createGain();
+osc.type = type;
+osc.frequency.setValueAtTime(freq, AUDIO_CTX.currentTime);
+gain.gain.setValueAtTime(volume, AUDIO_CTX.currentTime);
+gain.gain.exponentialRampToValueAtTime(0.001, AUDIO_CTX.currentTime + duration);
+osc.connect(gain);
+gain.connect(AUDIO_CTX.destination);
+osc.start();
+osc.stop(AUDIO_CTX.currentTime + duration);
+}
+
+function playBrickSound() { playSound(440 + Math.random() * 200, 0.08, 'square', 0.1); }
+function playWallSound() { playSound(220, 0.05, 'triangle', 0.08); }
+function playPaddleSound() { playSound(330, 0.1, 'square', 0.12); }
+function playLoseSound() { playSound(150, 0.4, 'sawtooth', 0.15); }
+function playWinSound() {
+[523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playSound(f, 0.2, 'square', 0.12), i * 100));
+}
+function playStartSound() { playSound(440, 0.15, 'square', 0.1); }
+
+const PADDLE_WIDTH = 120;
+const PADDLE_HEIGHT = 14;
+const BALL_RADIUS = 8;
+const BRICK_ROWS = 7;
+const BRICK_COLS = 12;
+const BRICK_WIDTH = 58;
+const BRICK_HEIGHT = 22;
+const BRICK_PADDING = 4;
+const BRICK_OFFSET_TOP = 60;
+const BRICK_OFFSET_LEFT = 20;
+
+const BRICK_COLORS = [
+'#ff4444', '#ff8844', '#ffcc44', '#44ff44', '#44ffcc', '#4488ff', '#cc44ff'
+];
+
+let gameState = 'start';
+let score = 0;
+let lives = 3;
+let level = 1;
+let highScore = parseInt(localStorage.getItem('arkanoid_highscore') || '0');
+
+let paddle = { x: canvas.width / 2 - PADDLE_WIDTH / 2, y: canvas.height - 40, speed: 8 };
+let ball = { x: canvas.width / 2, y: canvas.height - 60, dx: 4, dy: -4, speed: 5, launched: false };
+let bricks = [];
+let particles = [];
+let powerUps = [];
+let shakeTime = 0;
+let combo = 0;
+let comboTimer = 0;
+
+const keys = {};
+
+document.addEventListener('keydown', (e) => {
+keys[e.code] = true;
+if (e.code === 'Space' || e.code === 'Enter') {
+if (gameState === 'start') {
+startGame();
+} else if (gameState === 'gameover' || gameState === 'win') {
+resetGame();
+} else if (!ball.launched) {
+launchBall();
+}
+}
+if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space'].includes(e.code)) {
+e.preventDefault();
+}
+});
+
+document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+function initBricks() {
+bricks = [];
+for (let r = 0; r < BRICK_ROWS; r++) {
+for (let c = 0; c < BRICK_COLS; c++) {
+let hp = 1;
+if (r < 2) hp = 2;
+if (r === 0) hp = 3;
+bricks.push({
+x: BRICK_OFFSET_LEFT + c * (BRICK_WIDTH + BRICK_PADDING),
+y: BRICK_OFFSET_TOP + r * (BRICK_HEIGHT + BRICK_PADDING),
+w: BRICK_WIDTH,
+h: BRICK_HEIGHT,
+color: BRICK_COLORS[r],
+hp: hp,
+maxHp: hp,
+alive: true
+});
+}
+}
+}
+
+function startGame() {
+if (AUDIO_CTX.state === 'suspended') AUDIO_CTX.resume();
+playStartSound();
+gameState = 'playing';
+score = 0;
+lives = 3;
+level = 1;
+combo = 0;
+initBricks();
+resetBall();
+}
+
+function resetGame() {
+startGame();
+}
+
+function resetBall() {
+ball.x = paddle.x + PADDLE_WIDTH / 2;
+ball.y = paddle.y - BALL_RADIUS - 2;
+ball.speed = 5 + level * 0.5;
+ball.dx = (Math.random() - 0.5) * 4;
+ball.dy = -ball.speed;
+ball.launched = false;
+}
+
+function launchBall() {
+if (!ball.launched) {
+ball.launched = true;
+playSound(300, 0.1, 'sine', 0.08);
+}
+}
+
+function createParticles(x, y, color, count = 8) {
+for (let i = 0; i < count; i++) {
+particles.push({
+x, y,
+dx: (Math.random() - 0.5) * 6,
+dy: (Math.random() - 0.5) * 6,
+life: 1,
+decay: 0.02 + Math.random() * 0.03,
+color,
+size: 2 + Math.random() * 3
+});
+}
+}
+
+function spawnPowerUp(x, y) {
+if (Math.random() < 0.15) {
+const types = ['wide', 'fast', 'life', 'slow'];
+const type = types[Math.floor(Math.random() * types.length)];
+powerUps.push({ x, y, dy: 2, type, w: 24, h: 14 });
+}
+}
+
+function applyPowerUp(type) {
+playSound(600, 0.15, 'sine', 0.1);
+switch (type) {
+case 'wide':
+paddle.w = Math.min(paddle.w + 40, 200);
+setTimeout(() => { paddle.w = Math.max(paddle.w - 40, PADDLE_WIDTH); }, 10000);
+break;
+case 'fast':
+ball.speed = Math.min(ball.speed + 1.5, 12);
+const mag = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
+ball.dx = (ball.dx / mag) * ball.speed;
+ball.dy = (ball.dy / mag) * ball.speed;
+break;
+case 'life':
+lives = Math.min(lives + 1, 5);
+break;
+case 'slow':
+ball.speed = Math.max(ball.speed - 1.5, 3);
+const mag = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
+ball.dx = (ball.dx / mag) * ball.speed;
+ball.dy = (ball.dy / mag) * ball.speed;
+break;
+}
+}
+
+function update() {
+if (gameState !== 'playing') return;
+
+if (shakeTime > 0) shakeTime--;
+if (comboTimer > 0) {
+comboTimer--;
+if (comboTimer <= 0) combo = 0;
+}
+
+if (keys['ArrowLeft'] || keys['KeyA']) paddle.x -= paddle.speed;
+if (keys['ArrowRight'] || keys['KeyD']) paddle.x += paddle.speed;
+
+paddle.x = Math.max(0, Math.min(canvas.width - PADDLE_WIDTH, paddle.x));
+
+if (!ball.launched) {
+ball.x = paddle.x + PADDLE_WIDTH / 2;
+ball.y = paddle.y - BALL_RADIUS - 2;
+return;
+}
+
+ball.x += ball.dx;
+ball.y += ball.dy;
+
+if (ball.x - BALL_RADIUS <= 0) {
+ball.x = BALL_RADIUS;
+ball.dx = Math.abs(ball.dx);
+playWallSound();
+}
+if (ball.x + BALL_RADIUS >= canvas.width) {
+ball.x = canvas.width - BALL_RADIUS;
+ball.dx = -Math.abs(ball.dx);
+playWallSound();
+}
+if (ball.y - BALL_RADIUS <= 0) {
+ball.y = BALL_RADIUS;
+ball.dy = Math.abs(ball.dy);
+playWallSound();
+}
+
+if (ball.y + BALL_RADIUS > canvas.height) {
+lives--;
+shakeTime = 10;
+playLoseSound();
+if (lives <= 0) {
+gameState = 'gameover';
+if (score > highScore) {
+highScore = score;
+localStorage.setItem('arkanoid_highscore', highScore);
+}
+} else {
+resetBall();
+}
+return;
+}
+
+const pw = paddle.w || PADDLE_WIDTH;
+if (ball.y + BALL_RADIUS >= paddle.y &&
+ball.y - BALL_RADIUS <= paddle.y + PADDLE_HEIGHT &&
+ball.x >= paddle.x &&
+ball.x <= paddle.x + pw) {
+const hitPos = (ball.x - paddle.x) / pw;
+const angle = (hitPos - 0.5) * Math.PI * 0.7;
+const mag = Math.sqrt(ball.dx * ball.dx + ball.dy * ball.dy);
+ball.dx = Math.sin(angle) * mag;
+ball.dy = -Math.abs(Math.cos(angle) * mag);
+ball.y = paddle.y - BALL_RADIUS - 1;
+playPaddleSound();
+createParticles(ball.x, ball.y, '#ffffff', 4);
+}
+
+for (let b of bricks) {
+if (!b.alive) continue;
+if (ball.x + BALL_RADIUS > b.x &&
+ball.x - BALL_RADIUS < b.x + b.w &&
+ball.y + BALL_RADIUS > b.y &&
+ball.y - BALL_RADIUS < b.y + b.h) {
+
+const overlapLeft = ball.x + BALL_RADIUS - b.x;
+const overlapRight = b.x + b.w - (ball.x - BALL_RADIUS);
+const overlapTop = ball.y + BALL_RADIUS - b.y;
+const overlapBottom = b.y + b.h - (ball.y - BALL_RADIUS);
+
+const minOverlapX = Math.min(overlapLeft, overlapRight);
+const minOverlapY = Math.min(overlapTop, overlapBottom);
+
+if (minOverlapX < minOverlapY) {
+ball.dx = -ball.dx;
+} else {
+ball.dy = -ball.dy;
+}
+
+b.hp--;
+combo++;
+comboTimer = 60;
+const comboMult = Math.min(combo, 10);
+score += 10 * comboMult;
+
+if (b.hp <= 0) {
+b.alive = false;
+createParticles(b.x + b.w / 2, b.y + b.h / 2, b.color, 12);
+spawnPowerUp(b.x + b.w / 2, b.y + b.h / 2);
+shakeTime = 3;
+}
+
+playBrickSound();
+break;
+}
+}
+
+for (let i = particles.length - 1; i >= 0; i--) {
+const p = particles[i];
+p.x += p.dx;
+p.y += p.dy;
+p.dy += 0.1;
+p.life -= p.decay;
+if (p.life <= 0) particles.splice(i, 1);
+}
+
+for (let i = powerUps.length - 1; i >= 0; i--) {
+const p = powerUps[i];
+p.y += p.dy;
+if (p.y > canvas.height) { powerUps.splice(i, 1); continue; }
+const pw2 = paddle.w || PADDLE_WIDTH;
+if (p.y + p.h >= paddle.y && p.y <= paddle.y + PADDLE_HEIGHT &&
+p.x + p.w >= paddle.x && p.x <= paddle.x + pw2) {
+applyPowerUp(p.type);
+powerUps.splice(i, 1);
+}
+}
+
+if (bricks.every(b => !b.alive)) {
+if (level < 5) {
+level++;
+playWinSound();
+initBricks();
+resetBall();
+} else {
+gameState = 'win';
+playWinSound();
+if (score > highScore) {
+highScore = score;
+localStorage.setItem('arkanoid_highscore', highScore);
+}
+}
+}
+}
+
+function draw() {
+ctx.save();
+
+if (shakeTime > 0) {
+ctx.translate((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6);
+}
+
+ctx.fillStyle = '#0a0a1a';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+gradient.addColorStop(0, 'rgba(0, 20, 60, 0.3)');
+gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+ctx.fillStyle = gradient;
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+if (gameState === 'start') {
+drawStartScreen();
+ctx.restore();
+return;
+}
+
+for (let b of bricks) {
+if (!b.alive) continue;
+const alpha = b.hp / b.maxHp;
+ctx.fillStyle = b.color;
+ctx.globalAlpha = 0.5 + alpha * 0.5;
+ctx.fillRect(b.x, b.y, b.w, b.h);
+ctx.globalAlpha = 1;
+
+ctx.fillStyle = 'rgba(255,255,255,0.25)';
+ctx.fillRect(b.x, b.y, b.w, b.h * 0.35);
+
+ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+ctx.lineWidth = 1;
+ctx.strokeRect(b.x, b.y, b.w, b.h);
+
+if (b.hp > 1) {
+ctx.fillStyle = 'rgba(255,255,255,0.7)';
+ctx.font = '10px monospace';
+ctx.textAlign = 'center';
+ctx.fillText(b.hp, b.x + b.w / 2, b.y + b.h / 2 + 4);
+}
+}
+
+const pw = paddle.w || PADDLE_WIDTH;
+const paddleGrad = ctx.createLinearGradient(paddle.x, paddle.y, paddle.x, paddle.y + PADDLE_HEIGHT);
+paddleGrad.addColorStop(0, '#66aaff');
+paddleGrad.addColorStop(1, '#2255aa');
+ctx.fillStyle = paddleGrad;
+ctx.beginPath();
+ctx.roundRect(paddle.x, paddle.y, pw, PADDLE_HEIGHT, 4);
+ctx.fill();
+
+ctx.fillStyle = 'rgba(255,255,255,0.3)';
+ctx.fillRect(paddle.x + 4, paddle.y + 2, pw - 8, 4);
+
+ctx.beginPath();
+ctx.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
+const ballGrad = ctx.createRadialGradient(ball.x - 2, ball.y - 2, 1, ball.x, ball.y, BALL_RADIUS);
+ballGrad.addColorStop(0, '#ffffff');
+ballGrad.addColorStop(0.7, '#aaddff');
+ballGrad.addColorStop(1, '#4488cc');
+ctx.fillStyle = ballGrad;
+ctx.fill();
+
+ctx.shadowColor = '#4488ff';
+ctx.shadowBlur = 10;
+ctx.beginPath();
+ctx.arc(ball.x, ball.y, BALL_RADIUS, 0, Math.PI * 2);
+ctx.fillStyle = 'rgba(68, 136, 255, 0.3)';
+ctx.fill();
+ctx.shadowBlur = 0;
+
+for (let p of particles) {
+ctx.globalAlpha = p.life;
+ctx.fillStyle = p.color;
+ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+}
+ctx.globalAlpha = 1;
+
+const powerUpColors = { wide: '#44ff44', fast: '#ff4444', life: '#ff44ff', slow: '#44aaff' };
+const powerUpLabels = { wide: 'W', fast: 'F', life: '+', slow: 'S' };
+for (let p of powerUps) {
+ctx.fillStyle = powerUpColors[p.type];
+ctx.fillRect(p.x, p.y, p.w, p.h);
+ctx.fillStyle = '#000';
+ctx.font = 'bold 10px monospace';
+ctx.textAlign = 'center';
+ctx.fillText(powerUpLabels[p.type], p.x + p.w / 2, p.y + p.h / 2 + 3);
+}
+
+ctx.fillStyle = '#ffffff';
+ctx.font = '16px monospace';
+ctx.textAlign = 'left';
+ctx.fillText(`SCORE: ${score}`, 15, 25);
+ctx.textAlign = 'center';
+ctx.fillText(`LEVEL ${level}`, canvas.width / 2, 25);
+ctx.textAlign = 'right';
+ctx.fillText(`LIVES: ${'♥'.repeat(lives)}`, canvas.width - 15, 25);
+
+if (combo > 1) {
+ctx.fillStyle = '#ffcc00';
+ctx.font = 'bold 14px monospace';
+ctx.textAlign = 'center';
+ctx.fillText(`COMBO x${combo}!`, canvas.width / 2, 45);
+}
+
+if (!ball.launched && gameState === 'playing') {
+ctx.fillStyle = 'rgba(255,255,255,0.7)';
+ctx.font = '16px monospace';
+ctx.textAlign = 'center';
+ctx.fillText('PRESS SPACE TO LAUNCH', canvas.width / 2, canvas.height / 2 + 60);
+}
+
+if (gameState === 'gameover') {
+ctx.fillStyle = 'rgba(0,0,0,0.75)';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+ctx.fillStyle = '#ff4444';
+ctx.font = 'bold 48px monospace';
+ctx.textAlign = 'center';
+ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 40);
+ctx.fillStyle = '#ffffff';
+ctx.font = '20px monospace';
+ctx.fillText(`FINAL SCORE: ${score}`, canvas.width / 2, canvas.height / 2 + 10);
+ctx.fillText(`HIGH SCORE: ${highScore}`, canvas.width / 2, canvas.height / 2 + 40);
+ctx.fillStyle = '#aaaaaa';
+ctx.font = '16px monospace';
+ctx.fillText('PRESS SPACE TO PLAY AGAIN', canvas.width / 2, canvas.height / 2 + 80);
+}
+
+if (gameState === 'win') {
+ctx.fillStyle = 'rgba(0,0,0,0.75)';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+ctx.fillStyle = '#44ff44';
+ctx.font = 'bold 48px monospace';
+ctx.textAlign = 'center';
+ctx.fillText('YOU WIN!', canvas.width / 2, canvas.height / 2 - 40);
+ctx.fillStyle = '#ffffff';
+ctx.font = '20px monospace';
+ctx.fillText(`FINAL SCORE: ${score}`, canvas.width / 2, canvas.height / 2 + 10);
+ctx.fillText(`HIGH SCORE: ${highScore}`, canvas.width / 2, canvas.height / 2 + 40);
+ctx.fillStyle = '#aaaaaa';
+ctx.font = '16px monospace';
+ctx.fillText('PRESS SPACE TO PLAY AGAIN', canvas.width / 2, canvas.height / 2 + 80);
+}
+
+ctx.restore();
+}
+
+function drawStartScreen() {
+ctx.fillStyle = '#ffffff';
+ctx.font = 'bold 52px monospace';
+ctx.textAlign = 'center';
+ctx.fillText('ARKANOID', canvas.width / 2, canvas.height / 2 - 80);
+
+const ballGrad = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2 - 20, 2, canvas.width / 2, canvas.height / 2 - 20, 15);
+ballGrad.addColorStop(0, '#ffffff');
+ballGrad.addColorStop(1, '#4488cc');
+ctx.fillStyle = ballGrad;
+ctx.beginPath();
+ctx.arc(canvas.width / 2, canvas.height / 2 - 20, 15, 0, Math.PI * 2);
+ctx.fill();
+
+ctx.fillStyle = '#66aaff';
+ctx.font = '18px monospace';
+ctx.fillText('← → or A D to move paddle', canvas.width / 2, canvas.height / 2 + 30);
+ctx.fillText('SPACE to launch ball', canvas.width / 2, canvas.height / 2 + 55);
+
+ctx.fillStyle = '#ffcc00';
+ctx.font = 'bold 20px monospace';
+ctx.fillText('PRESS SPACE TO START', canvas.width / 2, canvas.height / 2 + 110);
+
+ctx.fillStyle = '#888';
+ctx.font = '14px monospace';
+ctx.fillText(`HIGH SCORE: ${highScore}`, canvas.width / 2, canvas.height / 2 + 150);
+}
+
+function gameLoop() {
+update();
+draw();
+requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>
