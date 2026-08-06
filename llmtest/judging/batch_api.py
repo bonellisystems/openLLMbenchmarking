@@ -1,5 +1,30 @@
 """Anthropic Message Batches transport for the Claude judge seat.
 
+    NOT THE JUDGING PATH. EVALUATED 2026-08-06 AND DELIBERATELY NOT ADOPTED.
+
+Michael's ruling: the judge seat stays on `claude -p`. This module is kept only so the
+evidence behind that ruling survives, and so nobody re-opens the question without it.
+
+MEASURED (scripts/judge_batch_control.py, 12 full-roster packets re-judged under the
+same claude-opus-4-8 pin, $3.05):
+
+    mean delta   -0.24 pts (API minus CLI)      exact match 44%, within 1pt 87%
+    CAL-strong   API 8.56 vs CLI 8.78
+    CAL-weak     API 0.78 vs CLI 1.22
+    parse failures 3/12 (missing letter, no JSON, a 19-letter ranking for 18 letters)
+
+The API path judges slightly STRICTER. That is small, but it is systematic, and the
+existing 16-model scorecard was judged via the CLI - so adopting it would put a
+delivery confound inside one scorecard, on top of the packet-size leniency already
+being corrected for. Same principle as the hardware-consistency rule: one path, or the
+comparison is not a comparison.
+
+Cost was never the deciding factor; for the record it would have been ~$33 vs quota for
+four models, and prompt caching does NOT apply here (see CACHE_CONTROL_ENABLED below).
+
+Wiring this into config/judges.yaml requires re-judging the ENTIRE roster through it,
+not just new models.
+
 Why a second transport at all: the `claude` seat has always run through
 `claude -p --model <pin> --output-format json` (see config/judges.yaml). That bills
 Michael's subscription quota, spawns one Node process per packet, and - measured
