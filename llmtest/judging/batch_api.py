@@ -88,7 +88,10 @@ def build_request(custom_id: str, packet_text: str, model: str,
         "params": {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": 0,
+            # NO temperature: claude-opus-4-8 rejects it outright ("`temperature` is
+            # deprecated for this model" - all 12 control requests errored on it,
+            # free of charge, 2026-08-06). Omitting it is also the parity-correct
+            # choice: the CLI seat's invoke template never set temperature either.
             "messages": [{"role": "user", "content": packet_text}],
         },
     }
