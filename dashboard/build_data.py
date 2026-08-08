@@ -126,6 +126,10 @@ JUDGED_B1 = {
     "gpt-oss-120b": 6.6, "granite-4.1-30b": 6.4, "glm-4.5-air": 6.3,
     "gpt-oss-20b": 6.0, "nemotron-3-nano-30b": 5.9, "llama-4-scout": 5.6,
     "qwen3-coder-30b": 5.0, "laguna-s-2.1": 6.1,
+    # 4-letter incremental wave, judged 2026-08-07/08, CAL-rescaled off measured
+    # anchors (8.47/1.31 -> 7.62/0.89, gain 0.940). Raw was 6.69 and 5.96; the
+    # correction is worth several ranks, which is the whole point of applying it.
+    "abl-gemma-4-31b": 6.0, "abl-opus-35b-a3b": 5.3,
 }
 
 # ---------------------------------------------------------------------------
@@ -968,6 +972,23 @@ _RESCALED_UNITS = {
         ("helpdesk", 6.3), ("outreach", 6.1), ("knowledge_mgmt", 6.1),
         ("coding", 6.1), ("project_mgmt", 5.7), ("cybersecurity", 5.6),
         ("legal_compliance", 5.0), ("it_infra", 3.9)],
+    # 4-letter wave, measured anchors. Every answer carries a full 3-judge median,
+    # same as the frozen 16 -- the run was held open until zero panels were short,
+    # because a quota window had sheared off knowledge_mgmt, marketing and
+    # legal_compliance almost entirely and those three would have been the only
+    # departments on the page measured on a thinner panel.
+    "abl-gemma-4-31b": [
+        ("coding", 7.6), ("operations", 7.4), ("finance", 7.3),
+        ("data_analytics", 7.0), ("project_mgmt", 6.6), ("marketing", 6.5),
+        ("sales", 6.5), ("seo", 6.0), ("helpdesk", 5.7), ("outreach", 5.7),
+        ("cybersecurity", 5.2), ("it_infra", 4.8), ("knowledge_mgmt", 4.5),
+        ("hr_people_ops", 4.4), ("legal_compliance", 4.1)],
+    "abl-opus-35b-a3b": [
+        ("data_analytics", 6.4), ("seo", 6.2), ("coding", 5.9),
+        ("hr_people_ops", 5.7), ("marketing", 5.7), ("cybersecurity", 5.6),
+        ("finance", 5.3), ("operations", 5.3), ("outreach", 5.3),
+        ("helpdesk", 5.2), ("sales", 5.2), ("legal_compliance", 4.9),
+        ("knowledge_mgmt", 4.6), ("it_infra", 4.3), ("project_mgmt", 3.5)],
 }
 
 
