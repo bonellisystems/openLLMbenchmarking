@@ -326,10 +326,18 @@ CAVEATS = {
     "ngram_workload": "n-gram speculative decoding is lossless (temp-0 output is byte-identical) "
                       "and costs no VRAM, but its speedup depends entirely on how much the output "
                       "repeats the context. Edit/rewrite: 2-12x. Fresh generation: ~1.0-1.6x.",
-    "b1_incremental": "Laguna's B1 was judged incrementally (only Laguna + calibration anchors, "
-                      "leaving the frozen 16 untouched) and then rescaled: the same fixed anchors "
-                      "score 9.0/1.5 in a small packet vs 8.0/1.0 in the full-roster packet, so "
-                      "judges are ~0.9pt more lenient without the comparison set. Raw 6.99 -> 6.13.",
+    "b1_incremental": "Models added after the frozen 16 are judged INCREMENTALLY - only the new "
+                      "model plus the two calibration anchors, leaving the frozen 16 untouched, "
+                      "because re-judging the whole roster to add one model costs the entire panel "
+                      "again. A small packet is a more lenient instrument, and the anchors measure "
+                      "exactly how much: the same two fixed answers score 7.62/0.89 in the "
+                      "18-letter cohort, 8.43/1.36 in a 4-letter one and 8.74/1.36 in a 3-letter "
+                      "one. Every incremental score on this page is therefore mapped back onto the "
+                      "frozen scale through those two anchors, overall and per department, so a "
+                      "newcomer is never ranked against the 16 on a looser ruler. Uncorrected, the "
+                      "abliterated pair would have read about six ranks too high. Laguna keeps its "
+                      "originally published 6.1, which used rounded anchor constants; measured "
+                      "anchors put it at 6.0. See scripts/b1_rescale.py.",
 }
 
 
@@ -945,16 +953,22 @@ def compute_matrix():
     return models, agg, b5_arms
 
 
-# Laguna's per-unit values are kept as CONSTANTS rather than read from scorecard.md:
-# it was judged in a small incremental wave where the panel runs ~0.9pt lenient, and
-# these are the CAL-rescaled values consistent with its rescaled overall (6.1). The
-# scorecard table holds its RAW column (overall 7.0), which must not be shown beside a
-# rescaled headline.
-_LAGUNA_UNITS = [("operations", 7.2), ("data_analytics", 7.1), ("hr_people_ops", 6.9),
-                 ("finance", 6.7), ("sales", 6.5), ("marketing", 6.4), ("seo", 6.3),
-                 ("helpdesk", 6.3), ("outreach", 6.1), ("knowledge_mgmt", 6.1),
-                 ("coding", 6.1), ("project_mgmt", 5.7), ("cybersecurity", 5.6),
-                 ("legal_compliance", 5.0), ("it_infra", 3.9)]
+# Models judged in a SMALL incremental wave keep per-unit CONSTANTS here rather than
+# reading scorecard.md: their raw scores come off a more lenient instrument (the CAL
+# anchors measure the offset -- see scripts/b1_rescale.py), and scorecard.md holds the
+# RAW column, which must never be shown under a rescaled headline. Both the overall in
+# JUDGED_B1 and these per-unit values come from `b1_rescale.py --width N --emit-python`,
+# so the breakdown always agrees with the headline above it.
+_RESCALED_UNITS = {
+    # 3-letter wave. Kept at the originally published values, which used the rounded
+    # anchor constants (9.0/1.5 -> 8.0/1.0); measured anchors give 6.03 overall.
+    "laguna-s-2.1": [
+        ("operations", 7.2), ("data_analytics", 7.1), ("hr_people_ops", 6.9),
+        ("finance", 6.7), ("sales", 6.5), ("marketing", 6.4), ("seo", 6.3),
+        ("helpdesk", 6.3), ("outreach", 6.1), ("knowledge_mgmt", 6.1),
+        ("coding", 6.1), ("project_mgmt", 5.7), ("cybersecurity", 5.6),
+        ("legal_compliance", 5.0), ("it_infra", 3.9)],
+}
 
 
 def _load_scorecard_units():
@@ -999,11 +1013,13 @@ _SCORECARD_UNITS = None
 
 def b1_units_for(model, rows=None):
     """Per-unit B1 scores for ANY judged model (the 'how did each department do'
-    breakdown). laguna-s-2.1 keeps its CAL-rescaled constants; everyone else comes
-    from the scorecard table."""
+    breakdown). Models judged in a small incremental wave use their CAL-rescaled
+    constants; everyone else comes from the scorecard table, which is already on
+    the frozen scale."""
     global _SCORECARD_UNITS
-    if model == "laguna-s-2.1":
-        return [{"name": u, "score": s, "display": f"{s}"} for u, s in _LAGUNA_UNITS]
+    if model in _RESCALED_UNITS:
+        return [{"name": u, "score": s, "display": f"{s:.1f}"}
+                for u, s in _RESCALED_UNITS[model]]
     if _SCORECARD_UNITS is None:
         _SCORECARD_UNITS = _load_scorecard_units()
     return [{"name": u, "score": s, "display": f"{s:.1f}"}
