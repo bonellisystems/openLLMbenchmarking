@@ -356,6 +356,14 @@ def main():
                 print(f"  FATAL at boot: {smsg[:120]} - destroying, cooling down "
                       f"machine {pick['machine_id']}")
                 v.destroy_instance(id=cid)
+                # Clear the markers we just wrote. They are the ONLY pointer to a
+                # live box, so leaving them behind a destroyed instance makes a
+                # corpse look alive: a retry loop reading INSTANCE reported
+                # "BOOTED" off this stale id after an attempt that rented nothing
+                # (measured 2026-08-09), and a human reading it would go hunting
+                # for a box that does not exist.
+                for _m in ("INSTANCE", "ENDPOINT"):
+                    (plan_dir / _m).unlink(missing_ok=True)
                 with (plan_dir / "BLACKLIST").open("a", encoding="utf-8") as f:
                     f.write(f"{pick['machine_id']} {time.time()}\n")
                 return 4
@@ -369,6 +377,8 @@ def main():
         if not host:
             print(f"box never came up - destroying (last status: {last_msg})")
             v.destroy_instance(id=cid)
+            for _m in ("INSTANCE", "ENDPOINT"):
+                (plan_dir / _m).unlink(missing_ok=True)
             return 1
     (plan_dir / "ENDPOINT").write_text(f"{host} {port}", encoding="utf-8")
 

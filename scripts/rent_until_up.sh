@@ -24,6 +24,12 @@ PLAN="${PLAN:-plan_vm}"
 HOURS="${HOURS:-12}"
 cd "$(dirname "$0")/.."
 
+# Never inherit a marker from an earlier run. rent_and_run now clears these when
+# it destroys a box, but a file predating that fix (or written by an older copy)
+# would be read as instant success - which is exactly how this loop once
+# announced "BOOTED" off a destroyed instance id.
+rm -f "$PLAN/INSTANCE" "$PLAN/ENDPOINT"
+
 for i in $(seq 1 "$MAX"); do
   echo "=== attempt $i/$MAX  $(date -u +%H:%M:%S)Z ==="
   out=$(timeout 2400 python scripts/rent_and_run.py --go --vm \
@@ -31,7 +37,10 @@ for i in $(seq 1 "$MAX"); do
   echo "$out" | tail -25
   # SUCCESS: rent_and_run writes plan_vm/INSTANCE only once a box is past the
   # boot gate, so that file - not the exit code - is the honest signal.
-  if [ -s "$PLAN/INSTANCE" ]; then
+  # Require BOTH markers: INSTANCE is written at create time, ENDPOINT only
+  # after the SSH/card/Docker gates pass, so ENDPOINT is the one that means the
+  # box is genuinely usable.
+  if [ -s "$PLAN/INSTANCE" ] && [ -s "$PLAN/ENDPOINT" ]; then
     echo "=== BOOTED: instance $(cat "$PLAN/INSTANCE") after $i attempt(s) ==="
     exit 0
   fi
