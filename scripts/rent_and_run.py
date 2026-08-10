@@ -121,13 +121,25 @@ def read_cooldowns(plan_dir):
     Entries expire after 45 minutes - a 'GPU error' often clears once the host frees
     the card from the previous tenant, so a permanent ban would shrink an already
     tiny market."""
-    out = set()
+    REPEAT_OFFENDER_STRIKES = 2
+    out, strikes = set(), {}
     f = plan_dir / "BLACKLIST"
     if f.exists():
         for line in f.read_text(encoding="utf-8").splitlines():
             parts = line.split()
-            if len(parts) == 2 and time.time() - float(parts[1]) < 45 * 60:
-                out.add(int(parts[0]))
+            if len(parts) != 2:
+                continue
+            mid = int(parts[0])
+            strikes[mid] = strikes.get(mid, 0) + 1
+            if time.time() - float(parts[1]) < 45 * 60:
+                out.add(mid)
+    # Escalate on repeats. The 45-minute expiry above assumes a transient fault,
+    # which is usually right - but machine 61615 burned boot time with the SAME
+    # "GPU error, unable to start instance" in two campaigns days apart, because
+    # the entry simply aged out and it got picked again. A host that fatally
+    # fails boot twice is broken, not busy, and the cost of banning it is one
+    # offer in a thin market versus repeatedly paying to rediscover it.
+    out |= {m for m, n in strikes.items() if n >= REPEAT_OFFENDER_STRIKES}
     return out
 
 
