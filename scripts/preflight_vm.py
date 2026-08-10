@@ -96,6 +96,25 @@ def check_coverage():
     # bonsai B10/B11 were never-run gaps (not superseded) - closable now via prism
     want |= {("bonsai-ternary-27b", "B10"), ("bonsai-ternary-27b", "B11")}
 
+    # Drop cells the campaign already closed. `want` is the FULL withdrawal list,
+    # which was the right target when nothing had been re-measured; 33 of its 37
+    # cells now have v2.2.0 rows, so comparing the whole list against a plan for
+    # the remaining work reports a false NO-GO on already-finished cells. A cell
+    # counts as closed once any v2.2.0 row exists for it - partial cells are the
+    # dashboard's problem to surface honestly, not a reason to re-plan them.
+    import glob as _glob
+    satisfied = set()
+    for _f in set(_glob.glob(str(ROOT / "results*" / "rows-*.jsonl"))):
+        with open(_f, encoding="utf-8") as fh:
+            for _line in fh:
+                try:
+                    _r = json.loads(_line)
+                except Exception:
+                    continue
+                if _r.get("suite_version") == "suite-v2.2.0" and _r.get("battery"):
+                    satisfied.add((_r.get("model_id"), f"B{int(_r['battery'])}"))
+    want -= satisfied
+
     missing = sorted(want - planned)
     extra = sorted(planned - want)
     check(not missing, "every withdrawn/target cell is in the plan",
@@ -195,11 +214,39 @@ def simulate():
     g = copy.deepcopy(g)
     g["suite_version"] = "suite-v2.2.0"
     g["hardware_sku"] = "rtx-pro-6000-vm"
+    # run_n must be one that does not already exist. Stamping v2.2.0 alone used to
+    # be enough to make a novel key, back when every gpt-oss-20b B9 row was a
+    # laptop row carrying suite_version=None. The campaign has since written 24
+    # real v2.2.0 rows, so the stamped copy collides with its own twin and merge
+    # correctly drops it - which reads as "merge is silently deduping" when it is
+    # doing exactly its job. A sentinel run_n keeps this probing the KEY rather
+    # than rediscovering that duplicates are duplicates.
+    g["run_n"] = 999
     (sim / "games" / "rows-games.jsonl").write_text(
         json.dumps(g, sort_keys=True) + "\n", encoding="utf-8")
 
     reverts = [ROOT / "results" / "rows-suite-v2.2.0.jsonl",
                ROOT / "results_b8_gpt-oss-20b" / "rows-suite-v2.2.0.jsonl"]
+    # How to undo depends on whether the file EXISTED before the simulation.
+    # Originally neither did - the campaign had not run - so the merge created
+    # them and deleting was the correct undo. They are now committed artifacts
+    # holding thousands of real rows, and an unconditional unlink() DESTROYS the
+    # campaign (measured 2026-08-09: it deleted 2292 rows, recovered only because
+    # they were committed). Record the prior state and restore to THAT.
+    pre_existing = {p: p.exists() for p in reverts}
+    # Baseline the dashboard BEFORE the sim. The assertions below used to be
+    # absolute ("n == 1"), which only held while the campaign had produced
+    # nothing; with 115 real B8 rows on disk that reads 116 and the gate
+    # false-alarms. What actually needs proving is unchanged either way: one new
+    # row must move the cell by exactly one.
+    _base = {}
+    _dj = ROOT / "dashboard" / "data.json"
+    if _dj.exists():
+        _bd = json.loads(_dj.read_text(encoding="utf-8"))["matrix"].get("gpt-oss-20b", {})
+        _base["b8_n"] = (_bd.get("B8") or {}).get("n") or 0
+        _base["b9_n"] = (_bd.get("B9") or {}).get("n") or 0
+    else:
+        _base["b8_n"] = _base["b9_n"] = 0
     try:
         # --- the REAL merge ---
         r = sh([sys.executable, str(ROOT / "scripts" / "merge_gapclose.py"),
@@ -221,17 +268,26 @@ def simulate():
         r = sh([sys.executable, str(dash / "build_data.py")])
         d = json.loads((dash / "data.json").read_text(encoding="utf-8"))
         b8 = d["matrix"]["gpt-oss-20b"]["B8"]
-        check(b8.get("tested") is True and b8.get("n") == 1,
-              "withdrawn B8 cell flips back on from the v2.2.0 row alone",
-              f"tested={b8.get('tested')} n={b8.get('n')}")
+        check(b8.get("tested") is True and (b8.get("n") or 0) == _base["b8_n"] + 1,
+              "a v2.2.0 B8 row reaches the dashboard (cell on, +1 row)",
+              f"tested={b8.get('tested')} n={b8.get('n')} baseline={_base['b8_n']}")
         b9 = d["matrix"]["gpt-oss-20b"].get("B9", {})
-        check(not b9.get("tested") and b9.get("partial"),
-              "B9 with 1 of 24 rows stays honestly partial, not green",
-              f"display={b9.get('display')}")
+        # Pre-campaign this asserted "partial, not green" off a single row. With
+        # real B9 rows present the honest invariant is the same one row arriving:
+        # a cell that silently ignored it would be the bug this check exists for.
+        check((b9.get("n") or 0) == _base["b9_n"] + 1,
+              "a v2.2.0 B9 row reaches the dashboard (+1 row)",
+              f"n={b9.get('n')} baseline={_base['b9_n']} display={b9.get('display')}")
     finally:
         # --- revert everything the simulation touched ---
+        # Restore, never blanket-delete: a file that existed before the sim is
+        # real committed data and must come back byte-for-byte.
         for p in reverts:
-            p.unlink(missing_ok=True)
+            if pre_existing[p]:
+                sh(["git", "-C", str(ROOT), "checkout", "--",
+                    str(p.relative_to(ROOT)).replace("\\", "/")])
+            else:
+                p.unlink(missing_ok=True)
         sh(["git", "-C", str(ROOT), "checkout", "--",
             "results_games/rows-games.jsonl"])
         dash = ROOT / "dashboard"
