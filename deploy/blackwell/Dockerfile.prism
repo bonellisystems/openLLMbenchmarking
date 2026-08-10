@@ -14,16 +14,41 @@ RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
     apt-get install -y --no-install-recommends git cmake build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 -b prism https://github.com/PrismML-Eng/llama.cpp /src
+# THE LINK FIX. Without this the build dies in ~4.5 min with
+#   libggml-cuda.so: undefined reference to `cuGetErrorString' / `cuMemMap' / ...
+# which reads like a CUDA-version problem and is not one. ggml links the CUDA
+# DRIVER api (CUDA::cuda_driver, ggml/src/ggml-cuda/CMakeLists.txt:194) for its
+# VMM allocator. The devel image ships that library only as the stub
+# `stubs/libcuda.so` - there is no libcuda.so.1 outside compat/ - but the stub's
+# SONAME is libcuda.so.1, so libggml-cuda.so ends up with a DT_NEEDED on a
+# filename that is not on the link path, and every driver symbol comes back
+# undefined when llama-server is linked. Give the loader the name it asks for.
+# Build stage only: the stub is never copied into the runtime image, where the
+# NVIDIA container runtime injects the REAL driver.
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 \
+ && echo /usr/local/cuda/lib64/stubs > /etc/ld.so.conf.d/cuda-stubs.conf \
+ && ldconfig
 # 120 = Blackwell. Pinned, never guessed: a mismatched arch produces a binary that loads
 # and silently runs on the CPU, which reads as a slow model instead of a broken build.
 RUN cmake -S /src -B /src/build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_CUDA_ARCHITECTURES=120 -DLLAMA_CURL=OFF \
+      -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs" \
     && cmake --build /src/build --config Release -j8 --target llama-server   # bounded: -j$(nproc) on a 32-core box
 #   thrashes RAM on ggml-cuda translation units and is the other suspect for
 #   the 8-hour build. Never build this while a battery is running - B8 has a
 #   180s per-run wall-clock budget and CPU starvation would fake budget_exceeded.
 
 FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
+# libgomp1: ggml builds with OpenMP (cmake reports "Found OpenMP: TRUE"), so the
+# binary needs libgomp.so.1 at RUNTIME. The build stage gets it free via
+# build-essential; this stage is the -runtime image and does not ship it, and we
+# copy only the compiled binaries. Without this the image builds clean and then
+# dies on first exec with
+#   /app/llama-server: error while loading shared libraries: libgomp.so.1
+# which looks like a serve.sh problem and is not one.
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/bin/ /app/
 ENV LD_LIBRARY_PATH=/app
 # Same entry contract as ghcr.io/ggml-org/llama.cpp:server-cuda, so serve.sh can swap
