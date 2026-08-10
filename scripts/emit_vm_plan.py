@@ -173,9 +173,17 @@ get(){ # dir repo path
   # --lowest-speed-limit: abandon a WEDGED connection instead of crawling on it.
   # abl-gemma-4-31b's fetch collapsed to 894 KiB/s on one stuck CDN edge while fresh
   # curls to the same repo pulled 16 MB/s - 40 minutes of rented GPU idling for 2 GB.
+  # 1M, NOT 2M: at 2M this killed abl-qwen3.6-27b's fetch at 14 of 16.8 GB because
+  # the transfer dipped to 1.94 MiB/s for a moment, despite averaging 85 MB/s
+  # ("errorCode=5 Too slow  2030592 <= 2097152"). 1 MiB still sits comfortably
+  # above the 894 KiB/s pathology this guard exists for, and no longer mistakes a
+  # healthy transfer breathing for a stuck edge. Note aria2's own retries reuse
+  # the presigned CDN URL, which carries a byte-range condition and answers 403 -
+  # so once this trips, only a FRESH process (new redirect, new signature) can
+  # resume. Retry at the process level, not with --max-tries.
   aria2c -x8 -s8 -k1M --continue=true --file-allocation=none --console-log-level=warn \\
-    --lowest-speed-limit=2M \\
-    --retry-wait=5 --max-tries=10 --auto-file-renaming=false \\
+    --lowest-speed-limit=1M \\
+    --retry-wait=10 --max-tries=5 --auto-file-renaming=false \\
     -d "$M/$1" -o "$(basename "$3")" \\
     "https://huggingface.co/$2/resolve/main/$3" >> "$B8_ROOT/dl_$1.log" 2>&1 \\
     || echo "FAIL $1 $3" >> $B8_ROOT/dl_fail

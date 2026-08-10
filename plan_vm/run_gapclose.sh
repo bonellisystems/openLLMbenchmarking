@@ -38,7 +38,7 @@ run_step(){ mid="$1"; bat="$2"; shift 2
 
 get(){ mkdir -p "$M/$1"
   aria2c -x8 -s8 -k1M --continue=true --file-allocation=none --console-log-level=warn \
-    --lowest-speed-limit=2M --retry-wait=5 --max-tries=10 --auto-file-renaming=false \
+    --lowest-speed-limit=1M --retry-wait=10 --max-tries=5 --auto-file-renaming=false \
     -d "$M/$1" -o "$(basename "$3")" \
     "https://huggingface.co/$2/resolve/main/$3" >> "$B8_ROOT/dl_$1.log" 2>&1 \
     || echo "FAIL $1 $3" >> $B8_ROOT/dl_fail; }
