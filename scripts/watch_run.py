@@ -20,6 +20,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 KEYFILE = Path.home() / ".config" / "vastai" / "vast_api_key"
+
+
+def safe_err(e: Exception) -> str:
+    """The vast SDK builds request URLs with ?api_key=... and puts the whole URL into
+    HTTPError text, so printing a raw SDK exception leaks the key into logs and
+    terminal scrollback. rent_and_run has carried this since the campaign started;
+    this module did not, and a 404 on destroy printed the live key in full
+    (2026-08-09). Never print an SDK exception directly."""
+    return re.sub(r"api_key=[A-Za-z0-9]+", "api_key=REDACTED", str(e))[:300]
 PRIVKEY = "C:/Users/Michael/.ssh/vast_laguna"
 SSH_COMMON = ["-i", PRIVKEY, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
               "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=20",
@@ -271,7 +280,7 @@ def main():
     try:
         print("destroying", cid, v.destroy_instance(id=cid))
     except Exception as e:
-        print("destroy failed:", type(e).__name__, e, "- DESTROY MANUALLY")
+        print("destroy failed:", type(e).__name__, safe_err(e), "- DESTROY MANUALLY")
     return 0
 
 
