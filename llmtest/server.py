@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import socket
 import subprocess
 import time
@@ -339,8 +340,27 @@ class ServerManager:
     def teardown(self) -> None:
         had_active = self._active is not None
         if had_active:
-            subprocess.run(["taskkill", "/F", "/PID", str(self._active.pid), "/T"],
-                           capture_output=True)
+            pid = self._active.pid
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/PID", str(pid), "/T"],
+                               capture_output=True)
+            else:
+                # The SECOND taskkill in this file, and the one that actually
+                # bit: sweep_orphans was made platform-aware first and this was
+                # missed, so B5 died on every single arm with
+                # "FileNotFoundError: 'taskkill'" - after the server had already
+                # launched and served. The launch path was fixed; the teardown
+                # path was not, and B5 tears down between every arm.
+                #
+                # Popen ran with shell=True, so pid is the shell's: kill its
+                # children first, then the shell, or the server outlives it and
+                # the next launch finds the VRAM still held.
+                subprocess.run(["pkill", "-TERM", "-P", str(pid)],
+                               capture_output=True)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
             self._active = None
             self._active_key = None
         if self._log_fh is not None:
