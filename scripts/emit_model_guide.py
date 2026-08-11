@@ -163,6 +163,32 @@ def main(argv=None) -> int:
     A("**Turn it on by default for coding and editing work.** For from-scratch "
       "generation it neither helps much nor hurts.")
     A("")
+    A("#### How this relates to the B5 column - read this before quoting throughput")
+    A("")
+    A("**Every B5 number in the scorecard is an UNACCELERATED baseline.** It is "
+      "reported from the spec-decode OFF arm, deliberately, so all 21 models are "
+      "the same measurement.")
+    A("")
+    A("The suite also runs an n-gram ON arm, and for the 20 models measured before "
+      "2026-08-11 that arm returned a speedup of exactly **1.00x** across the "
+      "board - 59.3 vs 59.5, 264.1 vs 264.3, 60.3 vs 60.3, and so on. That is not "
+      "a result about n-gram. It is the flag missing at serve time: the row "
+      "recorded `spec=ngram32` in its condition while the server ran without it. "
+      "It was previously explained away as 'this arm generates fresh text, where "
+      "n-gram cannot help'. `qwen3.6-27b-fable-fusion` disproved that on the same "
+      "battery, scoring **6.79x (482 vs 71 t/s)** once the flag actually applied.")
+    A("")
+    A("Practical consequence for choosing a model:")
+    A("")
+    A("- The B5 ranking between models is still sound - all 21 were measured the "
+      "same (unaccelerated) way.")
+    A("- The ABSOLUTE numbers understate what you will see on edit-heavy work. A "
+      "model listed at 70 t/s can serve an edit workload several times faster with "
+      "the n-gram flags above.")
+    A("- Do NOT read the 1.00x arm as evidence that speculative decoding is not "
+      "worth enabling. The standalone measurements in the table above, and the one "
+      "B5 run where the flag really applied, both say the opposite.")
+    A("")
     A("#### Tuning `--spec-ngram-mod-n-match`")
     A("")
     A("| n-match | Measured speedup | Note |")

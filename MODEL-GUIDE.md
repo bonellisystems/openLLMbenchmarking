@@ -29,7 +29,7 @@ Match the battery to the job, then read that column:
 - **B2 - Tool Calling** (%): Can the model emit a well-formed tool call: correct schema, right tool selected, argument shapes valid. This is a FORMATION floor, not agentic skill - most models score ~100% and it cannot detect delegation failures.
 - **B3 - Hallucination Resistance** (%): Unanswerable / trick / false-premise prompts. Scores the 'correct' signal: did it refuse or hedge instead of fabricating. Note the 300-token answer budget starves reasoning models, which spend it on hidden thinking.
 - **B4 - Long-Context Retrieval** (%): Needle-in-a-haystack recall across a context-length sweep (16k -> 256k). Arms are pruned per model by VRAM fit, so 100B+ models legitimately get zero arms on a single card.
-- **B5 - Serving Throughput** (t/s): Decode tokens/sec on the datacenter box, with a speculative-decoding on/off arm. IMPORTANT: this arm generates fresh text, where n-gram spec-decode cannot help - see the Speculative Decoding panel for the edit-workload numbers.
+- **B5 - Serving Throughput** (t/s): Decode tokens/sec on the datacenter box, reported from the spec-decode OFF arm so every model's number is the same measurement. IMPORTANT: the n-gram ON arm did NOT engage for the 20 models measured before 2026-08-11 - they all report a speedup of exactly 1.00x, which is the flag missing at serve time rather than a result. This was previously explained as 'fresh text, where n-gram cannot help'; qwen3.6-27b-fable-fusion disproved that on this very battery with 6.79x (482 vs 71 t/s). Treat these figures as UNACCELERATED baselines: an edit-heavy workload with n-gram on runs several times faster, per the Speculative Decoding panel.
 - **B6 - Agentic Coding** (%): 10 tasks: 5 from-scratch (is_prime, word-count CLI, backup.sh, debounce, SQL) and 5 planted-bug fixes. Deterministic checks only - the judged quality axis is built but not yet run. Does NOT include the game builds (see Game Builds panel).
 - **B7 - Reproducibility** (%): Same prompt across a config matrix (system prompt / temperature / tool format / spec-decode). Reports how often the deterministic signals agree with the baseline cell - i.e. how much the answer moves when harness settings move.
 - **B8 - Agentic Harness** (%): Real OpenCode agent in a disposable container: 23 sealed Python tasks across break-fix / cross-module / feature / stateful / build / robustness, scored by a hidden oracle. SINGLE-AGENT ONLY - no task requires spawning a subagent.
@@ -85,6 +85,18 @@ It is **lossless**: at temperature 0 the output is byte-identical to normal deco
 | Free-form prose with no context overlap | ~1.0x (no harm) |
 
 **Turn it on by default for coding and editing work.** For from-scratch generation it neither helps much nor hurts.
+
+#### How this relates to the B5 column - read this before quoting throughput
+
+**Every B5 number in the scorecard is an UNACCELERATED baseline.** It is reported from the spec-decode OFF arm, deliberately, so all 21 models are the same measurement.
+
+The suite also runs an n-gram ON arm, and for the 20 models measured before 2026-08-11 that arm returned a speedup of exactly **1.00x** across the board - 59.3 vs 59.5, 264.1 vs 264.3, 60.3 vs 60.3, and so on. That is not a result about n-gram. It is the flag missing at serve time: the row recorded `spec=ngram32` in its condition while the server ran without it. It was previously explained away as 'this arm generates fresh text, where n-gram cannot help'. `qwen3.6-27b-fable-fusion` disproved that on the same battery, scoring **6.79x (482 vs 71 t/s)** once the flag actually applied.
+
+Practical consequence for choosing a model:
+
+- The B5 ranking between models is still sound - all 21 were measured the same (unaccelerated) way.
+- The ABSOLUTE numbers understate what you will see on edit-heavy work. A model listed at 70 t/s can serve an edit workload several times faster with the n-gram flags above.
+- Do NOT read the 1.00x arm as evidence that speculative decoding is not worth enabling. The standalone measurements in the table above, and the one B5 run where the flag really applied, both say the opposite.
 
 #### Tuning `--spec-ngram-mod-n-match`
 
