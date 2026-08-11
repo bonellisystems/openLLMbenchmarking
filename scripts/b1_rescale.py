@@ -87,15 +87,23 @@ def packet_widths(maps: dict) -> dict:
     return out
 
 
-def aggregate_width(width: int, maps: dict, widths: dict, judgments: list):
+def packets_for_model(judgments: list, model_id: str) -> set:
+    """Packet ids whose judgments include this model. The map withholds
+    identities (the blinding), so the judgment rows are the only place the
+    letter->model mapping survives."""
+    return {j["packet_id"] for j in judgments if j.get("model_id") == model_id}
+
+
+def aggregate_width(width: int, maps: dict, widths: dict, judgments: list, only=None):
     """Aggregate ONE wave in isolation.
 
     Each wave is aggregated alone rather than all-at-once because a wave's anchors
     describe that wave's instrument. Pooling waves would average the offsets
     together and correct nobody correctly.
     """
-    submaps = {p: m for p, m in maps.items() if widths.get(p) == width}
-    subj = [j for j in judgments if widths.get(j["packet_id"]) == width]
+    sel = (lambda p: widths.get(p) == width and (only is None or p in only))
+    submaps = {p: m for p, m in maps.items() if sel(p)}
+    subj = [j for j in judgments if sel(j["packet_id"])]
     return aggregate(rows=[], judgments=subj, maps=submaps), len(submaps), len(subj)
 
 
@@ -139,6 +147,14 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="CAL-rescale a small B1 wave onto the frozen scale")
     ap.add_argument("--width", type=int, default=None,
                     help="cohort width of the wave to rescale (3 = laguna, 4 = abliterated pair)")
+    # Width alone stopped being a wave identity once a SECOND 3-letter wave
+    # existed. laguna and qwen3.6-27b-fable-fusion were both judged in 3-letter
+    # cohorts, so --width 3 pools them and averages their CAL anchors together -
+    # which would dilute exactly the offset the correction is supposed to measure
+    # (fable's claude seat ran through the API, laguna's through the CLI).
+    # Scoping to the model selects only the packets that model appears in.
+    ap.add_argument("--model", default=None,
+                    help="restrict the wave to packets containing this model_id")
     ap.add_argument("--verify", action="store_true",
                     help="reproduce the published laguna rescale and report the method delta")
     ap.add_argument("--emit-python", action="store_true",
@@ -155,7 +171,12 @@ def main(argv=None) -> int:
     print(f"  CAL-strong {frozen_anchors[0]:.4f}   CAL-weak {frozen_anchors[1]:.4f}")
 
     if args.verify:
-        res, _, _ = aggregate_width(3, maps, widths, judgments)
+        # Scope to laguna: a second 3-letter wave (fable-fusion) now shares this
+        # width, and pooling them averages a CLI-judged instrument with an
+        # API-judged one - the gate would then be checking a wave that never
+        # existed.
+        res, _, _ = aggregate_width(3, maps, widths, judgments,
+                                    only=packets_for_model(judgments, 'laguna-s-2.1'))
         raw = res.model_overall.get("laguna-s-2.1")
         small = cal_anchors(res)
         prose_fn, _ = make_map(PROSE_SMALL, PROSE_FROZEN)
@@ -175,7 +196,10 @@ def main(argv=None) -> int:
     if args.width is None:
         ap.error("--width is required unless --verify is used alone")
 
-    res, np_, nj = aggregate_width(args.width, maps, widths, judgments)
+    only = packets_for_model(judgments, args.model) if args.model else None
+    if args.model:
+        print(f"\nscoped to {args.model}: {len(only)} packets")
+    res, np_, nj = aggregate_width(args.width, maps, widths, judgments, only=only)
     small = cal_anchors(res)
     fn, gain = make_map(small, frozen_anchors)
     print(f"\nwave (width {args.width}): {np_} packets, {nj} judgment rows")

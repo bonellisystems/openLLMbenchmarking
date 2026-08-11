@@ -130,6 +130,12 @@ JUDGED_B1 = {
     # anchors (8.47/1.31 -> 7.62/0.89, gain 0.940). Raw was 6.69 and 5.96; the
     # correction is worth several ranks, which is the whole point of applying it.
     "abl-gemma-4-31b": 6.0, "abl-opus-35b-a3b": 5.3,
+    # 3-letter wave judged 2026-08-10. Its claude seat ran through the Anthropic
+    # Batch API rather than `claude -p` (the Fable allotment was spent), which is
+    # visible in the anchors: CAL-strong 8.52 here vs 8.63 in laguna's CLI-judged
+    # 3-letter wave. The API seat is slightly stricter, the anchors moved with the
+    # model, and the two-point map absorbs it. Raw 7.91 -> 7.05.
+    "qwen3.6-27b-fable-fusion": 7.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1013,12 @@ _RESCALED_UNITS = {
         ("finance", 5.3), ("operations", 5.3), ("outreach", 5.3),
         ("helpdesk", 5.2), ("sales", 5.2), ("legal_compliance", 4.9),
         ("knowledge_mgmt", 4.6), ("it_infra", 4.3), ("project_mgmt", 3.5)],
+    "qwen3.6-27b-fable-fusion": [
+        ("data_analytics", 8.4), ("finance", 7.9), ("operations", 7.8),
+        ("seo", 7.8), ("hr_people_ops", 7.6), ("outreach", 7.5),
+        ("sales", 7.4), ("marketing", 7.2), ("cybersecurity", 7.1),
+        ("project_mgmt", 6.9), ("knowledge_mgmt", 6.7), ("coding", 6.7),
+        ("helpdesk", 6.1), ("it_infra", 5.4), ("legal_compliance", 5.4)],
 }
 
 
