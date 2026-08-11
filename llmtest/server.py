@@ -218,12 +218,31 @@ class ServerManager:
         self._log_fh = None
 
     def sweep_orphans(self) -> list[str]:
+        """Kill stray servers holding VRAM.
+
+        Platform-aware because this class is no longer Windows-only: the whole
+        canonical `llmtest run` path was unusable on a rented Linux box while
+        this called `taskkill`, which does not exist there - it raised
+        FileNotFoundError and took the launch down with it. That is why B4/B5/B7
+        never ran through the VM path and needed bigmodel_gen, which cannot
+        serve per-arm configs and so cannot drive them correctly.
+        """
         killed = []
-        for name in ("llama-server.exe",):
-            r = subprocess.run(["taskkill", "/F", "/IM", name],
-                               capture_output=True, text=True)
-            if "SUCCESS" in r.stdout:
-                killed.append(name)
+        if os.name == "nt":
+            for name in ("llama-server.exe",):
+                r = subprocess.run(["taskkill", "/F", "/IM", name],
+                                   capture_output=True, text=True)
+                if "SUCCESS" in r.stdout:
+                    killed.append(name)
+        else:
+            for name in ("llama-server",):
+                try:
+                    r = subprocess.run(["pkill", "-f", name],
+                                       capture_output=True, text=True)
+                except FileNotFoundError:
+                    continue
+                if r.returncode == 0:
+                    killed.append(name)
         time.sleep(2)
         return killed
 
@@ -250,7 +269,15 @@ class ServerManager:
         if runtime != "fork":
             raise NotImplementedError(f"runtime {runtime} lands in Task 12 (ollama) / later (vllm)")
         model = self.cfg.registry["models"][model_id]
-        fit = fits(model, self.cfg.tiers, kv, tier="T1")
+        # Tier gates the VRAM-fit preflight and was pinned to T1 (the 24 GB
+        # laptop) back when that was the only box this ran on. On the 96 GB
+        # PRO 6000 that pin rejects models which fit with room to spare, so it
+        # is overridable by env - the runner on a rented box exports
+        # LLMTEST_TIER=T3. Default stays T1 so local behaviour is unchanged.
+        tier = os.environ.get("LLMTEST_TIER", "T1")
+        if tier not in self.cfg.tiers.get("tiers", self.cfg.tiers):
+            raise RuntimeError(f"LLMTEST_TIER={tier!r} is not a known tier")
+        fit = fits(model, self.cfg.tiers, kv, tier=tier)
         if not fit.fits:
             raise RuntimeError(f"fits() preflight failed: {fit.detail}")
         if _vram_free_gb() < float(model["weights_gb"]) + 1.0:
