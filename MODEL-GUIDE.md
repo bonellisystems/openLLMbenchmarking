@@ -44,26 +44,26 @@ Higher is better in every column. Units differ per battery (see above): B1 is /1
 | Model | B1 | B2 | B3 | B4 | B5 | B6 | B7 | B8 | B9 | B10 | B11 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | `abl-gemma-4-31b` | 6.0 | 80% | 21% | 60% | 56 t/s | 100% | 89% | 95% | 71% | 23 | 100% |
-| `abl-opus-35b-a3b` | 5.3 | 97% | 31% | 99% | 209 t/s | 87% | 80% | 94% | 54% | 50 | 100% |
-| `abl-qwen3.6-27b` | not run | 100% | 49% | 40% | 68 t/s | 97% | 97% | 93% | 83% | 69 | 100% |
-| `agents-a1-35b` | 6.7 | 100% | 62% | 19% | 212 t/s | 97% | 62% | 91% | 71% | 61 | 100% |
-| `bonsai-ternary-27b` | 6.8 | 100% | 74% | 37% | 109 t/s | 93% | 72% | 86% | 46% | 44 | 100% |
-| `gemma-4-26b-a4b` | 7.2 | 97% | 62% | 43% | 204 t/s | 87% | 94% | 76% | 71% | 50 | 92% |
-| `gemma-4-31b-dense` | 7.4 | 100% | 77% | 68% | 58 t/s | 93% | 97% | 96% | 79% | 42 | 100% |
+| `abl-opus-35b-a3b` | 5.3 | 97% | 31% | 99% | 227 t/s | 87% | 80% | 94% | 54% | 50 | 100% |
+| `abl-qwen3.6-27b` | not run | 100% | 49% | 40% | 69 t/s | 97% | 97% | 93% | 83% | 69 | 100% |
+| `agents-a1-35b` | 6.7 | 100% | 62% | 19% | 208 t/s | 97% | 62% | 91% | 71% | 61 | 100% |
+| `bonsai-ternary-27b` | 6.8 | 100% | 74% | 37% | 110 t/s | 93% | 72% | 86% | 46% | 44 | 100% |
+| `gemma-4-26b-a4b` | 7.2 | 97% | 62% | 43% | 203 t/s | 87% | 94% | 76% | 71% | 50 | 92% |
+| `gemma-4-31b-dense` | 7.4 | 100% | 77% | 68% | 57 t/s | 93% | 97% | 96% | 79% | 42 | 100% |
 | `glm-4.5-air` | 6.3 | 100% | 38% | 74% | 92 t/s | 97% | 98% | 87% | 58% | 33 | 75% |
-| `gpt-oss-120b` | 6.6 | 81% | 38% | 100% | 178 t/s | 73% | 86% | 90% | 62% | 67 | 92% |
-| `gpt-oss-20b` | 6.0 | 90% | 33% | 95% | 245 t/s | 83% | 83% | 87% | 58% | 69 | 100% |
+| `gpt-oss-120b` | 6.6 | 81% | 38% | 100% | 177 t/s | 73% | 86% | 90% | 62% | 67 | 92% |
+| `gpt-oss-20b` | 6.0 | 90% | 33% | 95% | 244 t/s | 83% | 83% | 87% | 58% | 69 | 100% |
 | `granite-4.1-30b` | 6.4 | 100% | 51% | 100% | 61 t/s | 100% | 91% | 69% | 42% | 25 | 75% |
 | `laguna-s-2.1` | 6.1 | 90% | 44% | 100% | 134 t/s | 100% | 92% | 82% | 38% | 83 | 100% |
-| `llama-4-scout` | 5.6 | 33% | 56% | 87% | 86 t/s | 90% | 97% | not run | 38% | 50 | 0% |
-| `nemotron-3-nano-30b` | 5.9 | 100% | 33% | 95% | 284 t/s | 83% | 88% | 88% | 4% | 61 | 83% |
-| `ornith-1.0-35b` | 7.4 | 100% | 69% | 38% | 209 t/s | 93% | 92% | 91% | 62% | 39 | 100% |
+| `llama-4-scout` | 5.6 | 33% | 56% | 87% | 85 t/s | 90% | 97% | not run | 38% | 50 | 0% |
+| `nemotron-3-nano-30b` | 5.9 | 100% | 33% | 95% | 292 t/s | 83% | 88% | 88% | 4% | 61 | 83% |
+| `ornith-1.0-35b` | 7.4 | 100% | 69% | 38% | 210 t/s | 93% | 92% | 91% | 62% | 39 | 100% |
 | `ornith-1.0-9b` | 6.7 | 93% | 74% | 24% | 130 t/s | 97% | 81% | 87% | 46% | 65 | 75% |
 | `qwen3-235b` | 7.2 | 100% | 79% | 100% | 58 t/s | 100% | 94% | not run | not run | not run | not run |
 | `qwen3-coder-30b` | 5.0 | 80% | 62% | 100% | 207 t/s | 100% | 97% | 73% | 67% | 6 | 100% |
-| `qwen3.6-27b-dense` | 7.6 | 100% | 72% | 40% | 58 t/s | 100% | 80% | 95% | 58% | 21 | 100% |
-| `qwen3.6-27b-fable-fusion` | 7.0 | 100% | 67% | not run | not run | 97% | not run | 90% | 71% | 62 | 100% |
-| `qwen3.6-35b-a3b` | 7.3 | 100% | 69% | 42% | 225 t/s | 83% | 83% | 88% | 54% | 38 | 100% |
+| `qwen3.6-27b-dense` | 7.6 | 100% | 72% | 40% | 59 t/s | 100% | 80% | 95% | 58% | 21 | 100% |
+| `qwen3.6-27b-fable-fusion` | 7.0 | 100% | 67% | 19% | 69 t/s | 97% | 100% | 90% | 71% | 62 | 100% |
+| `qwen3.6-35b-a3b` | 7.3 | 100% | 69% | 42% | 226 t/s | 83% | 83% | 88% | 54% | 38 | 100% |
 
 ## Running a model
 
@@ -156,7 +156,7 @@ llama-server -m ./models/abl-gemma-4-31b/Huihui-gemma-4-31B-it-qat-q4_0-unquanti
 - **Quant file**: `Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus-abliterated-ggml-model-Q3_K.gguf`
 - **Weights**: 17.2 GB  (needs roughly 17.2 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 5.3, B2 97%, B3 31%, B4 99%, B5 209 t/s, B6 87%, B7 80%, B8 94%, B9 54%, B10 50, B11 100%
+- **Scores**: B1 5.3, B2 97%, B3 31%, B4 99%, B5 227 t/s, B6 87%, B7 80%, B8 94%, B9 54%, B10 50, B11 100%
 
 Download:
 
@@ -190,7 +190,7 @@ llama-server -m ./models/abl-opus-35b-a3b/Huihui-Qwen3.6-35B-A3B-Claude-4.7-Opus
 - **Quant file**: `Huihui-Qwen3.6-27B-abliterated-ggml-model-Q4_K.gguf`
 - **Weights**: 16.8 GB  (needs roughly 16.8 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 not run, B2 100%, B3 49%, B4 40%, B5 68 t/s, B6 97%, B7 97%, B8 93%, B9 83%, B10 69, B11 100%
+- **Scores**: B1 not run, B2 100%, B3 49%, B4 40%, B5 69 t/s, B6 97%, B7 97%, B8 93%, B9 83%, B10 69, B11 100%
 
 Download:
 
@@ -224,7 +224,7 @@ llama-server -m ./models/abl-qwen3.6-27b/Huihui-Qwen3.6-27B-abliterated-ggml-mod
 - **Quant file**: `Agents-A1-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf`
 - **Weights**: 18.4 GB  (needs roughly 18.4 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: MXFP4_MOE  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 6.7, B2 100%, B3 62%, B4 19%, B5 212 t/s, B6 97%, B7 62%, B8 91%, B9 71%, B10 61, B11 100%
+- **Scores**: B1 6.7, B2 100%, B3 62%, B4 19%, B5 208 t/s, B6 97%, B7 62%, B8 91%, B9 71%, B10 61, B11 100%
 
 Download:
 
@@ -258,7 +258,7 @@ llama-server -m ./models/agents-a1-35b/Agents-A1-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.
 - **Quant file**: `Ternary-Bonsai-27B-Q2_0.gguf`
 - **Weights**: 6.7 GB  (needs roughly 6.7 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: TERNARY  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 6.8, B2 100%, B3 74%, B4 37%, B5 109 t/s, B6 93%, B7 72%, B8 86%, B9 46%, B10 44, B11 100%
+- **Scores**: B1 6.8, B2 100%, B3 74%, B4 37%, B5 110 t/s, B6 93%, B7 72%, B8 86%, B9 46%, B10 44, B11 100%
 
 Download:
 
@@ -292,7 +292,7 @@ llama-server -m ./models/bonsai-ternary-27b/Ternary-Bonsai-27B-Q2_0.gguf \
 - **Quant file**: `gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf`
 - **Weights**: 13.3 GB  (needs roughly 13.3 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: gemma  |  **Claimed context**: 262144
-- **Scores**: B1 7.2, B2 97%, B3 62%, B4 43%, B5 204 t/s, B6 87%, B7 94%, B8 76%, B9 71%, B10 50, B11 92%
+- **Scores**: B1 7.2, B2 97%, B3 62%, B4 43%, B5 203 t/s, B6 87%, B7 94%, B8 76%, B9 71%, B10 50, B11 92%
 
 Download:
 
@@ -326,7 +326,7 @@ llama-server -m ./models/gemma-4-26b-a4b/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf 
 - **Quant file**: `gemma-4-31B-it-qat-UD-Q4_K_XL.gguf`
 - **Weights**: 16.5 GB  (needs roughly 16.5 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: gemma  |  **Claimed context**: 131072
-- **Scores**: B1 7.4, B2 100%, B3 77%, B4 68%, B5 58 t/s, B6 93%, B7 97%, B8 96%, B9 79%, B10 42, B11 100%
+- **Scores**: B1 7.4, B2 100%, B3 77%, B4 68%, B5 57 t/s, B6 93%, B7 97%, B8 96%, B9 79%, B10 42, B11 100%
 
 Download:
 
@@ -394,7 +394,7 @@ llama-server -m ./models/glm-4.5-air/GLM-4.5-Air-UD-Q4_K_XL-00001-of-00002.gguf 
 - **Quant file**: `gpt-oss-120b-F16.gguf`
 - **Weights**: 61 GB  (needs roughly 61 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: -  |  **Claimed context**: 131072
-- **Scores**: B1 6.6, B2 81%, B3 38%, B4 100%, B5 178 t/s, B6 73%, B7 86%, B8 90%, B9 62%, B10 67, B11 92%
+- **Scores**: B1 6.6, B2 81%, B3 38%, B4 100%, B5 177 t/s, B6 73%, B7 86%, B8 90%, B9 62%, B10 67, B11 92%
 
 Download:
 
@@ -428,7 +428,7 @@ llama-server -m ./models/gpt-oss-120b/gpt-oss-120b-F16.gguf \
 - **Quant file**: `gpt-oss-20b-F16.gguf`
 - **Weights**: 12.9 GB  (needs roughly 12.9 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: MXFP4_MOE  |  **License**: apache-2.0  |  **Claimed context**: 131072
-- **Scores**: B1 6.0, B2 90%, B3 33%, B4 95%, B5 245 t/s, B6 83%, B7 83%, B8 87%, B9 58%, B10 69, B11 100%
+- **Scores**: B1 6.0, B2 90%, B3 33%, B4 95%, B5 244 t/s, B6 83%, B7 83%, B8 87%, B9 58%, B10 69, B11 100%
 
 Download:
 
@@ -530,7 +530,7 @@ llama-server -m ./models/laguna-s-2.1/UD-IQ4_XS/Laguna-S-2.1-UD-IQ4_XS-00001-of-
 - **Quant file**: `Llama-4-Scout-17B-16E-Instruct-UD-Q4_K_XL-00001-of-00002.gguf`
 - **Weights**: 62 GB  (needs roughly 62 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: -  |  **Claimed context**: 131072
-- **Scores**: B1 5.6, B2 33%, B3 56%, B4 87%, B5 86 t/s, B6 90%, B7 97%, B8 not run, B9 38%, B10 50, B11 0%
+- **Scores**: B1 5.6, B2 33%, B3 56%, B4 87%, B5 85 t/s, B6 90%, B7 97%, B8 not run, B9 38%, B10 50, B11 0%
 
 Download:
 
@@ -564,7 +564,7 @@ llama-server -m ./models/llama-4-scout/Llama-4-Scout-17B-16E-Instruct-UD-Q4_K_XL
 - **Quant file**: `Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf`
 - **Weights**: 21.3 GB  (needs roughly 21.3 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: nvidia-open-model-license  |  **Claimed context**: 131072
-- **Scores**: B1 5.9, B2 100%, B3 33%, B4 95%, B5 284 t/s, B6 83%, B7 88%, B8 88%, B9 4%, B10 61, B11 83%
+- **Scores**: B1 5.9, B2 100%, B3 33%, B4 95%, B5 292 t/s, B6 83%, B7 88%, B8 88%, B9 4%, B10 61, B11 83%
 
 Download:
 
@@ -598,7 +598,7 @@ llama-server -m ./models/nemotron-3-nano-30b/Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.
 - **Quant file**: `Ornith-1.0-35B-A3B-MXFP4_MOE_Q8_0-Imatrix.gguf`
 - **Weights**: 18.4 GB  (needs roughly 18.4 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: MXFP4_MOE  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 7.4, B2 100%, B3 69%, B4 38%, B5 209 t/s, B6 93%, B7 92%, B8 91%, B9 62%, B10 39, B11 100%
+- **Scores**: B1 7.4, B2 100%, B3 69%, B4 38%, B5 210 t/s, B6 93%, B7 92%, B8 91%, B9 62%, B10 39, B11 100%
 
 Download:
 
@@ -734,7 +734,7 @@ llama-server -m ./models/qwen3-coder-30b/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL
 - **Quant file**: `Qwen3.6-27B-Q5_K_M.gguf`
 - **Weights**: 18.2 GB  (needs roughly 18.2 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 7.6, B2 100%, B3 72%, B4 40%, B5 58 t/s, B6 100%, B7 80%, B8 95%, B9 58%, B10 21, B11 100%
+- **Scores**: B1 7.6, B2 100%, B3 72%, B4 40%, B5 59 t/s, B6 100%, B7 80%, B8 95%, B9 58%, B10 21, B11 100%
 
 Download:
 
@@ -768,7 +768,7 @@ llama-server -m ./models/qwen3.6-27b-dense/Qwen3.6-27B-Q5_K_M.gguf \
 - **Quant file**: `Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO-Q4_K_M.gguf`
 - **Weights**: 18.0 GB  (needs roughly 18.0 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: K  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 7.0, B2 100%, B3 67%, B4 not run, B5 not run, B6 97%, B7 not run, B8 90%, B9 71%, B10 62, B11 100%
+- **Scores**: B1 7.0, B2 100%, B3 67%, B4 19%, B5 69 t/s, B6 97%, B7 100%, B8 90%, B9 71%, B10 62, B11 100%
 
 Download:
 
@@ -802,7 +802,7 @@ llama-server -m ./models/qwen3.6-27b-fable-fusion/Qwen3.6-27B-Fable-Fus-711-UnHe
 - **Quant file**: `Qwen_Qwen3.6-35B-A3B-IQ4_XS.gguf`
 - **Weights**: 18.4 GB  (needs roughly 18.4 GB VRAM plus KV cache; quantised KV as below keeps that small)
 - **Quant family**: IQ  |  **License**: apache-2.0  |  **Claimed context**: 262144
-- **Scores**: B1 7.3, B2 100%, B3 69%, B4 42%, B5 225 t/s, B6 83%, B7 83%, B8 88%, B9 54%, B10 38, B11 100%
+- **Scores**: B1 7.3, B2 100%, B3 69%, B4 42%, B5 226 t/s, B6 83%, B7 83%, B8 88%, B9 54%, B10 38, B11 100%
 
 Download:
 
@@ -836,6 +836,7 @@ Read these before quoting any number.
 
 - **[HIGH] B8 cannot be measured on a Docker-less box - five models' 0% was an artifact** - B8's completion oracle (run_oracle) validates the agent's work inside a container. vast.ai instances have no Docker, so the runs were made with b8.sandbox.enabled=false: the AGENT runs fine on the host, but the ORACLE still shells out to a container, fails setup, and completion is never credited. Every row measured that way carries oracle.detail = "hidden_validate setup failed: FileNotFoundError(...)" instead of a PASS/FAIL verdict with a stage. Scored naively this produced a flat 0% for all five models run that way - abl-gemma-4-31b, abl-opus-35b-a3b, glm-4.5-air, gpt-oss-120b and laguna-s-2.1 - including gpt-oss-120b, which every other signal says is among the strongest agentic models in the roster. Those rows are now excluded as MISSING measurements rather than failed ones, and the cells read untested.
 - **[LOW] bonsai-ternary-27b: RESOLVED 2026-08-10 - all four cells now measured** - Its Q2_0 is a prism-ml custom quantization and only the prism llama.cpp fork has the kernels for it; on the official ggml image the server exited before serving. The prism image itself then failed to build, which deferred these cells twice. Root cause was never the CUDA version the Dockerfile blamed: ggml links the CUDA driver api for its VMM allocator, the devel image ships that only as a stub whose SONAME is libcuda.so.1, and nothing on the link path provides that name - so every driver symbol came back undefined. A second defect followed it: the runtime image has no libgomp1, so the binary built clean and died on first exec. Both were found and fixed locally on an RTX 5090 Laptop, which reports the same sm_120 compute capability as the PRO 6000, at zero cost. B8 86%, B9 46%, B10 44, B11 100%, with 115/115 B8 rows and no infra errors.
+- **[HIGH] B5's n-gram arm never actually engaged for 20 of 21 models** - Every model measured before 2026-08-11 reports a spec-decode speedup of exactly 1.00x - abl-gemma 59.3 vs 59.5, gpt-oss-20b 264.1 vs 264.3, qwen3.6-27b-dense 60.3 vs 60.3, and so on down the roster. That is not a finding about n-gram; it is the arm recording spec=ngram32 in its condition while the server ran without the flag. qwen3.6-27b-fable-fusion, measured through a different serving path on 2026-08-11, is the first whose ngram arm genuinely fired: 482 vs 71 t/s, 6.79x, in line with the 2-12x the standalone n-gram measurements show on edit-heavy work. So B5's whole column is effectively a spec=OFF measurement, and the headline now takes the spec=off arm explicitly so all 21 numbers mean the same thing. Reading the old ngram arm as evidence that speculative decoding does not help would be exactly backwards.
 - **[HIGH] abl-qwen3.6-27b cannot produce a B1 answer - it never stops thinking** - Measured 2026-08-10 on a PRO 6000: 23 of 23 B1 generations returned an EMPTY answer (chars=0, artifact sha256 = the hash of the empty string). This is not the small-budget artifact the suite already corrects for - a single probe with the full 16000-token budget spent all 16000 on reasoning_content and emitted zero characters of content, finish_reason=length. Suppressing thinking via chat_template_kwargs enable_thinking=false does not rescue it either: the model then emits degenerate output ('3333333...') for the whole budget. The model serves normally for this suite's SHORTER batteries - its B2/B3/B6/B8/B9/B10/B11 cells are all populated - so this is specific to long-form generation on this quant (huihui-ai Q4_K, an MTP GGUF served without its draft head).
 - **[HIGH] qwen3-235b is held out by choice - its 4 cells are real gaps, not results** - Excluded on 2026-07-30 pending a dedicated large-model pass. At 134GB it does not fit the 96GB card, so --cpu-moe streams its experts over PCIe and every row costs roughly 8x: B8-B11 priced at ~11.3h / ~$13.54, which was 46% of the remaining budget for 14% of the remaining cells. The exclusion is recorded in scripts/build_run_manifest.py EXCLUDED and is one dict entry to reverse.
 - **[HIGH] B4 has only ever run 7 of its 8 tasks - the classic single-needle probe is missing** - b4.single-needle-01 has ZERO rows for all 16 roster models; the other seven B4 tasks have 49 each. build_document() sizes the filler with a 4-chars-per-token heuristic, and that task's filler is dense operational log text (timestamps, asset IDs, digit groups) that really tokenizes at ~2.97 chars/token - a 1.35x overshoot. Every arm therefore overflows its own tier and the server rejects the request: 20716 vs 16384, 86644 vs 65536, 174563 vs 131072, 350408 vs 262144. No row is written, so the loss is invisible unless task-level completeness is checked. The missing task is the canonical 'lost in the middle' needle-in-a-haystack probe at depth 50%, which is the single most standard thing B4 claims to measure.

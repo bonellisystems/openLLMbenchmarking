@@ -154,6 +154,14 @@
 | unsloth/Qwen3.6-27B-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=SUSTAINED32K | 56.6 | 3076.9 | 6284 |
 | unsloth/Qwen3.6-27B-GGUF | runtime=fork;spec=off;kv=q8;cond=PEAK | 60.3 | 121.7 | 246 |
 | unsloth/Qwen3.6-27B-GGUF | runtime=fork;spec=off;kv=q8;cond=SUSTAINED32K | 56.7 | 3078.2 | 6282 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK | 482.4 | 310.2 | 97 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK;conc=16 | 41.6 | 0.0 | 0 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK;conc=2 | 91.7 | 0.0 | 0 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK;conc=4 | 97.8 | 0.0 | 0 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK;conc=8 | 53.5 | 0.0 | 0 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=SUSTAINED32K | 638.1 | 3888.7 | 4972 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=off;kv=q8;cond=PEAK | 71.1 | 306.1 | 98 |
+| DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF | runtime=fork;spec=off;kv=q8;cond=SUSTAINED32K | 67.1 | 3858.9 | 5011 |
 | bartowski/Qwen_Qwen3.6-35B-A3B-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK | 233.5 | 227.5 | 132 |
 | bartowski/Qwen_Qwen3.6-35B-A3B-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK;conc=16 | 49.1 | 0.0 | 0 |
 | bartowski/Qwen_Qwen3.6-35B-A3B-GGUF | runtime=fork;spec=ngram32;kv=q8;cond=PEAK;conc=2 | 188.9 | 0.0 | 0 |

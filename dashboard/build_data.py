@@ -232,6 +232,21 @@ GAPS = [
                "115/115 B8 rows and no infra errors.",
      "fix": "Done. deploy/blackwell/verify_prism.sh proves the image serves bonsai before a box is "
             "ever rented."},
+    {"sev": "high", "title": "B5's n-gram arm never actually engaged for 20 of 21 models",
+     "detail": "Every model measured before 2026-08-11 reports a spec-decode speedup of exactly "
+               "1.00x - abl-gemma 59.3 vs 59.5, gpt-oss-20b 264.1 vs 264.3, qwen3.6-27b-dense "
+               "60.3 vs 60.3, and so on down the roster. That is not a finding about n-gram; it "
+               "is the arm recording spec=ngram32 in its condition while the server ran without "
+               "the flag. qwen3.6-27b-fable-fusion, measured through a different serving path on "
+               "2026-08-11, is the first whose ngram arm genuinely fired: 482 vs 71 t/s, 6.79x, "
+               "in line with the 2-12x the standalone n-gram measurements show on edit-heavy "
+               "work. So B5's whole column is effectively a spec=OFF measurement, and the "
+               "headline now takes the spec=off arm explicitly so all 21 numbers mean the same "
+               "thing. Reading the old ngram arm as evidence that speculative decoding does not "
+               "help would be exactly backwards.",
+     "fix": "Re-run B5 with the flag verified live at serve time (assert the speedup is not 1.00x "
+            "before recording an ngram arm), or drop the arm and cite the standalone n-gram "
+            "measurements instead."},
     {"sev": "high", "title": "abl-qwen3.6-27b cannot produce a B1 answer - it never stops thinking",
      "detail": "Measured 2026-08-10 on a PRO 6000: 23 of 23 B1 generations returned an EMPTY answer "
                "(chars=0, artifact sha256 = the hash of the empty string). This is not the small-"
@@ -819,7 +834,21 @@ def compute_matrix():
     for m, arms in b5.items():
         ng = arms.get("ngram") or []
         off = arms.get("off") or []
-        best = statistics.median(ng or off)
+        # Headline is the spec=OFF arm, not the ngram one.
+        #
+        # This used to take ngram-first, which was harmless only because the
+        # ngram arm never actually engaged: every one of the twenty models
+        # measured before 2026-08-11 reports a speedup of exactly 1.00x, i.e.
+        # the arm recorded spec=ngram32 in its condition while the server ran
+        # without it. qwen3.6-27b-fable-fusion is the first model whose ngram
+        # arm really fired (6.79x, 482 vs 71 t/s), and taking ngram-first would
+        # have published one accelerated number beside twenty unaccelerated
+        # ones and called it a ranking.
+        #
+        # spec=off is the arm every model genuinely has in common, so it is the
+        # comparable one. The real speedup is not lost - it stays in b5_arms,
+        # which the Speculative Decoding panel renders per model.
+        best = statistics.median(off or ng)
         agg[m]["B5"] = {"tested": True, "n": len(ng) + len(off), "score": round(best),
                         "display": f"{round(best)} t/s", "sub": [],
                         "ci": None}   # t/s median over n=8; CI not meaningful, see gaps
