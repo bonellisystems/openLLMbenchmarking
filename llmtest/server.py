@@ -287,7 +287,13 @@ class ServerManager:
         flags = compose_fork_flags(self.cfg, ctx=ctx, parallel=parallel, kv=kv,
                                    overlay=flags_overlay)
         port = _free_port()
-        binary = self.cfg.runtime_pins["fork"]["binary"]
+        # The pin in runtime_pins is a Windows path to the local prism build.
+        # A rented Linux box has its own binary, so allow an override by env
+        # rather than editing a pinned config that provenance depends on - the
+        # pin still describes the local box, and the row's runtime field still
+        # says "fork" either way.
+        binary = os.environ.get("LLMTEST_FORK_BINARY") or \
+            self.cfg.runtime_pins["fork"]["binary"]
         invocation = (f'"{binary}" -m "{model["local_path"]}" {flags} '
                       f"--host 127.0.0.1 --port {port}")
         session_id = f"s-{uuid.uuid4().hex[:12]}"          # generated before Popen: log name = session
