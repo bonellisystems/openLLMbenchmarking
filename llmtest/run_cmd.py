@@ -1,5 +1,6 @@
 """llmtest run — plan/diff/execute loop with free resume (TESTPLAN 7.2/7.5)."""
 import json
+import os
 from pathlib import Path
 
 from llmtest.registry import load_config
@@ -7,6 +8,9 @@ from llmtest.store import Store
 
 
 def _results_dir(root: Path) -> Path:
+    override = os.environ.get("LLMTEST_RESULTS_DIR")
+    if override:
+        return Path(override)
     return root / "results"
 
 

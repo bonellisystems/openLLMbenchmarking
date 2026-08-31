@@ -1,6 +1,7 @@
 """Config loaders + fits() — ONE code path for tier placement AND VRAM preflight (TESTPLAN 3.1/7.3)."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,10 +26,14 @@ def _load(root: Path, name: str) -> dict:
 
 def load_config(root: Path | str) -> Config:
     root = Path(root)
-    return Config(root=root, tiers=_load(root, "tiers"),
-                  registry=_load(root, "registry"), suite=_load(root, "suite"),
-                  budgets=_load(root, "budgets"), judges=_load(root, "judges"),
-                  runtime_pins=_load(root, "runtime_pins"))
+    cfg = Config(root=root, tiers=_load(root, "tiers"),
+                 registry=_load(root, "registry"), suite=_load(root, "suite"),
+                 budgets=_load(root, "budgets"), judges=_load(root, "judges"),
+                 runtime_pins=_load(root, "runtime_pins"))
+    sv = os.environ.get("LLMTEST_SUITE_VERSION")
+    if sv:
+        cfg.suite["suite_version"] = sv
+    return cfg
 
 
 @dataclass

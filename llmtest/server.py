@@ -194,17 +194,26 @@ class EndpointHandle:
     normalized_config: dict
     pid: int
     _mgr: "ServerManager"
+    model_name: str = ""
 
     def chat(self, messages, *, max_tokens=512, temperature=0.0, tools=None,
              timeout=1200) -> dict:
         body = {"messages": messages, "max_tokens": max_tokens,
                 "stream": False}
+        if self.model_name:
+            body["model"] = self.model_name
         # temperature=None omits the key from body (runtime default); temperature=0.0 includes it
         if temperature is not None:
             body["temperature"] = temperature
         if tools:
             body["tools"] = tools
-        req = urllib.request.Request(self.base_url + "/v1/chat/completions",
+        extra = os.environ.get("LLMTEST_CHAT_EXTRA")
+        if extra:
+            body.update(json.loads(extra))
+        url = self.base_url.rstrip("/")
+        if not url.endswith("/v1"):
+            url = url + "/v1"
+        req = urllib.request.Request(url + "/chat/completions",
                                      data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=timeout))
@@ -267,6 +276,12 @@ class ServerManager:
         if self._active and self._active_key == key:
             return self._active                       # config-match reuse
         self.teardown()
+        runtime = os.environ.get("LLMTEST_RUNTIME", runtime)
+        if runtime == "endpoint":
+            return self._attach_live_endpoint(
+                model_id, flags_overlay=flags_overlay, parallel=parallel,
+                ctx=ctx, kv=kv, timing_authoritative=timing_authoritative,
+                key=key)
         if runtime != "fork":
             raise NotImplementedError(f"runtime {runtime} lands in Task 12 (ollama) / later (vllm)")
         model = self.cfg.registry["models"][model_id]
@@ -324,7 +339,8 @@ class ServerManager:
             runtime_build=self.cfg.runtime_pins["fork"]["build_id"],
             normalized_config=normalize_config(runtime="fork", ctx=ctx, kv=kv,
                                                spec=spec, parallel=parallel),
-            raw_invocation=invocation, hardware_sku="rtx5090-laptop",
+            raw_invocation=invocation,
+            hardware_sku=os.environ.get("LLMTEST_HARDWARE_SKU", "rtx5090-laptop"),
             measured_usable_vram_gb=self.cfg.tiers["tiers"]["T1"]["usable_gb"],
             tp_degree=1, topology=None, driver_env={},
             power_mode=mode, ac_state=ac,
@@ -337,8 +353,72 @@ class ServerManager:
         self._active_key = key
         return self._active
 
+    def _attach_live_endpoint(self, model_id, *, flags_overlay, parallel, ctx,
+                              kv, timing_authoritative, key) -> EndpointHandle:
+        """Attach to an already-running OpenAI-compatible server (vLLM/SGLang).
+
+        Required env:
+          LLMTEST_ENDPOINT_URL   origin or .../v1  (e.g. http://127.0.0.1:8888)
+        Optional:
+          LLMTEST_SERVED_MODEL   wire model id (default: registry served_model_name or model_id)
+          LLMTEST_HARDWARE_SKU   stamped on the session (default dgx-spark-gb10)
+        Does not launch or kill the remote process.
+        """
+        raw = os.environ.get("LLMTEST_ENDPOINT_URL", "").strip()
+        if not raw:
+            raise RuntimeError("LLMTEST_RUNTIME=endpoint requires LLMTEST_ENDPOINT_URL")
+        origin = raw.rstrip("/")
+        if origin.endswith("/v1"):
+            origin = origin[: -len("/v1")]
+        model = self.cfg.registry["models"][model_id]
+        served = (os.environ.get("LLMTEST_SERVED_MODEL")
+                  or model.get("served_model_name")
+                  or model_id)
+        health_ok = False
+        last_err = None
+        for path in ("/health", "/v1/models"):
+            try:
+                urllib.request.urlopen(origin + path, timeout=5)
+                health_ok = True
+                break
+            except Exception as e:
+                last_err = e
+        if not health_ok:
+            raise RuntimeError(f"endpoint not healthy at {origin}: {last_err}")
+        spec = (flags_overlay or {}).get("spec") or os.environ.get("LLMTEST_SPEC", "off")
+        session_id = f"s-{uuid.uuid4().hex[:12]}"
+        sku = os.environ.get("LLMTEST_HARDWARE_SKU", "dgx-spark-gb10")
+        tier_name = os.environ.get("LLMTEST_TIER", "T_GB10")
+        tiers = self.cfg.tiers.get("tiers", self.cfg.tiers)
+        usable = float(tiers.get(tier_name, {}).get("usable_gb", 0) or 0)
+        ncfg = normalize_config(runtime="endpoint", ctx=ctx, kv=kv,
+                                spec=spec, parallel=parallel)
+        self.store.append_session(SessionRow(
+            schema_version=SCHEMA_VERSION, session_id=session_id,
+            ts=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            runtime="vllm",
+            runtime_build=os.environ.get("LLMTEST_RUNTIME_BUILD", "endpoint-attach"),
+            normalized_config=ncfg,
+            raw_invocation=f"ATTACH {origin} model={served}",
+            hardware_sku=sku,
+            measured_usable_vram_gb=usable,
+            tp_degree=int(os.environ.get("LLMTEST_TP", "2")),
+            topology=os.environ.get("LLMTEST_TOPOLOGY", "2x-dgx-spark-gb10"),
+            driver_env={},
+            power_mode="unknown", ac_state="ac",
+            timing_authoritative=timing_authoritative).to_dict())
+        self._active = EndpointHandle(
+            base_url=origin, session_id=session_id, normalized_config=ncfg,
+            pid=0, _mgr=self, model_name=served)
+        self._active_key = key
+        return self._active
+
     def teardown(self) -> None:
         had_active = self._active is not None
+        if had_active and self._active.pid == 0:
+            self._active = None
+            self._active_key = None
+            return
         if had_active:
             pid = self._active.pid
             if os.name == "nt":
