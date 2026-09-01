@@ -98,3 +98,6 @@ python scripts/run_b8_local.py \
   >> "$LLMTEST_RESULTS_DIR/b8_probe.log" 2>&1 || say "B8 probe exited $?"
 say "END B8 probe"
 say "CAMPAIGN_GLM_DONE"
+say "PAUSE: GLM complete. Do not boot DeepSeek / Flash-Next / explore until metrics review."
+touch "$LLMTEST_RESULTS_DIR/PAUSE_AFTER_GLM"
+echo "stopped after GLM — waiting for review" > "$LLMTEST_RESULTS_DIR/PAUSE_AFTER_GLM"
