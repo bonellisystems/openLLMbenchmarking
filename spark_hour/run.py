@@ -84,13 +84,20 @@ def is_refuse(text: str) -> bool:
 def extract_html(text: str) -> str:
     if not text:
         return ""
-    m = re.search(r"```(?:html)?\s*\n(.*?)```", text, re.S | re.I)
+    # GLM thinking-off leaks CoT then </think> then the file.
+    if "</think>" in text:
+        text = text.split("</think>", 1)[-1]
+    m = re.search(r"```(?:html)?\s*\n(.*?)(?:```|$)", text, re.S | re.I)
     if m:
         text = m.group(1)
     low = text.lower()
     if "<html" in low or "<!doctype" in low:
         return text.strip()
     return ""
+
+
+def combined_text(resp: dict) -> str:
+    return ((resp.get("content") or "") + "\n" + (resp.get("reasoning") or "")).strip()
 
 
 def extract_code(text: str, language: str | None = None) -> str:
@@ -181,13 +188,8 @@ class HourRun:
     def __init__(self, args):
         self.args = args
         self.base = args.endpoint.rstrip("/")
-        self.chat_url = self.base + ("/v1/chat/completions" if not self.base.endswith("/v1") else "/chat/completions")
-        if self.chat_url.endswith("/v1/chat/completions"):
-            pass
-        elif self.base.endswith("/v1"):
-            self.chat_url = self.base + "/chat/completions"
-        else:
-            self.chat_url = self.base + "/v1/chat/completions"
+        self.origin = self.base[:-3].rstrip("/") if self.base.endswith("/v1") else self.base
+        self.chat_url = self.origin + "/v1/chat/completions"
         self.model = args.model
         self.out = Path(args.out)
         self.out.mkdir(parents=True, exist_ok=True)
@@ -321,7 +323,7 @@ class HourRun:
 
     def prefill_sweep(self, ctx: int):
         targets = [65536, 131072, 262144, 524288, 1048576]
-        cap = int(ctx * 0.92)
+        cap = max(2048, int(ctx) - 2048)
         for target in targets:
             row = {"target_tokens": target}
             if target > cap:
@@ -376,7 +378,7 @@ class HourRun:
                     continue
                 t = self.load_yaml(p)
                 items.append({"bat": "b1", "id": f"b1.{unit}-01", "spec": t,
-                              "max_tokens": 1024, "thinking": True, "timeout": 120})
+                              "max_tokens": 2048, "thinking": True, "timeout": 150})
             # B2: all 10 tasks × 1
             for p in sorted((self.suite / "suite" / "b2_toolcalling").glob("task-*.yaml")):
                 t = self.load_yaml(p)
@@ -463,10 +465,18 @@ class HourRun:
                         [{"role": "user", "content": spec.get("prompt") or ""}],
                         max_tokens=mt, thinking=thinking, timeout=timeout)
             self.record_metrics(resp, bat)
-            text = resp.get("content") or ""
-            return {"battery": bat, "id": item["id"], "passed": len(text) >= 80,
-                    "infra": bool(resp.get("error")), "chars": len(text),
-                    "note": "gen only — not judged 0–10",
+            visible = resp.get("content") or ""
+            think = resp.get("reasoning") or ""
+            blob = (visible + "\n" + think).strip()
+            sigs = spec.get("signals") or []
+            if sigs:
+                ok = signal_pass(blob, sigs)
+            else:
+                ok = len(visible) >= 80
+            return {"battery": bat, "id": item["id"], "passed": ok,
+                    "infra": bool(resp.get("error")),
+                    "chars": len(visible), "reasoning_chars": len(think),
+                    "note": "signals on content+reasoning — not a judged 0–10",
                     "decode_tok_s": resp.get("decode_tok_s"), "e2e_s": resp.get("e2e_s")}
         if bat == "b2":
             msgs = spec.get("messages") or []
@@ -577,8 +587,9 @@ class HourRun:
             plant(ws, task["files"])
             t0 = time.perf_counter()
             try:
+                # run_tools_agent.chat appends /v1/chat/completions itself.
                 steps, used, tail, err = agent_loop(
-                    self.chat_url, ws, task["prompt"],
+                    self.origin, ws, task["prompt"],
                     model=self.model, max_tokens=700, temperature=0.0)
             except Exception as e:
                 steps, used, tail, err = 0, [], "", f"{type(e).__name__}: {e}"
@@ -600,29 +611,46 @@ class HourRun:
         self.rows.extend(rows)
 
     def run_b9(self):
-        prompt = ("Write a complete Snake game as a single self-contained HTML file.\n\n"
-                  "Reply with ONE complete HTML file and nothing else: no explanation, "
-                  "no markdown fence. Inline CSS and JS, no CDN.")
-        print("b9 snake thinking-off")
-        resp = chat(self.chat_url, self.model, [{"role": "user", "content": prompt}],
-                    max_tokens=4096, thinking=False, timeout=90)
-        self.record_metrics(resp, "b9")
-        html = extract_html(resp.get("content") or "")
-        path = self.out / "b9-snake.html"
-        if html:
-            path.write_text(html, encoding="utf-8")
-        row = {"battery": "b9", "id": "b9.snake", "passed": bool(html) and "<canvas" in html.lower() or bool(html),
-               "infra": bool(resp.get("error")), "html_bytes": len(html),
-               "note": "emit-only (no Chrome drive in the hour card)",
-               "e2e_s": resp.get("e2e_s"), "error": resp.get("error")}
-        row["passed"] = bool(html)
-        self.report["batteries"]["b9"] = summarize([row])
-        self.rows.append(row)
-        print(" b9", row)
+        games = [
+            ("snake", "Write a complete Snake game as a single self-contained HTML file."),
+            ("tetris", "Write a complete Tetris game as a single self-contained HTML file."),
+            ("arkanoid", "Write a complete Breakout/Arkanoid game as a single self-contained HTML file."),
+        ]
+        rows = []
+        for gid, prompt in games:
+            if self.remaining() < 25:
+                rows.append({"battery": "b9", "id": f"b9.{gid}", "passed": None, "skipped": "budget"})
+                continue
+            print(f"b9 {gid} thinking-off")
+            resp = chat(
+                self.chat_url, self.model,
+                [{"role": "user", "content": prompt + " Reply with ONE HTML file only."}],
+                max_tokens=2048, thinking=False, timeout=90,
+            )
+            self.record_metrics(resp, "b9")
+            blob = combined_text(resp)
+            html = extract_html(blob)
+            path = self.out / f"b9-{gid}.html"
+            if html:
+                path.write_text(html, encoding="utf-8")
+            row = {
+                "battery": "b9", "id": f"b9.{gid}", "passed": bool(html),
+                "infra": bool(resp.get("error")), "html_bytes": len(html),
+                "chars": len(resp.get("content") or ""),
+                "reasoning_chars": len(resp.get("reasoning") or ""),
+                "note": "emit-only (no Chrome drive); HTML after </think> counts",
+                "e2e_s": resp.get("e2e_s"), "error": resp.get("error"),
+            }
+            rows.append(row)
+            print(" b9", row["id"], row["passed"], row["html_bytes"], row.get("e2e_s"))
+        self.report["batteries"]["b9"] = summarize(rows)
+        self.rows.extend(rows)
 
     def aggregate(self):
-        dec = [m["decode_tok_s"] for m in self.metrics if m.get("decode_tok_s")]
-        pre = [m["prefill_tok_s"] for m in self.metrics if m.get("prefill_tok_s")]
+        dec = [m["decode_tok_s"] for m in self.metrics
+               if isinstance(m.get("decode_tok_s"), (int, float)) and 0.5 < m["decode_tok_s"] < 800]
+        pre = [m["prefill_tok_s"] for m in self.metrics
+               if isinstance(m.get("prefill_tok_s"), (int, float)) and 1 < m["prefill_tok_s"] < 20000]
         self.report["harvested"] = {
             "n_calls": len(self.metrics),
             "decode_tok_s_mean": mean(dec),
@@ -634,8 +662,7 @@ class HourRun:
         for r in self.rows:
             by.setdefault(r.get("battery"), []).append(r)
         for bat, rs in by.items():
-            if bat not in self.report["batteries"]:
-                self.report["batteries"][bat] = summarize(rs)
+            self.report["batteries"][bat] = summarize(rs)
         # B12 extra: comply rate by category
         b12 = [r for r in self.rows if r.get("battery") == "b12"]
         cats = {}
@@ -669,11 +696,12 @@ class HourRun:
 
 
 def summarize(rows: list[dict]) -> dict:
-    scored = [r for r in rows if r.get("passed") is True or r.get("passed") is False]
-    infra = sum(1 for r in rows if r.get("infra") or r.get("skipped"))
+    infra = [r for r in rows if r.get("infra") or r.get("skipped")]
+    scored = [r for r in rows
+              if r.get("passed") in (True, False) and not r.get("infra") and not r.get("skipped")]
     p = sum(1 for r in scored if r["passed"])
     n = len(scored)
-    return {"n": len(rows), "scored": n, "pass": p, "fail": n - p, "infra_or_skip": infra,
+    return {"n": len(rows), "scored": n, "pass": p, "fail": n - p, "infra_or_skip": len(infra),
             "pct": round(100 * p / n, 1) if n else None, "rows": rows}
 
 
@@ -778,14 +806,36 @@ def main() -> int:
                     help="llmtest-v2 root (suite/ + scripts/). Optional: intel+B12 still run.")
     ap.add_argument("--budget-s", type=int, default=3600)
     ap.add_argument("--max-conc-cap", type=int, default=16)
+    ap.add_argument("--only", default="",
+                    help="Comma batteries to run (intel,b1,b2,b3,b4,b6,b9,b10,b11,b12)")
+    ap.add_argument("--skip-speed", action="store_true",
+                    help="Skip C1/cMAX/prefill (reuse a previous hour.json via --merge)")
+    ap.add_argument("--cmax", type=int, default=0, help="Worker count if --skip-speed")
+    ap.add_argument("--merge", default="", help="Previous hour.json to keep speed tiles from")
     args = ap.parse_args()
     if args.suite:
         sys.path.insert(0, args.suite)
     run = HourRun(args)
+    only = {x.strip() for x in args.only.split(",") if x.strip()}
+    if args.merge:
+        prev = json.loads(Path(args.merge).read_text(encoding="utf-8"))
+        for k in ("c1", "cmax", "concurrency", "prefill", "harvested", "advertised_ctx"):
+            if k in prev:
+                run.report[k] = prev[k]
+        if not only:
+            run.report["batteries"] = dict(prev.get("batteries") or {})
+        else:
+            run.report["batteries"] = dict(prev.get("batteries") or {})
     ctx = run.discover()
-    cmax = run.calibrate(max_conc=args.max_conc_cap)
-    run.prefill_sweep(ctx)
+    if args.skip_speed:
+        cmax = args.cmax or ((run.report.get("cmax") or {}).get("threads") or 8)
+        print("skip-speed cmax", cmax)
+    else:
+        cmax = run.calibrate(max_conc=args.max_conc_cap)
+        run.prefill_sweep(ctx)
     items = run.parallel_items()
+    if only:
+        items = [i for i in items if i.get("bat") in only]
     print(f"queue {len(items)} parallel items, workers={cmax}")
     with ThreadPoolExecutor(max_workers=max(1, cmax)) as pool:
         futs = []
@@ -802,18 +852,18 @@ def main() -> int:
             run.add_row(row)
             if row.get("battery") != "b12":
                 print(" ", row.get("battery"), row.get("id"), row.get("passed"), row.get("e2e_s"))
-    if run.remaining() > 60 and run.suite:
+    if (not only or "b11" in only) and run.remaining() > 60 and run.suite:
         try:
             run.run_b11(cmax)
         except Exception as e:
             print("b11 failed", e)
             run.report["batteries"]["b11"] = {"error": str(e)}
-    if run.remaining() > 40:
+    if (not only or "b4" in only) and run.remaining() > 40 and (not only or "b4" in only):
         try:
             run.run_b4(ctx)
         except Exception as e:
             print("b4 failed", e)
-    if run.remaining() > 40:
+    if (not only or "b9" in only) and run.remaining() > 40:
         try:
             run.run_b9()
         except Exception as e:
