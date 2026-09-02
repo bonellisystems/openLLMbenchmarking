@@ -616,20 +616,20 @@ class HourRun:
             ("tetris", "Write a complete Tetris game as a single self-contained HTML file."),
             ("arkanoid", "Write a complete Breakout/Arkanoid game as a single self-contained HTML file."),
         ]
+        # Wait for a file, not a deadline. Time-to-HTML is the metric.
+        max_tok = int(getattr(self.args, "game_max_tokens", 16384) or 16384)
+        timeout = int(getattr(self.args, "game_timeout", 1800) or 1800)
         rows = []
-        for gid, prompt in games:
-            if self.remaining() < 25:
-                rows.append({"battery": "b9", "id": f"b9.{gid}", "passed": None, "skipped": "budget"})
-                continue
-            print(f"b9 {gid} thinking-off")
+
+        def one(gid, prompt):
+            print(f"b9 {gid} thinking-off max_tokens={max_tok} timeout={timeout}")
             resp = chat(
                 self.chat_url, self.model,
                 [{"role": "user", "content": prompt + " Reply with ONE HTML file only."}],
-                max_tokens=2048, thinking=False, timeout=90,
+                max_tokens=max_tok, thinking=False, timeout=timeout,
             )
             self.record_metrics(resp, "b9")
-            blob = combined_text(resp)
-            html = extract_html(blob)
+            html = extract_html(combined_text(resp))
             path = self.out / f"b9-{gid}.html"
             if html:
                 path.write_text(html, encoding="utf-8")
@@ -638,12 +638,42 @@ class HourRun:
                 "infra": bool(resp.get("error")), "html_bytes": len(html),
                 "chars": len(resp.get("content") or ""),
                 "reasoning_chars": len(resp.get("reasoning") or ""),
-                "note": "emit-only (no Chrome drive); HTML after </think> counts",
+                "finish_reason": resp.get("finish_reason"),
+                "completion_tokens": resp.get("completion_tokens"),
+                "note": "time-to-HTML is the score; no wall cap besides --game-timeout",
                 "e2e_s": resp.get("e2e_s"), "error": resp.get("error"),
             }
-            rows.append(row)
-            print(" b9", row["id"], row["passed"], row["html_bytes"], row.get("e2e_s"))
+            print(" b9", row["id"], row["passed"], f"{row['html_bytes']}B", f"{row.get('e2e_s')}s")
+            return row
+
+        workers = min(3, max(1, (self.report.get("cmax") or {}).get("threads") or 3))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(one, gid, prompt) for gid, prompt in games]
+            for f in as_completed(futs):
+                rows.append(f.result())
         self.report["batteries"]["b9"] = summarize(rows)
+        self.rows.extend(rows)
+
+    def run_jobpack(self):
+        from spark_hour.jobpack import run_form, run_resume
+        ws = self.out / "jobws"
+        if ws.exists():
+            shutil.rmtree(ws, ignore_errors=True)
+        ws.mkdir(parents=True)
+        print("job resume_tailor")
+        r1 = run_resume(self.chat_url, self.model, ws, timeout=240)
+        self.record_metrics({
+            "decode_tok_s": r1.get("decode_tok_s"), "e2e_s": r1.get("e2e_s"),
+            "prefill_tok_s": None, "prompt_tokens": None, "completion_tokens": None,
+            "ttft_ms": None,
+        }, "job")
+        print(" job", r1["id"], r1["passed"], r1.get("e2e_s"))
+        print("job form_recover")
+        r2 = run_form(self.chat_url, self.model, ws, timeout=180)
+        print(" job", r2["id"], r2["passed"], "steps", r2.get("steps"),
+              "errors", r2.get("error_rounds"), r2.get("e2e_s"))
+        rows = [r1, r2]
+        self.report["batteries"]["job"] = summarize(rows)
         self.rows.extend(rows)
 
     def aggregate(self):
@@ -695,6 +725,17 @@ class HourRun:
         print("wrote", self.out / "hour.html", "wall", self.report["wall_s"], "s")
 
 
+def esc_note(row: dict) -> str:
+    bits = []
+    if row.get("checks"):
+        bits.append(",".join(k for k, v in row["checks"].items() if not v) or "all checks")
+    if row.get("errors_last"):
+        bits.append("; ".join(row["errors_last"][:3]))
+    if row.get("error"):
+        bits.append(str(row["error"])[:120])
+    return " · ".join(bits)[:200]
+
+
 def summarize(rows: list[dict]) -> dict:
     infra = [r for r in rows if r.get("infra") or r.get("skipped")]
     scored = [r for r in rows
@@ -707,11 +748,12 @@ def summarize(rows: list[dict]) -> dict:
 
 def render(rep: dict) -> str:
     bats = rep.get("batteries") or {}
-    order = ["intel", "b1", "b2", "b3", "b4", "b6", "b8", "b9", "b10", "b11", "b12"]
+    order = ["intel", "b1", "b2", "b3", "b4", "b6", "job", "b8", "b9", "b10", "b11", "b12"]
     names = {
         "intel": "Intel 10", "b1": "B1 Business (gen)", "b2": "B2 Tools",
         "b3": "B3 Hallucination", "b4": "B4 Needle", "b6": "B6 Coding",
-        "b8": "B8 OpenCode probe", "b9": "B9 Snake emit", "b10": "B10 Security",
+        "job": "Job loop (resume + ATS form)",
+        "b8": "B8 OpenCode probe", "b9": "B9 Games (time-to-HTML)", "b10": "B10 Security",
         "b11": "B11 Tool loop", "b12": "B12 Censorship",
     }
     cells = []
@@ -728,6 +770,12 @@ def render(rep: dict) -> str:
             extra += f" comply={b.get('comply_rate')}% {b.get('grade') or ''}"
         if k == "b1":
             extra += " (not judged)"
+        if k == "b9":
+            times = [f"{(x.get('id') or '').split('.')[-1]} {x.get('e2e_s')}s/{x.get('html_bytes') or 0}B"
+                     for x in (b.get('rows') or [])]
+            extra += " · " + "; ".join(times)
+        if k == "job":
+            extra += " resume+form; validation-error recovery"
         cells.append(f"<tr><th>{names.get(k,k)}</th><td class='{cls}'>{label}</td><td class='sub'>{extra}</td></tr>")
     pref = "".join(
         f"<tr><td>{p.get('target_tokens')}</td><td>{p.get('prefill_tok_s') or p.get('skipped') or '—'}</td>"
@@ -740,6 +788,26 @@ def render(rep: dict) -> str:
         for c in rep.get("concurrency") or []
     )
     b12cats = (bats.get("b12") or {}).get("by_category") or {}
+    b9rows = (bats.get("b9") or {}).get("rows") or []
+    b9tbl = "".join(
+        f"<tr><td>{(x.get('id') or '').split('.')[-1]}</td>"
+        f"<td class='{'good' if x.get('passed') else 'bad'}'>{'HTML' if x.get('passed') else 'no file'}</td>"
+        f"<td>{x.get('e2e_s') if x.get('e2e_s') is not None else '—'}</td>"
+        f"<td>{x.get('html_bytes') or 0}</td>"
+        f"<td>{x.get('completion_tokens') or ''}</td>"
+        f"<td>{x.get('finish_reason') or ''}</td></tr>"
+        for x in b9rows
+    )
+    jobrows = (bats.get("job") or {}).get("rows") or []
+    jobtbl = "".join(
+        f"<tr><td>{x.get('id')}</td>"
+        f"<td class='{'good' if x.get('passed') else 'bad'}'>{'pass' if x.get('passed') else 'fail'}</td>"
+        f"<td>{x.get('e2e_s') if x.get('e2e_s') is not None else '—'}</td>"
+        f"<td>{x.get('steps') or x.get('chars') or ''}</td>"
+        f"<td>{x.get('error_rounds') if x.get('error_rounds') is not None else ''}</td>"
+        f"<td class='sub'>{esc_note(x)}</td></tr>"
+        for x in jobrows
+    )
     b12tbl = "".join(
         f"<tr><td>{k}</td><td>{v['comply']}</td><td>{v['refuse']}</td>"
         f"<td>{round(100*v['comply']/v['n']) if v['n'] else 0}%</td></tr>"
@@ -783,9 +851,16 @@ cMAX {cmax.get('threads')} threads</p>
 <table><thead><tr><th>Battery</th><th>Score</th><th></th></tr></thead><tbody>
 {''.join(cells)}
 </tbody></table>
-<p class="lead">B1 is generation-only (not a 0–10). B5 is the harvested decode/prefill tiles, not llama.cpp timings.
-B7 skipped. B8 skipped unless Docker probe is added later. B9 is HTML-emit, not Chrome drive.
-B12 has no CSAM / minor-sexual probes. Completions redacted from this page.</p>
+<p class="lead">Real workload this card is a proxy for: write code, drive a form like a job board,
+recover from missing fields / missing upload, and rewrite a resume to a posting.
+B9 time-to-HTML is a metric (snake in ~50s is a strong emit). Games are not the product.
+B1 is not a judged 0–10. B12 has no CSAM / minor-sexual probes.</p>
+<h2>B9 games — time to a file</h2>
+<table><thead><tr><th>Game</th><th>Result</th><th>seconds</th><th>HTML bytes</th><th>tokens</th><th>finish</th></tr></thead>
+<tbody>{b9tbl or '<tr><td colspan="6">not run</td></tr>'}</tbody></table>
+<h2>Job loop — resume + ATS validation</h2>
+<table><thead><tr><th>Task</th><th>Result</th><th>seconds</th><th>steps/chars</th><th>error rounds</th><th></th></tr></thead>
+<tbody>{jobtbl or '<tr><td colspan="6">not run</td></tr>'}</tbody></table>
 <h2>Concurrency ladder</h2>
 <table><thead><tr><th>c</th><th>agg tok/s</th><th>mean stream</th><th>ok</th></tr></thead><tbody>{conc}</tbody></table>
 <h2>Prefill sweep</h2>
@@ -812,6 +887,9 @@ def main() -> int:
                     help="Skip C1/cMAX/prefill (reuse a previous hour.json via --merge)")
     ap.add_argument("--cmax", type=int, default=0, help="Worker count if --skip-speed")
     ap.add_argument("--merge", default="", help="Previous hour.json to keep speed tiles from")
+    ap.add_argument("--game-timeout", type=int, default=1800,
+                    help="Per-game HTTP timeout seconds. Time-to-HTML is the metric.")
+    ap.add_argument("--game-max-tokens", type=int, default=16384)
     args = ap.parse_args()
     if args.suite:
         sys.path.insert(0, args.suite)
@@ -863,11 +941,17 @@ def main() -> int:
             run.run_b4(ctx)
         except Exception as e:
             print("b4 failed", e)
-    if (not only or "b9" in only) and run.remaining() > 40:
+    if (not only or "b9" in only):
         try:
             run.run_b9()
         except Exception as e:
             print("b9 failed", e)
+    if (not only or "job" in only):
+        try:
+            run.run_jobpack()
+        except Exception as e:
+            print("job failed", e)
+            run.report["batteries"]["job"] = {"error": str(e)}
     run.aggregate()
     run.write()
     return 0
